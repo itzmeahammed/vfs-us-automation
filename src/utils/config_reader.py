@@ -16,10 +16,15 @@ def initialize_config(config_dir="config"):
     global _config
     if not _config:
         _config = ConfigParser()
-        for entry in os.scandir(config_dir):
-            if entry.is_file() and entry.name.endswith(".ini"):
-                config_file_path = os.path.join(config_dir, entry.name)
-                _config.read(config_file_path)
+        names = [
+            e.name for e in os.scandir(config_dir)
+            if e.is_file() and e.name.endswith(".ini")
+        ]
+        # Read base configs first, then *.local.ini overrides LAST so their values
+        # win (real secrets live in config.local.ini; config.ini holds blanks).
+        names.sort(key=lambda n: (n.endswith(".local.ini"), n))
+        for name in names:
+            _config.read(os.path.join(config_dir, name))
 
     # Read user defined config file
     user_config_path = os.environ.get("VFS_BOT_CONFIG_PATH")

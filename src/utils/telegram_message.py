@@ -17,6 +17,7 @@ DESTINATION_FLAGS = {
     "CHE": "🇨🇭", "CH": "🇨🇭",       # Switzerland
     "DNK": "🇩🇰", "DK": "🇩🇰",       # Denmark
     "HUN": "🇭🇺", "HU": "🇭🇺",       # Hungary
+    "CZE": "🇨🇿", "CZ": "🇨🇿",       # Czech Republic
 }
 
 # Destination code -> friendly country name, inserted into each label so the
@@ -28,6 +29,7 @@ DESTINATION_NAMES = {
     "CHE": "Switzerland", "CH": "Switzerland",
     "DNK": "Denmark", "DK": "Denmark",
     "HUN": "Hungary", "HU": "Hungary",
+    "CZE": "Czech Republic", "CZ": "Czech Republic",
 }
 
 
@@ -111,6 +113,96 @@ def slot_report(source_code: str, dest_code: str, results: list, login_url: str 
     if login_url:
         body += f"\n\nLink to visa center site ({login_url})"
     return body
+
+
+# Per-route status -> icon for the run summary.
+_STATUS_ICON = {
+    "OK": "✅", "FAILED": "❌", "STOPPED": "🔑", "GEO": "⛔", "SKIPPED": "⏭️",
+    "LOCKED": "🔒",
+}
+
+
+def _short(text: str, limit: int = 110) -> str:
+    """Collapse whitespace and truncate a (possibly multi-line) error for a summary line."""
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def run_summary(outcomes: list, account: str, timestamp: str) -> str:
+    """
+    Build the compact, one-line-per-route run summary sent to the summary chat
+    after EVERY run — a monitoring digest of each URL's status.
+
+    Args:
+        outcomes: list of dicts, each with keys: source, dest, status
+            ('OK'|'FAILED'|'STOPPED'|'GEO'|'SKIPPED'), attempts, error, slots.
+        account: masked account used this hour, e.g. 'pa***@travnook.com (cred 7/10)'.
+        timestamp: run time, e.g. '2026-07-04 12:29'.
+
+    Returns:
+        The formatted summary string (always non-empty).
+    """
+    lines = ["📋 VFS Slot-Check Summary", f"🕐 {timestamp} · 👤 {account}", ""]
+    counts = {"OK": 0, "FAILED": 0, "STOPPED": 0, "GEO": 0, "SKIPPED": 0, "LOCKED": 0}
+    total_slots = 0
+
+    for o in outcomes:
+        status = o.get("status", "FAILED")
+        counts[status] = counts.get(status, 0) + 1
+        flag = _flag(o.get("dest"))
+        prefix = f"{flag} " if flag else ""
+        route = f"{o.get('source')}-{o.get('dest')}"
+        icon = _STATUS_ICON.get(status, "•")
+        head = f"{prefix}{_country(o.get('dest'))} ({route}): {icon} "
+        slots = o.get("slots", 0)
+        total_slots += slots
+        combo_errors = o.get("combo_errors", [])
+
+        if status == "OK":
+            head += f"OK · 🎫 {slots} slot(s)" if slots else "OK · no slots"
+        elif status == "FAILED" and combo_errors:
+            # Completed, but one or more combinations errored during slot search.
+            head += f"FAILED · ⚠️ {len(combo_errors)} combo error(s)"
+            if slots:
+                head += f" · 🎫 {slots} slot(s)"
+        elif status == "FAILED":
+            head += f"FAILED ({o.get('attempts', 0)} attempts)"
+            if o.get("error"):
+                head += f" — {_short(o['error'])}"
+        elif status == "STOPPED":
+            head += "STOPPED — invalid credentials"
+        elif status == "GEO":
+            head += "GEO-BLOCKED (403203)"
+        elif status == "LOCKED":
+            # The error already carries the on-page text (e.g. 'Account Locked
+            # (429202) — ...'), so don't repeat the code here.
+            head += f"LOCKED — {_short(o['error'])}" if o.get("error") else "LOCKED (429202)"
+        elif status == "SKIPPED":
+            head += "SKIPPED — not registered here"
+        else:
+            head += status
+        lines.append(head)
+
+        # Name each failed combination and its short reason (indented sub-lines).
+        for label, reason in combo_errors:
+            lines.append(f"   ⚠️ {label}: {_short(reason, 80)}")
+
+    # Roll-up footer — show a bucket only if it has any routes (OK/FAILED always).
+    roll = f"✅ {counts['OK']} · ❌ {counts['FAILED']}"
+    if counts["STOPPED"]:
+        roll += f" · 🔑 {counts['STOPPED']}"
+    if counts["GEO"]:
+        roll += f" · ⛔ {counts['GEO']}"
+    if counts["LOCKED"]:
+        roll += f" · 🔒 {counts['LOCKED']}"
+    if counts["SKIPPED"]:
+        roll += f" · ⏭️ {counts['SKIPPED']}"
+    roll += f"  |  🎫 {total_slots} slot(s)"
+
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append(roll)
+    return "\n".join(lines)
 
 
 def failure_alert(source_code: str, dest_code: str, error: str, attempts: int,

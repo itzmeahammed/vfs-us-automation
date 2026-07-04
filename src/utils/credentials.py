@@ -101,6 +101,20 @@ def get_credential(hour: int) -> tuple:
     return email, pwd
 
 
+def active_account(hour: int) -> str:
+    """
+    Returns a masked, human-friendly label for the account active at `hour`, for
+    display in the run summary — e.g. 'pa***@travnook.com (cred 7/10)', or just
+    'me***@web.net' when falling back to the single [vfs-credential] account.
+    """
+    pool = _load_pool()
+    if pool:
+        idx = (hour - START_HOUR) % len(pool)
+        return f"{_mask(pool[idx][0])} (cred {idx + 1}/{len(pool)})"
+    email = get_config_value("vfs-credential", "email") or ""
+    return _mask(email)
+
+
 def rotation_schedule() -> list:
     """
     Returns a preview of which account is used each active hour (06:00-23:00),

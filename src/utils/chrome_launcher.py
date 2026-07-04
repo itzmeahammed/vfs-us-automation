@@ -26,6 +26,64 @@ import time
 import urllib.request
 
 
+# Every profile dir we create starts with this prefix (under TEMP / tmp). Used
+# to find & clean up leftovers from previous runs WITHOUT touching the user's
+# normal Chrome, which uses a different user-data-dir.
+PROFILE_PREFIX = "vfs-chrome-profile-"
+
+
+def _profile_base() -> str:
+    return os.environ.get("TEMP") or "/tmp"
+
+
+def kill_stale_bot_chrome() -> None:
+    """
+    Best-effort: kill any Chrome left over from a PREVIOUS bot run.
+
+    Matches ONLY Chrome processes launched with our PROFILE_PREFIX user-data-dir,
+    so the user's normal browsing Chrome is never touched. Never raises — this is
+    cleanup, not the critical path.
+    """
+    try:
+        if platform.system() == "Windows":
+            # CIM query: chrome.exe whose command line references our profile dir.
+            ps = (
+                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+                f"Where-Object {{ $_.CommandLine -like '*{PROFILE_PREFIX}*' }} | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+                "-ErrorAction SilentlyContinue }"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+            )
+        else:
+            # -f matches against the full command line; our profile prefix is
+            # distinctive enough not to hit the user's Chrome.
+            subprocess.run(
+                ["pkill", "-f", PROFILE_PREFIX],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+            )
+    except Exception as e:
+        logging.debug(f"kill_stale_bot_chrome (ignored): {e}")
+
+
+def remove_stale_profiles() -> None:
+    """
+    Best-effort: delete leftover bot profile dirs (PROFILE_PREFIX*) under TEMP so
+    disk isn't slowly filled by crashed runs. Never raises. A dir still locked by
+    a live Chrome is skipped (ignore_errors) — kill_stale_bot_chrome() runs first
+    to release those.
+    """
+    base = _profile_base()
+    try:
+        for name in os.listdir(base):
+            if name.startswith(PROFILE_PREFIX):
+                shutil.rmtree(os.path.join(base, name), ignore_errors=True)
+    except Exception as e:
+        logging.debug(f"remove_stale_profiles (ignored): {e}")
+
+
 def _find_chrome() -> str:
     """
     Locates a Google Chrome / Chromium executable for the current OS.
@@ -94,26 +152,31 @@ class ChromeProcess:
         self.proxy = proxy  # e.g. "socks5://127.0.0.1:1080" — routes all traffic
         self._proc = None
 
-        # Use a STABLE, persistent profile dir by default. This is deliberate:
-        # Cloudflare's clearance cookie (cf_clearance) lives in the profile, and
-        # keeping it across runs is what lets us avoid the 403 challenge wall on a
-        # datacenter IP. We do NOT want a throwaway profile here (that triggers a
-        # fresh 403 every run). The stale VFS *login* session that a persistent
-        # profile would otherwise carry is cleared separately, at run start, by
-        # the bot (see VfsBot._clear_site_session) — so we keep Cloudflare's
-        # cookies but drop VFS's. Pass profile_dir=... to override.
+        # Throwaway profile dir, DELETED on close. Rationale: this runs on the
+        # user's own (limited-disk) PC, where leaving Chrome profiles in TEMP
+        # across many runs is unwanted residue. On a residential IP Cloudflare's
+        # Turnstile auto-passes each run, so we don't need to persist cf_clearance
+        # (the reason the EC2 build kept the profile). Pass profile_dir=... to
+        # override with a caller-owned dir (then we won't delete it).
         if profile_dir:
             self.profile_dir = profile_dir
+            self._owns_profile = False  # caller owns it — don't delete on close
         else:
-            base = os.environ.get("TEMP") or "/tmp"
-            self.profile_dir = os.path.join(base, f"vfs-chrome-profile-{port}")
-        self._owns_profile = False  # persistent — never delete it on close
+            self.profile_dir = os.path.join(_profile_base(), f"{PROFILE_PREFIX}{port}")
+            self._owns_profile = True  # ours — delete on close (no residue)
 
     @property
     def cdp_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
     def start(self) -> "ChromeProcess":
+        # Clean slate before launching: kill any Chrome left over from a previous
+        # bot run and wipe stale profile dirs. This guarantees each run starts
+        # fresh with no residue and no port/profile lock conflicts. Surgical —
+        # only OUR bot Chrome (PROFILE_PREFIX) is matched, never the user's.
+        kill_stale_bot_chrome()
+        remove_stale_profiles()
+
         chrome = _find_chrome()
         args = [
             chrome,
@@ -132,11 +195,11 @@ class ChromeProcess:
             # IP instead of the EC2 datacenter IP). With socks5:// Chrome also
             # resolves DNS through the proxy, so the EC2 IP isn't leaked via DNS.
             args.append(f"--proxy-server={self.proxy}")
-            logging.info(f"Chrome routing through proxy: {self.proxy}")
+            logging.debug(f"Chrome routing through proxy: {self.proxy}")
         if self.url:
             args.append(self.url)
 
-        logging.info(f"Launching Chrome (CDP :{self.port}) — {chrome}")
+        logging.debug(f"Launching Chrome (CDP :{self.port}) — {chrome}")
         # Own a process group so we can kill the whole tree (renderers, GPU proc).
         popen_kwargs = {
             "stdout": subprocess.DEVNULL,
@@ -165,7 +228,7 @@ class ChromeProcess:
                     f"{self.cdp_url}/json/version", timeout=2
                 ) as resp:
                     if resp.status == 200:
-                        logging.info(f"Chrome CDP ready on {self.cdp_url}")
+                        logging.debug(f"Chrome CDP ready on {self.cdp_url}")
                         return
             except Exception as e:
                 last_err = e
@@ -185,7 +248,7 @@ class ChromeProcess:
             self._proc = None
             return
 
-        logging.info("Closing Chrome (killing process tree)...")
+        logging.debug("Closing Chrome (killing process tree)...")
         try:
             if platform.system() == "Windows":
                 # /T kills the whole tree, /F forces it.
@@ -218,7 +281,7 @@ class ChromeProcess:
             # (and /tmp doesn't fill up over many hourly runs).
             if getattr(self, "_owns_profile", False):
                 shutil.rmtree(self.profile_dir, ignore_errors=True)
-            logging.info("Chrome closed.")
+            logging.debug("Chrome closed.")
 
     def __enter__(self) -> "ChromeProcess":
         return self.start()

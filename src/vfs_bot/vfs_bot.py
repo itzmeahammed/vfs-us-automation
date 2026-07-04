@@ -101,6 +101,27 @@ class EmailNotRegisteredError(Exception):
     """
 
 
+class InvalidCredentialsError(Exception):
+    """
+    The login page showed an 'email or password is incorrect' error — the
+    account's password is wrong (or the account is locked/disabled).
+
+    NOT retryable: the same wrong credentials fail identically every time, so the
+    supervisor STOPS this run immediately (no retries) and sends an alert to the
+    error channel instead of burning attempts.
+    """
+
+
+class AccountLockedError(Exception):
+    """
+    VFS served its 'Account Locked (429202)' page — too many requests in a short
+    period; access auto-resets after a cooldown (typically ~2 hours).
+
+    NOT retryable: retrying immediately hits the same lock. The supervisor stops
+    this run and reports the exact on-page message to the summary chat.
+    """
+
+
 class VfsBot(ABC):
     """
     Slot-check bot for the VFS Malta portal.
@@ -116,6 +137,9 @@ class VfsBot(ABC):
         self.source_country_code = None
         self.destination_country_code = None
         self.schema = {}
+        # Populated by the slot-check flow with the (label, message) pairs for
+        # every combination checked, so the supervisor can build a run summary.
+        self.slot_results = []
 
     def run(self) -> bool:
         """
@@ -165,9 +189,9 @@ class VfsBot(ABC):
             cdp_url = get_config_value("browser", "cdp_url")
             if cdp_url:
                 # Attach to an existing Chrome launched with --remote-debugging-port.
-                # On EC2 the supervisor launches/kills that Chrome; locally you run
-                # run.ps1. Either way we only attach here.
-                logging.info(f"Connecting to Chrome via CDP: {cdp_url}")
+                # The supervisor launches/kills that Chrome and injects its cdp_url
+                # at runtime; we only attach here.
+                logging.debug(f"Connecting to Chrome via CDP: {cdp_url}")
                 try:
                     browser = p.chromium.connect_over_cdp(cdp_url)
                 except Exception as e:
@@ -217,17 +241,19 @@ class VfsBot(ABC):
             # Always (re)load the login URL fresh — we just cleared the VFS
             # session, so this loads the clean login page with Cloudflare
             # clearance still intact.
-            logging.info(f"Navigating to {vfs_url}")
+            logging.debug(f"Navigating to {vfs_url}")
             page.goto(vfs_url, timeout=60000, wait_until="domcontentloaded")
 
             self.pre_login_steps(page)
 
             try:
                 self.login(page, email_id, password)
-            except (GeoBlockedError, EmailNotRegisteredError):
-                # Non-retryable & expected: geo-block (same IP won't help) or the
-                # email isn't registered here (skip this URL). Let it propagate so
-                # the supervisor handles it without retrying.
+            except (GeoBlockedError, EmailNotRegisteredError, InvalidCredentialsError,
+                    AccountLockedError):
+                # Non-retryable & expected: geo-block (same IP won't help), the
+                # email isn't registered here (skip this URL), wrong password (same
+                # creds fail identically), or account locked (429202 cooldown).
+                # Let it propagate so the supervisor handles it without retrying.
                 raise
             except RetryableError:
                 # A classified, expected failure — screenshot the end state and
@@ -275,7 +301,7 @@ class VfsBot(ABC):
                     el = page.locator(sel).first
                     if el.count() > 0 and el.is_visible():
                         el.click(timeout=3000, force=True)
-                        logging.info("Accepted all cookies (OneTrust id).")
+                        logging.debug("Accepted all cookies (OneTrust id).")
                         page.wait_for_timeout(600)
                         return True
                 except Exception:
@@ -287,7 +313,7 @@ class VfsBot(ABC):
                 btn = page.get_by_text("Accept Cookies", exact=True).first
                 if btn.count() > 0 and btn.is_visible():
                     btn.click(timeout=3000, force=True)
-                    logging.info("Accepted all cookies (text 'Accept Cookies').")
+                    logging.debug("Accepted all cookies (text 'Accept Cookies').")
                     page.wait_for_timeout(600)
                     return True
             except Exception:
@@ -299,7 +325,7 @@ class VfsBot(ABC):
                     btn = page.get_by_role("button", name=label).first
                     if btn.count() > 0 and btn.is_visible():
                         btn.click(timeout=3000, force=True)
-                        logging.info(f"Accepted all cookies via '{label}'.")
+                        logging.debug(f"Accepted all cookies via '{label}'.")
                         page.wait_for_timeout(600)
                         return True
                 except Exception:
@@ -348,7 +374,7 @@ class VfsBot(ABC):
             context.clear_cookies()  # nukes everything...
             if keep:
                 context.add_cookies(keep)  # ...then restore Cloudflare's only
-            logging.info(
+            logging.debug(
                 f"Cleared {dropped} VFS session cookie(s); kept {len(keep)} "
                 f"Cloudflare cookie(s)."
             )
@@ -371,7 +397,7 @@ class VfsBot(ABC):
         while waited < timeout_ms:
             try:
                 if sign_in.is_enabled():
-                    logging.info(f"Sign In enabled after {waited/1000:.0f}s.")
+                    logging.debug(f"Sign In enabled after {waited/1000:.0f}s.")
                     return True
             except Exception:
                 pass
@@ -386,14 +412,14 @@ class VfsBot(ABC):
                     )
                     if val:
                         token_seen = True
-                        logging.info("Turnstile token populated (challenge passed).")
+                        logging.debug("Turnstile token populated (challenge passed).")
                 except Exception:
                     pass
 
             page.wait_for_timeout(step_ms)
             waited += step_ms
             if waited % 10000 == 0:
-                logging.info(f"Waiting for Cloudflare to enable Sign In... ({waited/1000:.0f}s)")
+                logging.debug(f"Waiting for Cloudflare to enable Sign In... ({waited/1000:.0f}s)")
         return False
 
     @staticmethod
@@ -421,12 +447,12 @@ class VfsBot(ABC):
         waited = 0
         while waited < timeout_ms:
             if VfsBot._turnstile_token(page):
-                logging.info(f"Turnstile passed (token populated) after {waited/1000:.0f}s.")
+                logging.debug(f"Turnstile passed (token populated) after {waited/1000:.0f}s.")
                 return True
             page.wait_for_timeout(step_ms)
             waited += step_ms
             if waited % 10000 == 0:
-                logging.info(f"Waiting for Turnstile to pass... ({waited/1000:.0f}s)")
+                logging.debug(f"Waiting for Turnstile to pass... ({waited/1000:.0f}s)")
         return False
 
     @staticmethod
@@ -462,7 +488,7 @@ class VfsBot(ABC):
                 return False
             x = box["x"] + 30      # checkbox is near the left edge
             y = box["y"] + box["h"] / 2
-            logging.info(f"Clicking Turnstile checkbox by coordinates ({x:.0f}, {y:.0f}).")
+            logging.debug(f"Clicking Turnstile checkbox by coordinates ({x:.0f}, {y:.0f}).")
             page.mouse.move(x, y)
             page.wait_for_timeout(300)
             page.mouse.click(x, y)
@@ -485,7 +511,7 @@ class VfsBot(ABC):
             locator.fill(value, timeout=4000)
             return
         except Exception as e:
-            logging.info(f"fill() blocked ({e}); using JS value-set fallback.")
+            logging.debug(f"fill() blocked ({e}); using JS value-set fallback.")
         try:
             locator.evaluate(
                 """(el, val) => {
@@ -512,7 +538,7 @@ class VfsBot(ABC):
                 "Login form never appeared within 120s (Cloudflare spinner / 403 / "
                 f"slow load): {e}"
             ) from e
-        logging.info("Login form loaded")
+        logging.debug("Login form loaded")
 
         # Dismiss the cookie banner (it overlays the form and blocks fields).
         self.pre_login_steps(page)
@@ -532,7 +558,7 @@ class VfsBot(ABC):
         # the token is populated we fill credentials, and Sign In enables itself.
         passed = False
         for turn_attempt in range(1, TURNSTILE_REFRESH_ATTEMPTS + 2):  # 1 + N reloads
-            logging.info(
+            logging.debug(
                 f"Waiting for Cloudflare Turnstile to pass "
                 f"(try {turn_attempt}/{TURNSTILE_REFRESH_ATTEMPTS + 1})..."
             )
@@ -563,7 +589,7 @@ class VfsBot(ABC):
 
             # Not passed — reload and re-run the challenge, unless out of tries.
             if turn_attempt <= TURNSTILE_REFRESH_ATTEMPTS:
-                logging.info("Turnstile not passed — refreshing the page to retry.")
+                logging.debug("Turnstile not passed — refreshing the page to retry.")
                 VfsBot._take_final_screenshot(page, f"turnstile_fail_{turn_attempt}")
                 try:
                     page.reload(timeout=60000, wait_until="domcontentloaded")
@@ -588,14 +614,14 @@ class VfsBot(ABC):
         email_input = page.locator(USERNAME_SELECTOR).first
         password_input = page.locator(PASSWORD_SELECTOR).first
 
-        logging.info("Turnstile passed. Filling email field...")
+        logging.debug("Turnstile passed. Filling email field...")
         VfsBot._fill_field(page, email_input, email_id)
         page.wait_for_timeout(500)
-        logging.info("Email entered; filling password field...")
+        logging.debug("Email entered; filling password field...")
 
         VfsBot._fill_field(page, password_input, password)
         page.wait_for_timeout(800)
-        logging.info("Password entered; waiting for Sign In to enable...")
+        logging.debug("Password entered; waiting for Sign In to enable...")
 
         # Now that the token exists AND the fields are filled, Sign In should
         # enable. Wait for it (this is the correct point to wait on the button).
@@ -606,7 +632,7 @@ class VfsBot(ABC):
                     "Sign In stayed disabled after Turnstile passed and credentials "
                     "were filled."
                 )
-        logging.info("Sign In enabled; clicking it.")
+        logging.debug("Sign In enabled; clicking it.")
 
         # On the slow EC2 box even force-click can exceed its timeout, so try a
         # normal click, then force, then a JS .click() which dispatches instantly
@@ -617,15 +643,15 @@ class VfsBot(ABC):
             try:
                 sign_in.click(**kwargs)
                 clicked = True
-                logging.info(f"Clicked Sign In ({how}).")
+                logging.debug(f"Clicked Sign In ({how}).")
                 break
             except Exception as e:
-                logging.info(f"Sign In {how} click failed ({e}); trying next.")
+                logging.debug(f"Sign In {how} click failed ({e}); trying next.")
         if not clicked:
             try:
                 sign_in.evaluate("el => el.click()")
                 clicked = True
-                logging.info("Clicked Sign In (JS dispatch).")
+                logging.debug("Clicked Sign In (JS dispatch).")
             except Exception as e:
                 raise RetryableError(f"Could not click Sign In: {e}") from e
         VfsBot._take_final_screenshot(page, "after_signin")
@@ -638,6 +664,11 @@ class VfsBot(ABC):
             raise EmailNotRegisteredError(
                 "Login page: 'The entered email id is not registered with us' — "
                 "skipping this URL for this account."
+            )
+        if VfsBot._invalid_credentials(page):
+            raise InvalidCredentialsError(
+                "Login page: email or password is incorrect — stopping this run "
+                "for this account (no retries)."
             )
 
         # After Sign In, Cloudflare often shows the 'Verify Captcha' dialog
@@ -652,8 +683,17 @@ class VfsBot(ABC):
                     "Login page: 'The entered email id is not registered with us' — "
                     "skipping this URL for this account."
                 )
+            if VfsBot._invalid_credentials(page):
+                raise InvalidCredentialsError(
+                    "Login page: email or password is incorrect — stopping this "
+                    "run for this account (no retries)."
+                )
+            if VfsBot._account_locked(page):
+                raise AccountLockedError(VfsBot._landing_status(page))
+            # Not a known state — report what we ACTUALLY landed on, not a guess.
             raise DashboardNotReachedError(
-                f"Did not reach /dashboard after Sign In (current URL: {page.url})."
+                f"Did not reach dashboard — landed on: {VfsBot._landing_status(page)} "
+                f"(URL: {page.url})."
             )
 
         logging.info(f"Reached dashboard: {page.url}")
@@ -677,10 +717,10 @@ class VfsBot(ABC):
             )
             booking_button.scroll_into_view_if_needed(timeout=10000)
             booking_button.click(timeout=15000)
-            logging.info("Clicked Start New Booking")
+            logging.debug("Clicked Start New Booking")
             page.wait_for_timeout(3000)
             VfsBot._take_screenshot(page, "06_start_new_booking")
-            logging.info(f"Start New Booking opened. URL: {page.url}")
+            logging.debug(f"Start New Booking opened. URL: {page.url}")
         except Exception as e:
             logging.warning(f"Start New Booking failed: {e}")
             VfsBot._take_screenshot(page, "ERROR_start_new_booking")
@@ -729,6 +769,7 @@ class VfsBot(ABC):
                 ("visaCategoryCode", "sub_category", combo.get("sub_category")),
             ]
             ok = True
+            fail_detail = None
             cascade_changed = False
             for control, key, value in selections:
                 if not value:
@@ -736,11 +777,14 @@ class VfsBot(ABC):
                 # Re-select if this level's value differs OR a parent changed
                 # (which reset this dependent dropdown).
                 if not cascade_changed and prev.get(key) == value:
-                    logging.info(f"  (unchanged) {key} = '{value}' — skipping re-select")
+                    logging.debug(f"  (unchanged) {key} = '{value}' — skipping re-select")
                     continue
                 cascade_changed = True
                 if not VfsBot._select_mat_dropdown(page, control, value):
                     ok = False
+                    friendly = {"centre": "centre", "category": "category",
+                                "sub_category": "sub-category"}.get(key, key)
+                    fail_detail = f"could not select {friendly} '{value}'"
                     break
 
             prev = {
@@ -750,7 +794,10 @@ class VfsBot(ABC):
             }
 
             if not ok:
-                message = "Could not select this combination (option not found)."
+                # 'ERROR:' prefix marks a real slot-search failure (as opposed to
+                # genuine 'no availability'), so the supervisor can flag the route
+                # as failed and name the combo + reason in the run summary.
+                message = f"ERROR: {fail_detail or 'could not select this combination'}"
             else:
                 message = VfsBot._read_slot_message(page) or "No slot message shown (no availability?)."
 
@@ -759,6 +806,9 @@ class VfsBot(ABC):
             VfsBot._take_screenshot(page, f"slot_{len(results)}")
             page.wait_for_timeout(1000)
 
+        # Expose the per-combo results for the supervisor's run summary, then send
+        # the (unchanged) per-route slot report to the success chat.
+        self.slot_results = results
         self._send_slot_report(results)
 
     @staticmethod
@@ -860,7 +910,7 @@ class VfsBot(ABC):
                 btn = dialog.first.get_by_role("button", name=label).first
                 if btn.count() > 0 and btn.is_visible():
                     btn.click(timeout=5000)
-                    logging.info(f"Dismissed VFS reminder dialog via '{label}'.")
+                    logging.debug(f"Dismissed VFS reminder dialog via '{label}'.")
                     page.wait_for_timeout(1500)
                     return
             except Exception:
@@ -922,7 +972,7 @@ class VfsBot(ABC):
                         submit.click(force=True, timeout=10000)
                     except Exception:
                         submit.evaluate("el => el.click()")
-                logging.info(f"Clicked captcha 'Submit' (attempt {attempt})")
+                logging.debug(f"Clicked captcha 'Submit' (attempt {attempt})")
             except Exception as e:
                 logging.warning(f"Could not click captcha 'Submit': {e}")
                 VfsBot._take_screenshot(page, "ERROR_captcha")
@@ -931,14 +981,14 @@ class VfsBot(ABC):
             # Did the dialog go away?
             try:
                 dialog.first.wait_for(state="hidden", timeout=12000)
-                logging.info("Captcha dialog cleared.")
+                logging.debug("Captcha dialog cleared.")
                 VfsBot._take_screenshot(page, "captcha_handled")
                 return
             except Exception:
                 # Still visible (e.g. token wasn't ready yet) — loop and retry.
                 if not VfsBot._captcha_visible(page):
                     return  # raced away on its own
-                logging.info(
+                logging.debug(
                     f"Captcha still visible after Submit (attempt {attempt}); retrying..."
                 )
 
@@ -973,16 +1023,24 @@ class VfsBot(ABC):
                     "VFS 'Permission Issues (403203)' — IP outside permitted "
                     "location or rate-limited. Not retrying."
                 )
+            # Stop early if VFS locked the account (429202) — a cooldown page, not
+            # a slow dashboard. Retrying won't help; report the exact message.
+            if VfsBot._account_locked(page):
+                VfsBot._take_final_screenshot(page, "account_locked")
+                raise AccountLockedError(VfsBot._landing_status(page))
             # Stop early if this email isn't registered for this site — no point
             # waiting; the caller skips this URL for this account.
             if VfsBot._email_not_registered(page):
+                return False
+            # Stop early on a wrong-credentials banner too (no point waiting 90s).
+            if VfsBot._invalid_credentials(page):
                 return False
             # Clear the captcha dialog if it's blocking the redirect.
             VfsBot._dismiss_captcha(page)
             page.wait_for_timeout(step_ms)
             waited += step_ms
             if waited % 20000 == 0:
-                logging.info(f"Waiting for dashboard (handling captcha)... ({waited/1000:.0f}s)")
+                logging.debug(f"Waiting for dashboard (handling captcha)... ({waited/1000:.0f}s)")
         # Final check.
         try:
             return "/dashboard" in (page.url or "")
@@ -1023,6 +1081,82 @@ class VfsBot(ABC):
         return "not registered with us" in body
 
     @staticmethod
+    def _invalid_credentials(page) -> bool:
+        """
+        True if the login page is showing an incorrect email/password error —
+        meaning the account's credentials are wrong.
+
+        Detected by the banner/toast text so it works regardless of exact markup
+        (VFS shows variants like 'The email or password you have entered is
+        incorrect.'). The separate 'not registered' banner is excluded here — it
+        is a different, already-handled case (EmailNotRegisteredError).
+        """
+        try:
+            body = (page.evaluate(
+                "() => document.body ? document.body.innerText : ''"
+            ) or "").lower()
+        except Exception:
+            return False
+        if "not registered with us" in body:
+            return False
+        return (
+            "email or password" in body
+            or "password you have entered is incorrect" in body
+            or "incorrect email or password" in body
+            or "invalid username or password" in body
+        )
+
+    @staticmethod
+    def _account_locked(page) -> bool:
+        """
+        True if VFS is showing its 'Account Locked (429202)' page — too many
+        requests in a short window, temporary cooldown. Detected by text so it
+        works regardless of exact markup.
+        """
+        try:
+            body = (page.evaluate(
+                "() => document.body ? document.body.innerText : ''"
+            ) or "").lower()
+        except Exception:
+            return False
+        return "429202" in body or "account locked" in body
+
+    @staticmethod
+    def _landing_status(page) -> str:
+        """
+        Best-effort short description of what the page currently shows, for
+        reporting when we did NOT reach the dashboard — so the alert says what we
+        actually landed on instead of a generic 'no dashboard'.
+
+        Returns the most prominent heading + first meaningful line of text (e.g.
+        'Account Locked (429202) — It seems like you have made multiple requests
+        ...'), or the URL if nothing readable is found.
+        """
+        try:
+            info = page.evaluate(
+                """() => {
+                    const txt = (el) => (el && el.innerText ? el.innerText.trim() : '');
+                    const heading = txt(document.querySelector('h1'))
+                        || txt(document.querySelector('h2'))
+                        || txt(document.querySelector('.error-title, .title'));
+                    let msg = '';
+                    for (const el of document.querySelectorAll('p, li')) {
+                        const t = (el.innerText || '').trim();
+                        if (t.length > 20) { msg = t; break; }
+                    }
+                    return { heading, msg, url: location.href };
+                }"""
+            ) or {}
+        except Exception:
+            info = {}
+        parts = [p for p in ((info.get("heading") or "").strip(),
+                             (info.get("msg") or "").strip()) if p]
+        if parts:
+            text = " — ".join(parts)
+            return text if len(text) <= 300 else text[:299] + "…"
+        return f"unrecognised page at {info.get('url') or getattr(page, 'url', '')}"
+
+    @staticmethod
     def _captcha_visible(page) -> bool:
         """True if the Cloudflare captcha dialog is currently showing."""
         try:
@@ -1053,33 +1187,68 @@ class VfsBot(ABC):
             page.wait_for_timeout(3000)
 
     @staticmethod
-    def _select_mat_dropdown(page, control_name: str, value: str) -> bool:
+    def _select_mat_dropdown(page, control_name: str, value: str,
+                             attempts: int = 3, option_timeout_ms: int = 20000) -> bool:
         """
         Selects an option in an Angular Material dropdown (`mat-select`).
 
-        Opens the dropdown identified by its `formcontrolname`, then clicks the
-        option whose visible text contains `value` (case-insensitive substring).
+        Opens the dropdown identified by its `formcontrolname`, WAITS for the
+        options to actually load (they arrive async, often behind a spinner), then
+        clicks the option whose visible text contains `value` (case-insensitive
+        substring).
+
+        Robust to slow option loading: instead of a fixed 1s wait it polls up to
+        `option_timeout_ms` for THIS option to become visible, and retries the
+        whole open→select a few times. On any failure it presses Escape to close a
+        half-open overlay first — otherwise a stuck overlay would intercept clicks
+        and break the NEXT dropdown too.
 
         Returns:
             bool: True if the option was selected, False otherwise.
         """
-        try:
-            VfsBot._wait_for_loader(page)  # centre/category lists load behind a spinner
-            trigger = page.locator(f"mat-select[formcontrolname='{control_name}']").first
-            trigger.scroll_into_view_if_needed(timeout=10000)
-            trigger.click(timeout=10000)
-            page.wait_for_timeout(1000)  # wait for the options overlay to render
-            page.get_by_role("option", name=value, exact=False).first.click(
-                timeout=10000
-            )
-            logging.info(f"Selected '{value}' (dropdown: '{control_name}')")
-            page.wait_for_timeout(1000)
-            VfsBot._wait_for_loader(page)  # let the dependent dropdown reload
-            return True
-        except Exception as e:
-            logging.warning(f"Could not select '{value}' for '{control_name}': {e}")
-            VfsBot._take_screenshot(page, "ERROR_dropdown")
-            return False
+        for attempt in range(1, attempts + 1):
+            try:
+                VfsBot._wait_for_loader(page)  # lists load behind a full-screen spinner
+                trigger = page.locator(
+                    f"mat-select[formcontrolname='{control_name}']"
+                ).first
+                trigger.scroll_into_view_if_needed(timeout=10000)
+                trigger.click(timeout=10000)
+
+                # The overlay opens, then its options load in async. Clear any
+                # spinner, then wait for THIS option to actually render before
+                # clicking it (the old fixed 1s wait was too short on slow loads).
+                page.wait_for_timeout(400)
+                VfsBot._wait_for_loader(page)
+                option = page.get_by_role("option", name=value, exact=False).first
+                option.wait_for(state="visible", timeout=option_timeout_ms)
+                option.scroll_into_view_if_needed(timeout=5000)
+                option.click(timeout=10000)
+
+                logging.debug(
+                    f"Selected '{value}' (dropdown: '{control_name}')"
+                    + (f" on attempt {attempt}" if attempt > 1 else "")
+                )
+                page.wait_for_timeout(1000)
+                VfsBot._wait_for_loader(page)  # let the dependent dropdown reload
+                return True
+            except Exception as e:
+                logging.warning(
+                    f"Attempt {attempt}/{attempts}: could not select '{value}' for "
+                    f"'{control_name}': {e}"
+                )
+                # Close any half-open overlay so it can't block the next dropdown.
+                try:
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(700)
+                except Exception:
+                    pass
+                if attempt < attempts:
+                    VfsBot._wait_for_loader(page)
+                    page.wait_for_timeout(1500)
+
+        VfsBot._take_screenshot(page, "ERROR_dropdown")
+        return False
 
     # ------------------------------------------------------------------ #
     # Browser activity logging                                           #
@@ -1169,6 +1338,6 @@ class VfsBot(ABC):
                 animations="disabled",
                 caret="initial",
             )
-            logging.info(f"Screenshot saved: {path}")
+            logging.debug(f"Screenshot saved: {path}")
         except Exception as e:
             logging.warning(f"Skipped screenshot '{name}' (non-fatal): {e}")
