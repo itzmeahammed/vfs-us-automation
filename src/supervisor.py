@@ -37,6 +37,7 @@ from src.utils.config_reader import (
     set_config_value,
 )
 from src.vfs_bot.vfs_bot import (
+    AccessRestrictedError,
     AccountLockedError,
     EmailNotRegisteredError,
     GeoBlockedError,
@@ -106,8 +107,9 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
 
     status is one of: 'OK', 'SKIPPED' (email not registered), 'FAILED' (retries
     exhausted / unsupported / a slot-search error), 'GEO' (geo-blocked), 'STOPPED'
-    (invalid creds). `ok` (used for the process exit code) is True only for OK and
-    SKIPPED.
+    (invalid creds), 'LOCKED' (429202 cooldown), 'RESTRICTED' (access restricted —
+    route skipped this run, tried again next run). `ok` (used for the process
+    exit code) is True only for OK and SKIPPED.
 
     A completed run ('OK') that hit any per-combination slot-search error is
     promoted to 'FAILED' — an error while searching slots counts as a failure and
@@ -117,6 +119,20 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
     slots = slot_results or []
     slot_count = sum(1 for _label, message in slots if telegram_message._has_slot(message))
     combo_errors = _combo_errors(slots)
+    disabled = [label for label, message in slots if message == "DISABLED"]
+
+    # Slots grouped by visa type (the last label segment, e.g. 'Tourism'), so
+    # the summary can say 'Tourism: 2 slot(s)' instead of just a total.
+    slot_types = []  # list of [type, count], insertion-ordered
+    for label, message in slots:
+        if telegram_message._has_slot(message):
+            visa_type = label.split(" - ")[-1].strip() or label
+            for entry in slot_types:
+                if entry[0] == visa_type:
+                    entry[1] += 1
+                    break
+            else:
+                slot_types.append([visa_type, 1])
 
     if status == "OK" and combo_errors:
         status = "FAILED"
@@ -125,8 +141,10 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
 
     return {
         "source": source, "dest": dest, "status": status, "attempts": attempts,
-        "error": error, "slots": slot_count, "combos": len(slots),
-        "combo_errors": combo_errors, "ok": status in ("OK", "SKIPPED"),
+        "error": error, "slots": slot_count, "combos": len(slots) - len(disabled),
+        "combo_errors": combo_errors, "disabled": disabled,
+        "slot_types": slot_types,
+        "ok": status in ("OK", "SKIPPED"),
     }
 
 
@@ -163,6 +181,20 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
             logging.error(f"Invalid credentials for {source}-{dest}: {e}")
             _alert_failure(source, dest, f"Invalid credentials: {e}", attempts=attempt)
             return _outcome(source, dest, "STOPPED", attempt, error=str(e))
+        except AccessRestrictedError as e:
+            # Non-retryable WITHIN this run: VFS restricted access on this route.
+            # Skip the route immediately (no browser relaunches — hammering it
+            # prolongs the restriction) and move on to the next route with the
+            # same account. The route is tried again fresh on the NEXT cron tick
+            # (e.g. hit at :29 -> retried at :59) — nothing is persisted.
+            logging.error(f"Access restricted for {source}-{dest}: {e}")
+            _alert_failure(
+                source, dest,
+                f"Access restricted: {e} — skipping this route for this run; "
+                f"it will be tried again on the next scheduled run.",
+                attempts=attempt,
+            )
+            return _outcome(source, dest, "RESTRICTED", attempt, error=str(e))
         except AccountLockedError as e:
             # Non-retryable: VFS locked the account (429202) for too many requests;
             # it resets after a cooldown (~2h). Report the exact on-page message.

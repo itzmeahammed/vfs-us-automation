@@ -118,7 +118,7 @@ def slot_report(source_code: str, dest_code: str, results: list, login_url: str 
 # Per-route status -> icon for the run summary.
 _STATUS_ICON = {
     "OK": "✅", "FAILED": "❌", "STOPPED": "🔑", "GEO": "⛔", "SKIPPED": "⏭️",
-    "LOCKED": "🔒",
+    "LOCKED": "🔒", "RESTRICTED": "🚫",
 }
 
 
@@ -143,7 +143,8 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
         The formatted summary string (always non-empty).
     """
     lines = ["📋 VFS Slot-Check Summary", f"🕐 {timestamp} · 👤 {account}", ""]
-    counts = {"OK": 0, "FAILED": 0, "STOPPED": 0, "GEO": 0, "SKIPPED": 0, "LOCKED": 0}
+    counts = {"OK": 0, "FAILED": 0, "STOPPED": 0, "GEO": 0, "SKIPPED": 0,
+              "LOCKED": 0, "RESTRICTED": 0}
     total_slots = 0
 
     for o in outcomes:
@@ -159,7 +160,15 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
         combo_errors = o.get("combo_errors", [])
 
         if status == "OK":
-            head += f"OK · 🎫 {slots} slot(s)" if slots else "OK · no slots"
+            # Break the slot count down by visa type when available, e.g.
+            # 'OK | Tourism: 🎫 2 slot(s) | Business: 🎫 1 slot(s)'.
+            slot_types = o.get("slot_types") or []
+            if slot_types:
+                head += "OK | " + " | ".join(
+                    f"{t}: 🎫 {c} slot(s)" for t, c in slot_types
+                )
+            else:
+                head += f"OK · 🎫 {slots} slot(s)" if slots else "OK · no slots"
         elif status == "FAILED" and combo_errors:
             # Completed, but one or more combinations errored during slot search.
             head += f"FAILED · ⚠️ {len(combo_errors)} combo error(s)"
@@ -177,10 +186,28 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
             # The error already carries the on-page text (e.g. 'Account Locked
             # (429202) — ...'), so don't repeat the code here.
             head += f"LOCKED — {_short(o['error'])}" if o.get("error") else "LOCKED (429202)"
+        elif status == "RESTRICTED":
+            # The error carries the on-page text; the route was skipped for this
+            # run only and is tried again fresh on the next scheduled run.
+            head += (f"RESTRICTED — {_short(o['error'])}" if o.get("error")
+                     else "RESTRICTED — access restricted, skipped this run")
         elif status == "SKIPPED":
             head += "SKIPPED — not registered here"
         else:
             head += status
+
+        # Name the switched-off combinations (route JSON "disabled": true) so the
+        # summary shows what is deliberately not being checked. Labels are
+        # 'Centre - Category'; centres are dropped and duplicates collapsed, so
+        # both Business combos read as one 'Business Visa: disabled'.
+        disabled_names = []
+        for label in o.get("disabled", []):
+            name = label.split(" - ", 1)[-1].strip() or label
+            if name not in disabled_names:
+                disabled_names.append(name)
+        if disabled_names:
+            head += " | " + " | ".join(f"{n}: disabled" for n in disabled_names)
+
         lines.append(head)
 
         # Name each failed combination and its short reason (indented sub-lines).
@@ -195,6 +222,8 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
         roll += f" · ⛔ {counts['GEO']}"
     if counts["LOCKED"]:
         roll += f" · 🔒 {counts['LOCKED']}"
+    if counts["RESTRICTED"]:
+        roll += f" · 🚫 {counts['RESTRICTED']}"
     if counts["SKIPPED"]:
         roll += f" · ⏭️ {counts['SKIPPED']}"
     roll += f"  |  🎫 {total_slots} slot(s)"

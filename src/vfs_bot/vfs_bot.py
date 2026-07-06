@@ -122,6 +122,18 @@ class AccountLockedError(Exception):
     """
 
 
+class AccessRestrictedError(Exception):
+    """
+    VFS served its 'Access Restricted' block page for this route — the portal
+    has (temporarily) cut off access here.
+
+    NOT retryable within a run: hammering the route only prolongs the
+    restriction. The supervisor skips this route immediately and moves on to
+    the next one (same account); the route is tried again fresh on the next
+    scheduled run (e.g. hit at :29 -> retried at :59).
+    """
+
+
 class VfsBot(ABC):
     """
     Slot-check bot for the VFS Malta portal.
@@ -249,10 +261,11 @@ class VfsBot(ABC):
             try:
                 self.login(page, email_id, password)
             except (GeoBlockedError, EmailNotRegisteredError, InvalidCredentialsError,
-                    AccountLockedError):
+                    AccountLockedError, AccessRestrictedError):
                 # Non-retryable & expected: geo-block (same IP won't help), the
                 # email isn't registered here (skip this URL), wrong password (same
-                # creds fail identically), or account locked (429202 cooldown).
+                # creds fail identically), account locked (429202 cooldown), or
+                # access restricted (back off this route+credential pair).
                 # Let it propagate so the supervisor handles it without retrying.
                 raise
             except RetryableError:
@@ -534,6 +547,14 @@ class VfsBot(ABC):
         try:
             page.wait_for_selector(USERNAME_SELECTOR, timeout=120000)
         except Exception as e:
+            # The form may be absent because VFS served a block page in its
+            # place — classify those before falling back to a retryable error.
+            if VfsBot._access_restricted(page):
+                VfsBot._take_final_screenshot(page, "access_restricted")
+                raise AccessRestrictedError(VfsBot._landing_status(page)) from e
+            if VfsBot._account_locked(page):
+                VfsBot._take_final_screenshot(page, "account_locked")
+                raise AccountLockedError(VfsBot._landing_status(page)) from e
             raise LoginFormNotReadyError(
                 "Login form never appeared within 120s (Cloudflare spinner / 403 / "
                 f"slow load): {e}"
@@ -690,6 +711,8 @@ class VfsBot(ABC):
                 )
             if VfsBot._account_locked(page):
                 raise AccountLockedError(VfsBot._landing_status(page))
+            if VfsBot._access_restricted(page):
+                raise AccessRestrictedError(VfsBot._landing_status(page))
             # Not a known state — report what we ACTUALLY landed on, not a guess.
             raise DashboardNotReachedError(
                 f"Did not reach dashboard — landed on: {VfsBot._landing_status(page)} "
@@ -736,7 +759,14 @@ class VfsBot(ABC):
         earliest-slot banner for each, then send all results in one Telegram
         message. Combinations come from the route schema's `slot_check.combinations`.
         """
-        combos = self.schema.get("slot_check", {}).get("combinations", [])
+        all_combos = self.schema.get("slot_check", {}).get("combinations", [])
+        # JSON has no comments, so combinations are switched off with
+        # `"disabled": true` instead of being deleted from the route file.
+        combos = [c for c in all_combos if not c.get("disabled")]
+        if len(combos) < len(all_combos):
+            logging.info(
+                f"Skipping {len(all_combos) - len(combos)} disabled combination(s)."
+            )
         if not combos:
             logging.warning("Slot-check mode but no combinations configured.")
             return
@@ -805,6 +835,17 @@ class VfsBot(ABC):
             results.append((label, message))
             VfsBot._take_screenshot(page, f"slot_{len(results)}")
             page.wait_for_timeout(1000)
+
+        # Disabled combos are carried in the results with a 'DISABLED' marker so
+        # the run summary can show them; no date in the text keeps them out of
+        # the slot report and the slot count.
+        for combo in all_combos:
+            if combo.get("disabled"):
+                label = combo.get("label") or " / ".join(
+                    filter(None, [combo.get("centre"), combo.get("category"),
+                                  combo.get("sub_category")])
+                )
+                results.append((label, "DISABLED"))
 
         # Expose the per-combo results for the supervisor's run summary, then send
         # the (unchanged) per-route slot report to the success chat.
@@ -1028,6 +1069,11 @@ class VfsBot(ABC):
             if VfsBot._account_locked(page):
                 VfsBot._take_final_screenshot(page, "account_locked")
                 raise AccountLockedError(VfsBot._landing_status(page))
+            # Stop early if VFS restricted access for this route+account — the
+            # supervisor backs the pair off and moves to the next route.
+            if VfsBot._access_restricted(page):
+                VfsBot._take_final_screenshot(page, "access_restricted")
+                raise AccessRestrictedError(VfsBot._landing_status(page))
             # Stop early if this email isn't registered for this site — no point
             # waiting; the caller skips this URL for this account.
             if VfsBot._email_not_registered(page):
@@ -1105,6 +1151,21 @@ class VfsBot(ABC):
             or "incorrect email or password" in body
             or "invalid username or password" in body
         )
+
+    @staticmethod
+    def _access_restricted(page) -> bool:
+        """
+        True if VFS is showing its 'Access Restricted' block page — the portal
+        has cut off this route for the current account/session. Detected by page
+        text so it works regardless of URL or exact markup.
+        """
+        try:
+            body = (page.evaluate(
+                "() => document.body ? document.body.innerText : ''"
+            ) or "").lower()
+        except Exception:
+            return False
+        return "access restricted" in body
 
     @staticmethod
     def _account_locked(page) -> bool:

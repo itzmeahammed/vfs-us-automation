@@ -3,11 +3,11 @@
   "mode": "slot-check",
   "slot_check": {
     "combinations": [
-      { "label": "Abu Dhabi - Business",
+      { "label": "Abu Dhabi - Business", "disabled": true,
         "centre": "Abu Dhabi", "category": "Business", "sub_category": "Business" },
       { "label": "Abu Dhabi - Tourism",
         "centre": "Abu Dhabi", "category": "Tourism", "sub_category": "Tourism" },
-      { "label": "Dubai - Business",
+      { "label": "Dubai - Business", "disabled": true,
         "centre": "Dubai", "category": "Business", "sub_category": "Business" },
       { "label": "Dubai - Tourism",
         "centre": "Dubai", "category": "Tourism", "sub_category": "Tourism" }

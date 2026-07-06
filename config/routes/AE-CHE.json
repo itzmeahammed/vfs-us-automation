@@ -3,11 +3,11 @@
   "mode": "slot-check",
   "slot_check": {
     "combinations": [
-      { "label": "Abu Dhabi - Business Visa",
+      { "label": "Abu Dhabi - Business Visa", "disabled": true,
         "centre": "Abu Dhabi", "category": "Business Visa", "sub_category": "" },
       { "label": "Abu Dhabi - SCHENGEN",
         "centre": "Abu Dhabi", "category": "SCHENGEN", "sub_category": "" },
-      { "label": "Dubai - Business Visa",
+      { "label": "Dubai - Business Visa", "disabled": true,
         "centre": "Dubai", "category": "Business Visa", "sub_category": "" },
       { "label": "Dubai - SCHENGEN",
         "centre": "Dubai", "category": "SCHENGEN", "sub_category": "" }
