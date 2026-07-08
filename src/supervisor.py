@@ -101,7 +101,8 @@ def _combo_errors(slot_results: list) -> list:
 
 
 def _outcome(source: str, dest: str, status: str, attempts: int,
-             slot_results: list = None, error: str = None) -> dict:
+             slot_results: list = None, error: str = None,
+             account: str = "") -> dict:
     """
     Builds a per-route outcome record for the run summary.
 
@@ -143,7 +144,7 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
         "source": source, "dest": dest, "status": status, "attempts": attempts,
         "error": error, "slots": slot_count, "combos": len(slots) - len(disabled),
         "combo_errors": combo_errors, "disabled": disabled,
-        "slot_types": slot_types,
+        "slot_types": slot_types, "account": account,
         "ok": status in ("OK", "SKIPPED"),
     }
 
@@ -155,32 +156,50 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
     Returns a per-route outcome dict (see _outcome) so the caller can both decide
     the exit code (via outcome['ok']) and build the run summary.
     """
+    from datetime import datetime
+    from src.utils import credentials
+
+    # Per-route credential check BEFORE launching a browser: each route rotates
+    # through the accounts registered on it ([credN] 'routes' lists). A route
+    # no account covers is skipped cleanly with a clear reason.
+    route = f"{source.upper()}-{dest.upper()}"
+    hour = datetime.now().hour
+    account = credentials.active_account(hour, route)
+    if not account:
+        reason = "no registered credential for this route"
+        logging.warning(f"{route}: {reason} — skipping.")
+        return _outcome(source, dest, "SKIPPED", 0, error=reason)
+
     last_error = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         logging.info(f"=== Attempt {attempt}/{MAX_ATTEMPTS} ===")
         try:
             slots = run_once_with_fresh_browser(source, dest)
             logging.info(f"Success on attempt {attempt}.")
-            return _outcome(source, dest, "OK", attempt, slot_results=slots)
+            return _outcome(source, dest, "OK", attempt, slot_results=slots,
+                            account=account)
         except EmailNotRegisteredError as e:
             # Expected, not an error: this account isn't registered for this URL.
             # Skip it silently (no retries, no Telegram alert) and move on.
             logging.info(f"{source}-{dest}: account not registered here — skipping. ({e})")
-            return _outcome(source, dest, "SKIPPED", attempt, error=str(e))
+            return _outcome(source, dest, "SKIPPED", attempt, error=str(e),
+                            account=account)
         except GeoBlockedError as e:
             # Non-retryable: VFS geo-blocked the IP (403203). Retrying uses the
             # same IP and fails identically — stop now, no further attempts.
             logging.error(f"Geo-blocked for {source}-{dest}: {e}")
             _alert_failure(source, dest, f"Geo-blocked (403203): {e}", attempts=attempt)
-            return _outcome(source, dest, "GEO", attempt, error=str(e))
+            return _outcome(source, dest, "GEO", attempt, error=str(e),
+                            account=account)
         except InvalidCredentialsError as e:
             # Non-retryable: wrong email/password fails identically on retry.
-            # Stop this run immediately (no further attempts) and alert on the
-            # error channel. NOTE: all routes in a run share the same hour-rotated
-            # account, so a wrong credential stops each route here without retries.
+            # Stop this route immediately (no further attempts) and alert on the
+            # error channel. Other routes may rotate to different accounts, so
+            # they still run.
             logging.error(f"Invalid credentials for {source}-{dest}: {e}")
             _alert_failure(source, dest, f"Invalid credentials: {e}", attempts=attempt)
-            return _outcome(source, dest, "STOPPED", attempt, error=str(e))
+            return _outcome(source, dest, "STOPPED", attempt, error=str(e),
+                            account=account)
         except AccessRestrictedError as e:
             # Non-retryable WITHIN this run: VFS restricted access on this route.
             # Skip the route immediately (no browser relaunches — hammering it
@@ -194,18 +213,21 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
                 f"it will be tried again on the next scheduled run.",
                 attempts=attempt,
             )
-            return _outcome(source, dest, "RESTRICTED", attempt, error=str(e))
+            return _outcome(source, dest, "RESTRICTED", attempt, error=str(e),
+                            account=account)
         except AccountLockedError as e:
             # Non-retryable: VFS locked the account (429202) for too many requests;
             # it resets after a cooldown (~2h). Report the exact on-page message.
             logging.error(f"Account locked for {source}-{dest}: {e}")
             _alert_failure(source, dest, f"Account locked (429202): {e}", attempts=attempt)
-            return _outcome(source, dest, "LOCKED", attempt, error=str(e))
+            return _outcome(source, dest, "LOCKED", attempt, error=str(e),
+                            account=account)
         except UnsupportedCountryError as e:
             # Not retryable — a config problem, not a transient failure.
             logging.error(f"Unsupported route {source}-{dest}: {e}")
             _alert_failure(source, dest, str(e), attempts=attempt)
-            return _outcome(source, dest, "FAILED", attempt, error=str(e))
+            return _outcome(source, dest, "FAILED", attempt, error=str(e),
+                            account=account)
         except RetryableError as e:
             last_error = f"{type(e).__name__}: {e}"
             logging.warning(f"Attempt {attempt} failed (retryable): {last_error}")
@@ -219,7 +241,8 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
 
     logging.error(f"All {MAX_ATTEMPTS} attempts failed. Last error: {last_error}")
     _alert_failure(source, dest, last_error, attempts=MAX_ATTEMPTS)
-    return _outcome(source, dest, "FAILED", MAX_ATTEMPTS, error=last_error)
+    return _outcome(source, dest, "FAILED", MAX_ATTEMPTS, error=last_error,
+                    account=account)
 
 
 def _all_routes() -> list:
@@ -259,6 +282,11 @@ def run_all_routes() -> bool:
         logging.error("No routes configured in [vfs-url] — nothing to run.")
         return False
 
+    # Surface typos in [credN] 'routes' lists (a misspelt route would silently
+    # shrink that route's credential pool).
+    from src.utils import credentials
+    credentials.warn_unknown_routes()
+
     logging.info(
         f"Running {len(routes)} route(s): "
         + ", ".join(f"{s}-{d}" for s, d in routes)
@@ -293,12 +321,12 @@ def _send_run_summary(outcomes: list) -> None:
     go to the success chat only when slots are found.
     """
     from datetime import datetime
-    from src.utils import credentials
 
+    # Accounts are chosen per route now, so each outcome carries its own
+    # 'account' and the summary shows it per line; the header carries none.
     now = datetime.now()
-    account = credentials.active_account(now.hour)
     msg = telegram_message.run_summary(
-        outcomes, account, now.strftime("%Y-%m-%d %H:%M")
+        outcomes, "", now.strftime("%Y-%m-%d %H:%M")
     )
     logging.info("Run summary:\n" + msg)
     if telegram.is_error_configured():
@@ -314,11 +342,13 @@ def _alert_failure(source: str, dest: str, error: str, attempts: int) -> None:
     credential failed. Message layout lives in src/utils/telegram_message.py.
     """
     login_url = _vfs_url(source, dest) or ""
-    # The account in use this hour — the same one the bot tried (rotation is by
-    # clock hour, so recomputing here gives the same email).
+    # The account in use this hour ON THIS ROUTE — the same one the bot tried
+    # (per-route rotation is by clock hour, so recomputing gives the same email).
     from datetime import datetime
     from src.utils import credentials
-    email, _ = credentials.get_credential(datetime.now().hour)
+    email, _ = credentials.get_credential(
+        datetime.now().hour, f"{source.upper()}-{dest.upper()}"
+    )
     msg = telegram_message.failure_alert(
         source, dest, error, attempts, login_url, email or ""
     )

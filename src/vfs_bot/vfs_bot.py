@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from abc import ABC
 from datetime import datetime
 
@@ -40,6 +41,13 @@ USERNAME_SELECTOR = (
 )
 PASSWORD_SELECTOR = (
     "input[formcontrolname='password'], #mat-input-1, input[type='password']"
+)
+# The OTP entry field shown after Sign In on routes with "otp": true. Several
+# strategies because the exact markup hasn't been pinned down yet ([i] = case-
+# insensitive attribute match).
+OTP_INPUT_SELECTOR = (
+    "input[formcontrolname*='otp' i], input[autocomplete='one-time-code'], "
+    "input[name*='otp' i], input[id*='otp' i], input[placeholder*='otp' i]"
 )
 
 
@@ -122,6 +130,15 @@ class AccountLockedError(Exception):
     """
 
 
+class OtpVerificationError(RetryableError):
+    """
+    The OTP step failed on a route with "otp": true — the OTP field never
+    appeared, the email never arrived, or the code couldn't be read/entered.
+
+    Retryable: a fresh browser re-triggers Sign In, which sends a fresh OTP.
+    """
+
+
 class AccessRestrictedError(Exception):
     """
     VFS served its 'Access Restricted' block page for this route — the portal
@@ -190,10 +207,17 @@ class VfsBot(ABC):
             )
             return False
 
-        # Pick the credential for this hour (rotates across multiple accounts if
-        # config/credentials.local.ini is set up; else the single account).
+        # Pick the credential for this hour AND this route (each route rotates
+        # through the accounts registered on it; see src/utils/credentials.py).
         from src.utils import credentials
-        email_id, password = credentials.get_credential(datetime.now().hour)
+        email_id, password = credentials.get_credential(
+            datetime.now().hour, url_key.upper()
+        )
+        if not email_id or not password:
+            raise LoginError(
+                f"No credential is registered for route '{url_key.upper()}' — "
+                "add it to a [credN] 'routes' list in config/credentials.local.ini."
+            )
 
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
@@ -655,6 +679,10 @@ class VfsBot(ABC):
                 )
         logging.debug("Sign In enabled; clicking it.")
 
+        # Recorded just before Sign In: only OTP emails received AFTER this
+        # moment count, so a stale code from a previous run can never be used.
+        otp_since = time.time()
+
         # On the slow EC2 box even force-click can exceed its timeout, so try a
         # normal click, then force, then a JS .click() which dispatches instantly
         # and can't be blocked by actionability waits.
@@ -692,6 +720,11 @@ class VfsBot(ABC):
                 "for this account (no retries)."
             )
 
+        # Routes flagged "otp": true in config/routes/<ROUTE>.json require an
+        # emailed one-time password after Sign In before the dashboard loads.
+        if self.schema.get("otp"):
+            self._verify_otp(page, email_id, password, otp_since)
+
         # After Sign In, Cloudflare often shows the 'Verify Captcha' dialog
         # (app-cloudflare-dialog with a Submit button) that BLOCKS the redirect
         # to the dashboard. It can appear at any moment during this wait, so we
@@ -723,6 +756,86 @@ class VfsBot(ABC):
         page.wait_for_timeout(2000)
         self._start_new_booking(page)
         self._check_slots(page)
+
+    def _verify_otp(self, page, email_id: str, password: str,
+                    since_epoch: float) -> None:
+        """
+        Completes the OTP step on routes flagged "otp": true.
+
+        Waits for the OTP input to appear (skipping cleanly if the portal went
+        straight to the dashboard), fetches the code from the account's mailbox
+        (src/utils/otp_service.py — same email/password as the VFS login), types
+        it in and submits. Raises OtpVerificationError (retryable — a fresh
+        browser triggers a fresh OTP) on any failure.
+        """
+        from src.utils import otp_service
+
+        # Wait for the OTP field — or the dashboard, if VFS skipped the step
+        # (e.g. a recently-verified session). Captcha can pop here too.
+        otp_input = None
+        waited = 0
+        while waited < 60000:
+            try:
+                if "/dashboard" in (page.url or ""):
+                    logging.info("No OTP step — portal went straight to dashboard.")
+                    return
+            except Exception:
+                pass
+            try:
+                candidate = page.locator(OTP_INPUT_SELECTOR).first
+                if candidate.count() > 0 and candidate.is_visible():
+                    otp_input = candidate
+                    break
+            except Exception:
+                pass
+            VfsBot._dismiss_captcha(page)
+            page.wait_for_timeout(2000)
+            waited += 2000
+        if otp_input is None:
+            VfsBot._take_final_screenshot(page, "otp_field_missing")
+            raise OtpVerificationError(
+                "Route is flagged otp=true but no OTP input appeared within 60s "
+                f"(landed on: {VfsBot._landing_status(page)})."
+            )
+        logging.info("OTP step detected — fetching the code from email.")
+        VfsBot._take_screenshot(page, "otp_step")
+
+        try:
+            code = otp_service.get_otp(email_id, password, since_epoch)
+        except Exception as e:
+            VfsBot._take_final_screenshot(page, "otp_fetch_failed")
+            raise OtpVerificationError(f"Could not obtain the OTP: {e}") from e
+
+        VfsBot._fill_field(page, otp_input, code)
+        page.wait_for_timeout(500)
+        logging.info("OTP entered; submitting...")
+
+        # The confirm button's label isn't pinned down — try the likely ones,
+        # falling back to force/JS clicks (same ladder as Sign In).
+        for label in ("Verify", "Submit", "Confirm", "Sign In", "Continue"):
+            try:
+                btn = page.get_by_role("button", name=label).first
+                if btn.count() == 0 or not btn.is_visible():
+                    continue
+                if not btn.is_enabled():
+                    VfsBot._wait_for_signin_enabled(page, btn, timeout_ms=15000)
+                try:
+                    btn.click(timeout=10000)
+                except Exception:
+                    try:
+                        btn.click(force=True, timeout=10000)
+                    except Exception:
+                        btn.evaluate("el => el.click()")
+                logging.info(f"Submitted OTP via '{label}'.")
+                VfsBot._take_screenshot(page, "otp_submitted")
+                return
+            except Exception:
+                continue
+
+        VfsBot._take_final_screenshot(page, "otp_submit_missing")
+        raise OtpVerificationError(
+            "OTP was entered but no Verify/Submit button could be clicked."
+        )
 
     @staticmethod
     def _start_new_booking(page) -> None:

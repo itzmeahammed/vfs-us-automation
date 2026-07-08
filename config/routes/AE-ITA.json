@@ -1,0 +1,17 @@
+{
+  "description": "UAE -> Italy. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
+  "mode": "slot-check",
+  "otp": true,
+  "slot_check": {
+    "combinations": [
+      { "label": "Abu Dhabi",
+        "centre": "Abu Dhabi", "category": "Short Stay - Business", "sub_category": "" },
+      { "label": "Abu Dhabi",
+        "centre": "Abu Dhabi", "category": "Short Stay (any purpose)", "sub_category": "" },
+      { "label": "Temporary Enrolment Location - Damac Hills",
+        "centre": "Dubai", "category": "Short Stay - Business", "sub_category": "" },
+      { "label": "Temporary Enrolment Location - Damac Hills",
+        "centre": "Dubai", "category": "Temporary Location-Damac Hills", "sub_category": "" }
+    ]
+  }
+}

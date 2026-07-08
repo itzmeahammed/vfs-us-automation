@@ -19,9 +19,13 @@ cd /opt/vfs-malta-slot-checker
 .venv/bin/python -c "from src.utils.config_reader import initialize_config as i; i(); from src.supervisor import _all_routes; print(_all_routes())"
 ```
 
-**Preview hourly rotation schedule**
+**Preview hourly rotation schedule** (rotation is PER ROUTE — each route cycles
+through the accounts whose `routes` list includes it; no list = all routes)
 ```bash
-.venv/bin/python -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import credentials as c; [print(h,'cred'+str(x),e) for h,x,e in c.rotation_schedule()]"
+# One route (recommended):
+.venv/bin/python -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import credentials as c; [print(h,'cred'+str(x),e) for h,x,e in c.rotation_schedule('AE-CHE')]"
+# Every route:
+.venv/bin/python -c "from src.utils.config_reader import initialize_config as i; i(); from src.supervisor import _all_routes; from src.utils import credentials as c; [print(f'{s}-{d}:', *[f'{h}={e}' for h,x,e in c.rotation_schedule(f'{s}-{d}')[:6]]) for s,d in _all_routes()]"
 ```
 
 ---

@@ -18,6 +18,7 @@ DESTINATION_FLAGS = {
     "DNK": "🇩🇰", "DK": "🇩🇰",       # Denmark
     "HUN": "🇭🇺", "HU": "🇭🇺",       # Hungary
     "CZE": "🇨🇿", "CZ": "🇨🇿",       # Czech Republic
+    "ITA": "🇮🇹", "IT": "🇮🇹",       # Italy
 }
 
 # Destination code -> friendly country name, inserted into each label so the
@@ -30,6 +31,7 @@ DESTINATION_NAMES = {
     "DNK": "Denmark", "DK": "Denmark",
     "HUN": "Hungary", "HU": "Hungary",
     "CZE": "Czech Republic", "CZ": "Czech Republic",
+    "ITA": "Italy", "IT": "Italy",
 }
 
 
@@ -142,7 +144,12 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
     Returns:
         The formatted summary string (always non-empty).
     """
-    lines = ["📋 VFS Slot-Check Summary", f"🕐 {timestamp} · 👤 {account}", ""]
+    header = f"🕐 {timestamp}"
+    if account:
+        # Legacy single-account header; with per-route rotation the account is
+        # shown on each route's own line instead.
+        header += f" · 👤 {account}"
+    lines = ["📋 VFS Slot-Check Summary", header, ""]
     counts = {"OK": 0, "FAILED": 0, "STOPPED": 0, "GEO": 0, "SKIPPED": 0,
               "LOCKED": 0, "RESTRICTED": 0}
     total_slots = 0
@@ -192,7 +199,9 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
             head += (f"RESTRICTED — {_short(o['error'])}" if o.get("error")
                      else "RESTRICTED — access restricted, skipped this run")
         elif status == "SKIPPED":
-            head += "SKIPPED — not registered here"
+            # Skips carry their reason: email not registered on this portal, or
+            # no [credN] 'routes' list covers this route at all.
+            head += f"SKIPPED — {_short(o.get('error') or 'not registered here')}"
         else:
             head += status
 
@@ -207,6 +216,10 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
                 disabled_names.append(name)
         if disabled_names:
             head += " | " + " | ".join(f"{n}: disabled" for n in disabled_names)
+
+        # Which account this route used (per-route rotation) — masked email.
+        if o.get("account"):
+            head += f" · 👤 {o['account']}"
 
         lines.append(head)
 
