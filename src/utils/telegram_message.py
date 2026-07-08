@@ -19,6 +19,7 @@ DESTINATION_FLAGS = {
     "HUN": "🇭🇺", "HU": "🇭🇺",       # Hungary
     "CZE": "🇨🇿", "CZ": "🇨🇿",       # Czech Republic
     "ITA": "🇮🇹", "IT": "🇮🇹",       # Italy
+    "FRA": "🇫🇷", "FR": "🇫🇷",       # France
 }
 
 # Destination code -> friendly country name, inserted into each label so the
@@ -32,6 +33,7 @@ DESTINATION_NAMES = {
     "HUN": "Hungary", "HU": "Hungary",
     "CZE": "Czech Republic", "CZ": "Czech Republic",
     "ITA": "Italy", "IT": "Italy",
+    "FRA": "France", "FR": "France",
 }
 
 
