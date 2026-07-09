@@ -113,6 +113,24 @@ def _eligible(pool: list, route: str) -> list:
     return [c for c in pool if not c[2] or key in c[2]]
 
 
+def _available(pool: list, route: str) -> list:
+    """
+    The subset of `_eligible` that is NOT currently benched by the circuit
+    breaker (see src/utils/account_health.py). This is what selection rotates
+    through — a struggling/blocked account is skipped until its cooldown clears.
+    """
+    from src.utils import account_health  # lazy import to avoid a cycle
+    return [c for c in _eligible(pool, route) if not account_health.is_benched(c[0])]
+
+
+def eligible_emails(route: str = None) -> list:
+    """
+    Emails registered for `route`, IGNORING cooldown — lets a caller tell
+    'no account registered' apart from 'all eligible accounts are benched'.
+    """
+    return [c[0] for c in _eligible(_load_pool(), route)]
+
+
 def get_credential(hour: int, route: str = None) -> tuple:
     """
     Returns the (email, password) to use for the given clock `hour` (0-23) on
@@ -130,17 +148,24 @@ def get_credential(hour: int, route: str = None) -> tuple:
     pool = _load_pool()
 
     if pool:
-        eligible = _eligible(pool, route)
-        if not eligible:
-            logging.warning(
-                f"No credential is registered for route '{route}' "
-                f"(checked {len(pool)} account(s) in {CREDENTIALS_FILE})."
-            )
+        available = _available(pool, route)
+        if not available:
+            eligible = _eligible(pool, route)
+            if eligible:
+                logging.warning(
+                    f"All {len(eligible)} account(s) for '{route}' are in cooldown "
+                    f"(circuit breaker) — none available this run."
+                )
+            else:
+                logging.warning(
+                    f"No credential is registered for route '{route}' "
+                    f"(checked {len(pool)} account(s) in {CREDENTIALS_FILE})."
+                )
             return None, None
-        idx = (hour - START_HOUR) % len(eligible)
-        email, pwd, _routes = eligible[idx]
+        idx = (hour - START_HOUR) % len(available)
+        email, pwd, _routes = available[idx]
         logging.info(
-            f"Using credential {idx + 1}/{len(eligible)} eligible for "
+            f"Using credential {idx + 1}/{len(available)} available for "
             f"{route or 'any route'} at hour {hour:02d}: {_mask(email)}"
         )
         return email, pwd
@@ -148,6 +173,10 @@ def get_credential(hour: int, route: str = None) -> tuple:
     # Fallback: the original single account (eligible for every route).
     email = get_config_value("vfs-credential", "email")
     pwd = get_config_value("vfs-credential", "password")
+    from src.utils import account_health
+    if email and account_health.is_benched(email):
+        logging.warning(f"Single account {_mask(email)} is in cooldown — skipping this run.")
+        return None, None
     logging.info(f"Using single [vfs-credential] account: {_mask(email or '')}")
     return email, pwd
 
@@ -160,11 +189,11 @@ def active_account(hour: int, route: str = None) -> str:
     """
     pool = _load_pool()
     if pool:
-        eligible = _eligible(pool, route)
-        if not eligible:
+        available = _available(pool, route)
+        if not available:
             return ""
-        idx = (hour - START_HOUR) % len(eligible)
-        return f"{_mask(eligible[idx][0])} (cred {idx + 1}/{len(eligible)})"
+        idx = (hour - START_HOUR) % len(available)
+        return f"{_mask(available[idx][0])} (cred {idx + 1}/{len(available)})"
     email = get_config_value("vfs-credential", "email") or ""
     return _mask(email)
 

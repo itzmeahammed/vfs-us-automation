@@ -122,7 +122,7 @@ def slot_report(source_code: str, dest_code: str, results: list, login_url: str 
 # Per-route status -> icon for the run summary.
 _STATUS_ICON = {
     "OK": "✅", "FAILED": "❌", "STOPPED": "🔑", "GEO": "⛔", "SKIPPED": "⏭️",
-    "LOCKED": "🔒", "RESTRICTED": "🚫",
+    "LOCKED": "🔒", "RESTRICTED": "🚫", "BLOCKED": "🔴", "PAUSED": "💤",
 }
 
 
@@ -153,7 +153,7 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
         header += f" · 👤 {account}"
     lines = ["📋 VFS Slot-Check Summary", header, ""]
     counts = {"OK": 0, "FAILED": 0, "STOPPED": 0, "GEO": 0, "SKIPPED": 0,
-              "LOCKED": 0, "RESTRICTED": 0}
+              "LOCKED": 0, "RESTRICTED": 0, "BLOCKED": 0, "PAUSED": 0}
     total_slots = 0
 
     for o in outcomes:
@@ -200,6 +200,14 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
             # run only and is tried again fresh on the next scheduled run.
             head += (f"RESTRICTED — {_short(o['error'])}" if o.get("error")
                      else "RESTRICTED — access restricted, skipped this run")
+        elif status == "BLOCKED":
+            # Account disabled until a human fixes it (wrong creds / 429002) and
+            # runs: python -m src.utils.account_health clear <email>
+            head += f"BLOCKED — {_short(o['error'])}" if o.get("error") else "BLOCKED — account disabled"
+        elif status == "PAUSED":
+            # All eligible accounts for this route are cooling down (protecting
+            # them) — nothing run this tick.
+            head += f"PAUSED — {_short(o.get('error') or 'all accounts cooling down')}"
         elif status == "SKIPPED":
             # Skips carry their reason: email not registered on this portal, or
             # no [credN] 'routes' list covers this route at all.
@@ -239,6 +247,10 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
         roll += f" · 🔒 {counts['LOCKED']}"
     if counts["RESTRICTED"]:
         roll += f" · 🚫 {counts['RESTRICTED']}"
+    if counts["BLOCKED"]:
+        roll += f" · 🔴 {counts['BLOCKED']}"
+    if counts["PAUSED"]:
+        roll += f" · 💤 {counts['PAUSED']}"
     if counts["SKIPPED"]:
         roll += f" · ⏭️ {counts['SKIPPED']}"
     roll += f"  |  🎫 {total_slots} slot(s)"

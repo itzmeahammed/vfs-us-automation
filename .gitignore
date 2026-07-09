@@ -14,6 +14,9 @@ task_runner.log
 task_stdout.log
 task_stderr.log
 *_err.log
+# Per-account health / cooldown state (circuit breaker)
+account_health.json
+account_health.json.tmp
 
 # Local secret overrides (see VFS_BOT_CONFIG_PATH in the README)
 config/config.local.ini

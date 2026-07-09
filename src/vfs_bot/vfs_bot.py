@@ -151,6 +151,19 @@ class AccessRestrictedError(Exception):
     """
 
 
+class AccountBlockedError(Exception):
+    """
+    VFS served its 'Access Denied Due to Unauthorised Activity (429002)' page —
+    the account has been blocked, typically after repeated wrong-credential
+    attempts. It needs a HUMAN fix (correct the password / unlock the account),
+    not a timed cooldown.
+
+    NOT retryable. The supervisor DISABLES the account indefinitely (skipped by
+    selection) and alerts, until someone fixes it and flags it healthy
+    (python -m src.utils.account_health clear <email>).
+    """
+
+
 class VfsBot(ABC):
     """
     Slot-check bot for the VFS Malta portal.
@@ -169,6 +182,17 @@ class VfsBot(ABC):
         # Populated by the slot-check flow with the (label, message) pairs for
         # every combination checked, so the supervisor can build a run summary.
         self.slot_results = []
+        # The account actually used this run (set once selected), so the
+        # supervisor can update that account's health after the run.
+        self.active_email = None
+        # Optional credential injected by the supervisor (which selects it once,
+        # skipping benched accounts). When set, the bot uses it instead of
+        # selecting its own — keeps selection in ONE place.
+        self._cred_override = None
+
+    def set_credential(self, email: str, password: str) -> None:
+        """Supervisor-provided credential to use for this run (overrides self-select)."""
+        self._cred_override = (email, password)
 
     def run(self) -> bool:
         """
@@ -207,17 +231,22 @@ class VfsBot(ABC):
             )
             return False
 
-        # Pick the credential for this hour AND this route (each route rotates
-        # through the accounts registered on it; see src/utils/credentials.py).
-        from src.utils import credentials
-        email_id, password = credentials.get_credential(
-            datetime.now().hour, url_key.upper()
-        )
+        # Use the supervisor-injected credential if present (it selects once,
+        # skipping benched accounts); else self-select for this hour AND route
+        # (each route rotates through its registered accounts — see credentials.py).
+        if self._cred_override:
+            email_id, password = self._cred_override
+        else:
+            from src.utils import credentials
+            email_id, password = credentials.get_credential(
+                datetime.now().hour, url_key.upper()
+            )
         if not email_id or not password:
             raise LoginError(
                 f"No credential is registered for route '{url_key.upper()}' — "
                 "add it to a [credN] 'routes' list in config/credentials.local.ini."
             )
+        self.active_email = email_id
 
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
@@ -285,7 +314,7 @@ class VfsBot(ABC):
             try:
                 self.login(page, email_id, password)
             except (GeoBlockedError, EmailNotRegisteredError, InvalidCredentialsError,
-                    AccountLockedError, AccessRestrictedError):
+                    AccountLockedError, AccessRestrictedError, AccountBlockedError):
                 # Non-retryable & expected: geo-block (same IP won't help), the
                 # email isn't registered here (skip this URL), wrong password (same
                 # creds fail identically), account locked (429202 cooldown), or
@@ -573,12 +602,7 @@ class VfsBot(ABC):
         except Exception as e:
             # The form may be absent because VFS served a block page in its
             # place — classify those before falling back to a retryable error.
-            if VfsBot._access_restricted(page):
-                VfsBot._take_final_screenshot(page, "access_restricted")
-                raise AccessRestrictedError(VfsBot._landing_status(page)) from e
-            if VfsBot._account_locked(page):
-                VfsBot._take_final_screenshot(page, "account_locked")
-                raise AccountLockedError(VfsBot._landing_status(page)) from e
+            VfsBot._raise_if_blocked(page, e)
             raise LoginFormNotReadyError(
                 "Login form never appeared within 120s (Cloudflare spinner / 403 / "
                 f"slow load): {e}"
@@ -742,10 +766,7 @@ class VfsBot(ABC):
                     "Login page: email or password is incorrect — stopping this "
                     "run for this account (no retries)."
                 )
-            if VfsBot._account_locked(page):
-                raise AccountLockedError(VfsBot._landing_status(page))
-            if VfsBot._access_restricted(page):
-                raise AccessRestrictedError(VfsBot._landing_status(page))
+            VfsBot._raise_if_blocked(page)
             # Not a known state — report what we ACTUALLY landed on, not a guess.
             raise DashboardNotReachedError(
                 f"Did not reach dashboard — landed on: {VfsBot._landing_status(page)} "
@@ -781,6 +802,11 @@ class VfsBot(ABC):
                     return
             except Exception:
                 pass
+            # The OTP page can be replaced by an account-block page (429002 denied
+            # / 429202 locked / 429001 restricted). Classify it here — so it's
+            # handled correctly instead of masquerading as an OTP timeout — and
+            # bail immediately rather than waiting the full 60s.
+            VfsBot._raise_if_blocked(page)
             try:
                 candidate = page.locator(OTP_INPUT_SELECTOR).first
                 if candidate.count() > 0 and candidate.is_visible():
@@ -792,6 +818,8 @@ class VfsBot(ABC):
             page.wait_for_timeout(2000)
             waited += 2000
         if otp_input is None:
+            # One last classification pass before the generic OTP-timeout error.
+            VfsBot._raise_if_blocked(page)
             VfsBot._take_final_screenshot(page, "otp_field_missing")
             raise OtpVerificationError(
                 "Route is flagged otp=true but no OTP input appeared within 60s "
@@ -1177,16 +1205,9 @@ class VfsBot(ABC):
                     "VFS 'Permission Issues (403203)' — IP outside permitted "
                     "location or rate-limited. Not retrying."
                 )
-            # Stop early if VFS locked the account (429202) — a cooldown page, not
-            # a slow dashboard. Retrying won't help; report the exact message.
-            if VfsBot._account_locked(page):
-                VfsBot._take_final_screenshot(page, "account_locked")
-                raise AccountLockedError(VfsBot._landing_status(page))
-            # Stop early if VFS restricted access for this route+account — the
-            # supervisor backs the pair off and moves to the next route.
-            if VfsBot._access_restricted(page):
-                VfsBot._take_final_screenshot(page, "access_restricted")
-                raise AccessRestrictedError(VfsBot._landing_status(page))
+            # Stop early on any account/route block page (429002 denied / 429202
+            # locked / 429001 restricted) — a block, not a slow dashboard.
+            VfsBot._raise_if_blocked(page)
             # Stop early if this email isn't registered for this site — no point
             # waiting; the caller skips this URL for this account.
             if VfsBot._email_not_registered(page):
@@ -1279,6 +1300,44 @@ class VfsBot(ABC):
         except Exception:
             return False
         return "access restricted" in body
+
+    @staticmethod
+    def _access_denied(page) -> bool:
+        """
+        True if VFS is showing its 'Access Denied Due to Unauthorised Activity
+        (429002)' block page — the account is blocked (usually after repeated
+        wrong-credential attempts) and needs a manual fix. Detected by text.
+        """
+        try:
+            body = (page.evaluate(
+                "() => document.body ? document.body.innerText : ''"
+            ) or "").lower()
+        except Exception:
+            return False
+        return "429002" in body or "access denied due to unauthorised activity" in body
+
+    @staticmethod
+    def _raise_if_blocked(page, cause: Exception = None) -> None:
+        """
+        If the page is a known VFS account/route block page, raise the SPECIFIC
+        error so it's classified (and the account handled) correctly:
+
+          429002 'Access Denied ... Unauthorised Activity' -> AccountBlockedError
+                                                               (manual fix needed)
+          429202 'Account Locked'                          -> AccountLockedError
+          429001 / 'Access Restricted'                     -> AccessRestrictedError
+
+        No-op if the page isn't a block page. `cause` (if given) is chained.
+        """
+        if VfsBot._access_denied(page):
+            VfsBot._take_final_screenshot(page, "access_denied")
+            raise AccountBlockedError(VfsBot._landing_status(page)) from cause
+        if VfsBot._account_locked(page):
+            VfsBot._take_final_screenshot(page, "account_locked")
+            raise AccountLockedError(VfsBot._landing_status(page)) from cause
+        if VfsBot._access_restricted(page):
+            VfsBot._take_final_screenshot(page, "access_restricted")
+            raise AccessRestrictedError(VfsBot._landing_status(page)) from cause
 
     @staticmethod
     def _account_locked(page) -> bool:

@@ -28,7 +28,7 @@ import sys
 import time
 
 from src.main import initialize_logger
-from src.utils import telegram, telegram_message
+from src.utils import account_health, credentials, telegram, telegram_message
 from src.utils.chrome_launcher import ChromeProcess
 from src.utils.config_reader import (
     get_config_section,
@@ -38,6 +38,7 @@ from src.utils.config_reader import (
 )
 from src.vfs_bot.vfs_bot import (
     AccessRestrictedError,
+    AccountBlockedError,
     AccountLockedError,
     EmailNotRegisteredError,
     GeoBlockedError,
@@ -46,11 +47,18 @@ from src.vfs_bot.vfs_bot import (
 )
 from src.vfs_bot.vfs_bot_factory import UnsupportedCountryError, get_vfs_bot
 
-# Retry policy. The EC2 box is slow, so individual UI actions occasionally time
-# out; relaunching a fresh browser usually succeeds. 3 attempts balances
-# resilience against total run time (each attempt can take a few minutes).
-MAX_ATTEMPTS = 3
+# In-run browser relaunches on failure. Overridable via [account_safety]
+# max_attempts (default 2) — fewer relaunches is gentler on accounts.
+DEFAULT_MAX_ATTEMPTS = 2
 BACKOFF_SECONDS = 15
+
+
+def _max_attempts() -> int:
+    try:
+        return max(1, int(str(get_config_value(
+            "account_safety", "max_attempts", str(DEFAULT_MAX_ATTEMPTS))).strip()))
+    except (ValueError, TypeError):
+        return DEFAULT_MAX_ATTEMPTS
 CDP_PORT = 9222
 
 
@@ -58,13 +66,15 @@ def _vfs_url(source: str, dest: str) -> str:
     return get_config_value("vfs-url", f"{source.upper()}-{dest.upper()}")
 
 
-def run_once_with_fresh_browser(source: str, dest: str) -> list:
+def run_once_with_fresh_browser(source: str, dest: str,
+                                email: str = None, password: str = None) -> list:
     """
     One attempt: launch a fresh Chrome, run the flow, always kill Chrome after.
 
-    Returns the bot's slot_results (list of (label, message) pairs) if the slot
-    check completed. Raises RetryableError (or other exceptions) on failure — the
-    caller decides whether to retry.
+    The supervisor selects the credential once (skipping benched accounts) and
+    injects it here, so selection lives in ONE place. Returns the bot's
+    slot_results on success; raises on failure — the caller decides whether to
+    retry.
     """
     url = _vfs_url(source, dest)
     # Optional proxy (e.g. an SSH reverse tunnel to your home PC) so VFS sees a
@@ -76,6 +86,8 @@ def run_once_with_fresh_browser(source: str, dest: str) -> list:
         # Point the bot at the Chrome we just launched.
         set_config_value("browser", "cdp_url", chrome.cdp_url)
         bot = get_vfs_bot(source, dest)
+        if email and password:
+            bot.set_credential(email, password)
         if not bot.run():
             # Shouldn't normally happen (run() raises on failure), but treat a
             # bare False as a retryable failed attempt.
@@ -145,87 +157,109 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
         "error": error, "slots": slot_count, "combos": len(slots) - len(disabled),
         "combo_errors": combo_errors, "disabled": disabled,
         "slot_types": slot_types, "account": account,
-        "ok": status in ("OK", "SKIPPED"),
+        # OK/SKIPPED/PAUSED are not failures for the exit code; PAUSED means we
+        # deliberately held off (all accounts cooling) — not an error.
+        "ok": status in ("OK", "SKIPPED", "PAUSED"),
     }
 
 
 def run(source: str = "AE", dest: str = "MT") -> dict:
     """
-    Runs up to MAX_ATTEMPTS attempts with a fresh browser each time.
+    Runs up to max_attempts attempts with a fresh browser each time, using ONE
+    account selected up front (skipping benched/disabled accounts), and updates
+    that account's health based on the outcome (circuit breaker).
 
-    Returns a per-route outcome dict (see _outcome) so the caller can both decide
-    the exit code (via outcome['ok']) and build the run summary.
+    Returns a per-route outcome dict (see _outcome).
     """
     from datetime import datetime
-    from src.utils import credentials
 
-    # Per-route credential check BEFORE launching a browser: each route rotates
-    # through the accounts registered on it ([credN] 'routes' lists). A route
-    # no account covers is skipped cleanly with a clear reason.
     route = f"{source.upper()}-{dest.upper()}"
     hour = datetime.now().hour
-    account = credentials.active_account(hour, route)
-    if not account:
+
+    # Select the credential ONCE, up front. get_credential skips benched/disabled
+    # accounts, so a struggling/blocked account is never picked.
+    email, password = credentials.get_credential(hour, route)
+    if not email or not password:
+        # Tell 'no account registered' apart from 'all eligible are benched'.
+        if credentials.eligible_emails(route):
+            reason = "all eligible accounts are in cooldown (protecting them)"
+            logging.warning(f"{route}: {reason} — pausing this run.")
+            return _outcome(source, dest, "PAUSED", 0, error=reason)
         reason = "no registered credential for this route"
         logging.warning(f"{route}: {reason} — skipping.")
         return _outcome(source, dest, "SKIPPED", 0, error=reason)
+    account = credentials.active_account(hour, route)
 
+    max_attempts = _max_attempts()
     last_error = None
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        logging.info(f"=== Attempt {attempt}/{MAX_ATTEMPTS} ===")
+    for attempt in range(1, max_attempts + 1):
+        logging.info(f"=== Attempt {attempt}/{max_attempts} ===")
         try:
-            slots = run_once_with_fresh_browser(source, dest)
+            slots = run_once_with_fresh_browser(source, dest, email, password)
             logging.info(f"Success on attempt {attempt}.")
+            account_health.record_success(email)  # healthy → clear any strikes
             return _outcome(source, dest, "OK", attempt, slot_results=slots,
                             account=account)
         except EmailNotRegisteredError as e:
-            # Expected, not an error: this account isn't registered for this URL.
-            # Skip it silently (no retries, no Telegram alert) and move on.
+            # Neutral: the account simply isn't registered on THIS portal — not a
+            # success and not a failure, so leave its health untouched. Skip.
             logging.info(f"{source}-{dest}: account not registered here — skipping. ({e})")
             return _outcome(source, dest, "SKIPPED", attempt, error=str(e),
                             account=account)
         except GeoBlockedError as e:
-            # Non-retryable: VFS geo-blocked the IP (403203). Retrying uses the
-            # same IP and fails identically — stop now, no further attempts.
+            # IP/environment, not the account — do NOT touch account health.
             logging.error(f"Geo-blocked for {source}-{dest}: {e}")
-            _alert_failure(source, dest, f"Geo-blocked (403203): {e}", attempts=attempt)
+            _alert_failure(source, dest, f"Geo-blocked (403203): {e}",
+                           attempts=attempt, account=account)
             return _outcome(source, dest, "GEO", attempt, error=str(e),
                             account=account)
-        except InvalidCredentialsError as e:
-            # Non-retryable: wrong email/password fails identically on retry.
-            # Stop this route immediately (no further attempts) and alert on the
-            # error channel. Other routes may rotate to different accounts, so
-            # they still run.
-            logging.error(f"Invalid credentials for {source}-{dest}: {e}")
-            _alert_failure(source, dest, f"Invalid credentials: {e}", attempts=attempt)
-            return _outcome(source, dest, "STOPPED", attempt, error=str(e),
-                            account=account)
-        except AccessRestrictedError as e:
-            # Non-retryable WITHIN this run: VFS restricted access on this route.
-            # Skip the route immediately (no browser relaunches — hammering it
-            # prolongs the restriction) and move on to the next route with the
-            # same account. The route is tried again fresh on the NEXT cron tick
-            # (e.g. hit at :29 -> retried at :59) — nothing is persisted.
-            logging.error(f"Access restricted for {source}-{dest}: {e}")
+        except (InvalidCredentialsError, AccountBlockedError) as e:
+            # Needs a HUMAN fix, not a timed cooldown: wrong password, or VFS's
+            # 'Access Denied ... Unauthorised Activity (429002)'. DISABLE the
+            # account indefinitely so we stop hitting it (repeated wrong logins
+            # are exactly what triggers the 429002 block), until it's fixed and
+            # flagged healthy: python -m src.utils.account_health clear <email>
+            kind = "Invalid credentials" if isinstance(e, InvalidCredentialsError) \
+                else "Access denied — unauthorised activity (429002)"
+            logging.error(f"{kind} for {source}-{dest} [{account}]: {e}")
+            account_health.disable(email, kind)
             _alert_failure(
                 source, dest,
-                f"Access restricted: {e} — skipping this route for this run; "
-                f"it will be tried again on the next scheduled run.",
-                attempts=attempt,
+                f"{kind}: {e}\nAccount {account} DISABLED until fixed & flagged "
+                f"healthy (python -m src.utils.account_health clear <email>).",
+                attempts=attempt, account=account,
+            )
+            return _outcome(source, dest, "BLOCKED", attempt, error=f"{kind}: {e}",
+                            account=account)
+        except AccessRestrictedError as e:
+            # 429001: bench this account for the hard cooldown so we stop hitting
+            # it (and the block clears on its own). Other routes rotate onward.
+            hrs = account_health.hard_cooldown_hours()
+            logging.error(f"Access restricted for {source}-{dest} [{account}]: {e}")
+            account_health.bench(email, hrs, "restricted-429001")
+            _alert_failure(
+                source, dest,
+                f"Access restricted (429001): {e}\nAccount {account} benched {hrs}h.",
+                attempts=attempt, account=account,
             )
             return _outcome(source, dest, "RESTRICTED", attempt, error=str(e),
                             account=account)
         except AccountLockedError as e:
-            # Non-retryable: VFS locked the account (429202) for too many requests;
-            # it resets after a cooldown (~2h). Report the exact on-page message.
-            logging.error(f"Account locked for {source}-{dest}: {e}")
-            _alert_failure(source, dest, f"Account locked (429202): {e}", attempts=attempt)
+            # 429202: bench this account for the hard cooldown (~its reset window).
+            hrs = account_health.hard_cooldown_hours()
+            logging.error(f"Account locked for {source}-{dest} [{account}]: {e}")
+            account_health.bench(email, hrs, "locked-429202")
+            _alert_failure(
+                source, dest,
+                f"Account locked (429202): {e}\nAccount {account} benched {hrs}h.",
+                attempts=attempt, account=account,
+            )
             return _outcome(source, dest, "LOCKED", attempt, error=str(e),
                             account=account)
         except UnsupportedCountryError as e:
-            # Not retryable — a config problem, not a transient failure.
+            # Config problem, not the account's fault.
             logging.error(f"Unsupported route {source}-{dest}: {e}")
-            _alert_failure(source, dest, str(e), attempts=attempt)
+            _alert_failure(source, dest, str(e), attempts=attempt, account=account)
             return _outcome(source, dest, "FAILED", attempt, error=str(e),
                             account=account)
         except RetryableError as e:
@@ -235,14 +269,20 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
             last_error = f"{type(e).__name__}: {e}"
             logging.exception(f"Attempt {attempt} failed (unexpected): {last_error}")
 
-        if attempt < MAX_ATTEMPTS:
+        if attempt < max_attempts:
             logging.info(f"Backing off {BACKOFF_SECONDS}s before next attempt...")
             time.sleep(BACKOFF_SECONDS)
 
-    logging.error(f"All {MAX_ATTEMPTS} attempts failed. Last error: {last_error}")
-    _alert_failure(source, dest, last_error, attempts=MAX_ATTEMPTS)
-    return _outcome(source, dest, "FAILED", MAX_ATTEMPTS, error=last_error,
-                    account=account)
+    # All attempts stuck/failed: count a strike; the breaker benches the account
+    # after enough consecutive strikes so we stop hammering it into a block.
+    logging.error(f"All {max_attempts} attempts failed. Last error: {last_error}")
+    benched = account_health.record_failure(email, last_error or "stuck")
+    note = (f"\nAccount {account} benched {account_health.soft_cooldown_hours()}h "
+            "(too many consecutive failures).") if benched else ""
+    _alert_failure(source, dest, (last_error or "unknown error") + note,
+                   attempts=max_attempts, account=account)
+    return _outcome(source, dest, "FAILED", max_attempts,
+                    error=(last_error or "unknown error"), account=account)
 
 
 def _all_routes() -> list:
@@ -302,7 +342,7 @@ def run_all_routes() -> bool:
             # run() handles its own errors, but guard so one route can never
             # abort the whole loop.
             logging.exception(f"Route {source}-{dest} crashed unexpectedly: {e}")
-            outcome = _outcome(source, dest, "FAILED", MAX_ATTEMPTS, error=str(e))
+            outcome = _outcome(source, dest, "FAILED", _max_attempts(), error=str(e))
         outcomes.append(outcome)
         logging.info(f"Route {source}-{dest} {outcome['status']}.")
 
@@ -335,22 +375,23 @@ def _send_run_summary(outcomes: list) -> None:
         logging.warning("Telegram summary channel not configured — run summary logged only.")
 
 
-def _alert_failure(source: str, dest: str, error: str, attempts: int) -> None:
+def _alert_failure(source: str, dest: str, error: str, attempts: int,
+                   account: str = None) -> None:
     """Sends a Telegram alert that the run failed (best-effort).
 
-    Includes the account (email) that was used for this hour, so you know which
-    credential failed. Message layout lives in src/utils/telegram_message.py.
+    `account` is the masked label of the account that was used (passed in by the
+    caller — it must NOT be recomputed here, because by the time we alert the
+    account may already have been benched/disabled, which would change what a
+    fresh lookup returns). Message layout lives in src/utils/telegram_message.py.
     """
     login_url = _vfs_url(source, dest) or ""
-    # The account in use this hour ON THIS ROUTE — the same one the bot tried
-    # (per-route rotation is by clock hour, so recomputing gives the same email).
-    from datetime import datetime
-    from src.utils import credentials
-    email, _ = credentials.get_credential(
-        datetime.now().hour, f"{source.upper()}-{dest.upper()}"
-    )
+    if account is None:
+        from datetime import datetime
+        account = credentials.active_account(
+            datetime.now().hour, f"{source.upper()}-{dest.upper()}"
+        )
     msg = telegram_message.failure_alert(
-        source, dest, error, attempts, login_url, email or ""
+        source, dest, error, attempts, login_url, account or ""
     )
     logging.error(msg)
     if telegram.is_error_configured():

@@ -89,6 +89,29 @@ Stop-ScheduledTask    -TaskName "VFS Slot Checker"     # kill an in-progress run
 Unregister-ScheduledTask -TaskName "VFS Slot Checker" -Confirm:$false   # remove it
 ```
 
+## Account health / circuit breaker
+
+Accounts that get blocked or keep failing are automatically **benched** (skipped
+by selection) to protect them from a VFS ban. Two kinds:
+- **Cooldown** (auto-clears) — 429001 restricted / 429202 locked, or too many
+  consecutive stuck runs. Benched for `hard_cooldown_hours` / `soft_cooldown_hours`.
+- **Disabled** (needs YOU) — wrong credentials or 429002 "Access Denied". Stays
+  benched until you fix the account and flag it healthy.
+
+```powershell
+# See every benched/disabled account and why:
+& .venv\Scripts\python.exe -m src.utils.account_health
+
+# After fixing an account (e.g. corrected its password), flag it healthy:
+& .venv\Scripts\python.exe -m src.utils.account_health clear <email@travnook.com>
+
+# Clear ALL health records (re-enable everything):
+& .venv\Scripts\python.exe -m src.utils.account_health clear-all
+```
+
+Tuning lives in `config.ini` under `[account_safety]` (`hard_cooldown_hours`,
+`soft_cooldown_hours`, `fail_threshold`, `max_attempts`).
+
 ## Log maintenance
 
 `app.log` grows over time — trim it occasionally:
@@ -110,3 +133,22 @@ Clear-Content .\app.log                  # empty it (keep the file)
 - Wrong email/password **stops that run immediately** (no retries) and alerts the
   summary chat. An unregistered email just **skips** that portal (no alert).
 ```
+
+
+Open a normal PowerShell (not VS Code's): press Win, type PowerShell, Enter. Then:
+
+
+cd "c:\Users\ASRAB\Documents\VFS\vfs-malta-slot-checker"
+
+# Is it scheduled? Last result (0 = success) and next run time:
+Get-ScheduledTaskInfo -TaskName "VFS Slot Checker" | Format-List LastRunTime, LastTaskResult, NextRunTime
+
+# Per-tick history (fired / skipped / exit code):
+Get-Content .\task_runner.log -Tail 20
+
+# Last run's detail:
+Get-Content .\app.log -Tail 40
+Optional — fire one run right now to confirm end-to-end (a Chrome window will open ~2 min):
+
+
+Start-ScheduledTask -TaskName "VFS Slot Checker"
