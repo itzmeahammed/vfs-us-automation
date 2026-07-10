@@ -28,7 +28,7 @@ import sys
 import time
 
 from src.main import initialize_logger
-from src.utils import account_health, credentials, telegram, telegram_message
+from src.utils import account_health, credentials, proxy_pool, telegram, telegram_message
 from src.utils.chrome_launcher import ChromeProcess
 from src.utils.config_reader import (
     get_config_section,
@@ -67,19 +67,18 @@ def _vfs_url(source: str, dest: str) -> str:
 
 
 def run_once_with_fresh_browser(source: str, dest: str,
-                                email: str = None, password: str = None) -> list:
+                                email: str = None, password: str = None,
+                                proxy: str = None) -> list:
     """
     One attempt: launch a fresh Chrome, run the flow, always kill Chrome after.
 
-    The supervisor selects the credential once (skipping benched accounts) and
-    injects it here, so selection lives in ONE place. Returns the bot's
+    The supervisor selects the credential AND the proxy once per route (see
+    run()) and injects them here, so selection lives in ONE place. `proxy` is
+    the egress for this route's Chrome (None = direct). Returns the bot's
     slot_results on success; raises on failure — the caller decides whether to
     retry.
     """
     url = _vfs_url(source, dest)
-    # Optional proxy (e.g. an SSH reverse tunnel to your home PC) so VFS sees a
-    # residential IP instead of the EC2 datacenter IP. Off unless configured.
-    proxy = get_config_value("browser", "proxy", "") or None
     chrome = ChromeProcess(port=CDP_PORT, url=url, proxy=proxy)
     try:
         chrome.start()
@@ -114,7 +113,7 @@ def _combo_errors(slot_results: list) -> list:
 
 def _outcome(source: str, dest: str, status: str, attempts: int,
              slot_results: list = None, error: str = None,
-             account: str = "") -> dict:
+             account: str = "", proxy: str = "") -> dict:
     """
     Builds a per-route outcome record for the run summary.
 
@@ -156,18 +155,22 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
         "source": source, "dest": dest, "status": status, "attempts": attempts,
         "error": error, "slots": slot_count, "combos": len(slots) - len(disabled),
         "combo_errors": combo_errors, "disabled": disabled,
-        "slot_types": slot_types, "account": account,
+        "slot_types": slot_types, "account": account, "proxy": proxy,
         # OK/SKIPPED/PAUSED are not failures for the exit code; PAUSED means we
         # deliberately held off (all accounts cooling) — not an error.
         "ok": status in ("OK", "SKIPPED", "PAUSED"),
     }
 
 
-def run(source: str = "AE", dest: str = "MT") -> dict:
+def run(source: str = "AE", dest: str = "MT", route_index: int = 0) -> dict:
     """
     Runs up to max_attempts attempts with a fresh browser each time, using ONE
     account selected up front (skipping benched/disabled accounts), and updates
     that account's health based on the outcome (circuit breaker).
+
+    `route_index` is this route's position in the run (0-based) — it drives the
+    per-route proxy rotation (route 1 -> proxy 1, route 2 -> proxy 2, ...), so
+    each route's fresh Chrome egresses from a different IP.
 
     Returns a per-route outcome dict (see _outcome).
     """
@@ -190,29 +193,35 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
         return _outcome(source, dest, "SKIPPED", 0, error=reason)
     account = credentials.active_account(hour, route)
 
+    # Select this (account, route)'s dedicated proxy ONCE — one IP for one account
+    # on one route, so the NEXT route egresses from a different IP. Probed for a
+    # live exit (scans on to the next line if empty). None = direct connection.
+    proxy, exit_ip = proxy_pool.pick_for_run(route, email=email)
+    proxy_label = proxy_pool.label(proxy) if proxy else ""
+
     max_attempts = _max_attempts()
     last_error = None
     for attempt in range(1, max_attempts + 1):
         logging.info(f"=== Attempt {attempt}/{max_attempts} ===")
         try:
-            slots = run_once_with_fresh_browser(source, dest, email, password)
+            slots = run_once_with_fresh_browser(source, dest, email, password, proxy)
             logging.info(f"Success on attempt {attempt}.")
             account_health.record_success(email)  # healthy → clear any strikes
             return _outcome(source, dest, "OK", attempt, slot_results=slots,
-                            account=account)
+                            account=account, proxy=proxy_label)
         except EmailNotRegisteredError as e:
             # Neutral: the account simply isn't registered on THIS portal — not a
             # success and not a failure, so leave its health untouched. Skip.
             logging.info(f"{source}-{dest}: account not registered here — skipping. ({e})")
             return _outcome(source, dest, "SKIPPED", attempt, error=str(e),
-                            account=account)
+                            account=account, proxy=proxy_label)
         except GeoBlockedError as e:
             # IP/environment, not the account — do NOT touch account health.
             logging.error(f"Geo-blocked for {source}-{dest}: {e}")
             _alert_failure(source, dest, f"Geo-blocked (403203): {e}",
                            attempts=attempt, account=account)
             return _outcome(source, dest, "GEO", attempt, error=str(e),
-                            account=account)
+                            account=account, proxy=proxy_label)
         except (InvalidCredentialsError, AccountBlockedError) as e:
             # Needs a HUMAN fix, not a timed cooldown: wrong password, or VFS's
             # 'Access Denied ... Unauthorised Activity (429002)'. DISABLE the
@@ -230,7 +239,7 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
                 attempts=attempt, account=account,
             )
             return _outcome(source, dest, "BLOCKED", attempt, error=f"{kind}: {e}",
-                            account=account)
+                            account=account, proxy=proxy_label)
         except AccessRestrictedError as e:
             # 429001: bench this account for the hard cooldown so we stop hitting
             # it (and the block clears on its own). Other routes rotate onward.
@@ -243,7 +252,7 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
                 attempts=attempt, account=account,
             )
             return _outcome(source, dest, "RESTRICTED", attempt, error=str(e),
-                            account=account)
+                            account=account, proxy=proxy_label)
         except AccountLockedError as e:
             # 429202: bench this account for the hard cooldown (~its reset window).
             hrs = account_health.hard_cooldown_hours()
@@ -255,13 +264,13 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
                 attempts=attempt, account=account,
             )
             return _outcome(source, dest, "LOCKED", attempt, error=str(e),
-                            account=account)
+                            account=account, proxy=proxy_label)
         except UnsupportedCountryError as e:
             # Config problem, not the account's fault.
             logging.error(f"Unsupported route {source}-{dest}: {e}")
             _alert_failure(source, dest, str(e), attempts=attempt, account=account)
             return _outcome(source, dest, "FAILED", attempt, error=str(e),
-                            account=account)
+                            account=account, proxy=proxy_label)
         except RetryableError as e:
             last_error = f"{type(e).__name__}: {e}"
             logging.warning(f"Attempt {attempt} failed (retryable): {last_error}")
@@ -282,7 +291,8 @@ def run(source: str = "AE", dest: str = "MT") -> dict:
     _alert_failure(source, dest, (last_error or "unknown error") + note,
                    attempts=max_attempts, account=account)
     return _outcome(source, dest, "FAILED", max_attempts,
-                    error=(last_error or "unknown error"), account=account)
+                    error=(last_error or "unknown error"), account=account,
+                    proxy=proxy_label)
 
 
 def _all_routes() -> list:
@@ -336,8 +346,9 @@ def run_all_routes() -> bool:
     for idx, (source, dest) in enumerate(routes, start=1):
         logging.info(f"########## Route {idx}/{len(routes)}: {source}-{dest} ##########")
         try:
-            # A fresh Chrome is opened and closed for this route inside run().
-            outcome = run(source, dest)
+            # A fresh Chrome is opened and closed for this route inside run();
+            # idx-1 drives the per-route proxy rotation (route N -> proxy N).
+            outcome = run(source, dest, route_index=idx - 1)
         except Exception as e:
             # run() handles its own errors, but guard so one route can never
             # abort the whole loop.

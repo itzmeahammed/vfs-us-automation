@@ -99,8 +99,12 @@ by selection) to protect them from a VFS ban. Two kinds:
   benched until you fix the account and flag it healthy.
 
 ```powershell
-# See every benched/disabled account and why:
+# See every benched/disabled account, why, and until when:
 & .venv\Scripts\python.exe -m src.utils.account_health
+
+# Manually bench an account (e.g. you know VFS restricted it). Hours optional
+# (defaults to hard_cooldown_hours):
+& .venv\Scripts\python.exe -m src.utils.account_health bench <email@travnook.com> 24
 
 # After fixing an account (e.g. corrected its password), flag it healthy:
 & .venv\Scripts\python.exe -m src.utils.account_health clear <email@travnook.com>
@@ -109,8 +113,42 @@ by selection) to protect them from a VFS ban. Two kinds:
 & .venv\Scripts\python.exe -m src.utils.account_health clear-all
 ```
 
+Check what happened & what runs next:
+
+```powershell
+# Last run's outcome per route (restrictions, benchings, disables):
+Select-String -Path .\app.log -Pattern "RESTRICTED|benched|DISABLED|Route AE-" | Select-Object -Last 10
+
+# Which account each hour ACTUALLY uses for a route (benched accounts excluded).
+# Change 'AE-ITA' to any route:
+& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import credentials as c; p=c._available(c._load_pool(),'AE-ITA'); [print(f'{h:02d}:00 ->', c._mask(p[(h-6)%len(p)][0])) for h in range(6,24)]"
+```
+
 Tuning lives in `config.ini` under `[account_safety]` (`hard_cooldown_hours`,
 `soft_cooldown_hours`, `fail_threshold`, `max_attempts`).
+
+## Proxy / IP rotation (per account + route)
+
+Every `(account, route)` pairing gets its **own dedicated residential IP** from
+`config/proxylist.txt` (gitignored; one `user:pass@host:port` per line): one IP =
+one account on one route, and the **next route in a run egresses from a different
+IP**. The bot routes each run through a tiny built-in forwarder that injects the
+proxy auth (Chrome ignores `user:pass`), and probes/skips dead exit nodes.
+
+```powershell
+# Show the dedicated IP for each account x route (fast, no network):
+& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import proxy_pool as pp, credentials as c; from src.supervisor import _all_routes; [print(f\"{e.split('@')[0]:10} {s}-{d} -> {pp.label(pp.account_proxy(e, f'{s}-{d}'))}\") for e,_,_ in c._load_pool() for s,d in _all_routes()]"
+
+# Probe the live exit IP for an account+route (slow — makes a real request):
+& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import proxy_pool as pp; u,ip = pp.pick_for_run('AE-ITA', email='zaid@travnook.com'); print(pp.label(u), '-> exit', ip)"
+
+# Quick health scan: how many of the first N ports have a working UAE exit:
+& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import proxy_pool as pp; lines=pp._proxylist()[:10]; [print(pp.label(pp._as_url(l)), '->', pp.probe(pp._as_url(l)) or 'no exit') for l in lines]"
+```
+
+Notes: only **residential IPs in a VFS-accepted region (UAE)** help — proxy-seller
+here returns UAE/Dubai residential exits (verified). Egress IPs are logged to
+`app.log` but **not** shown in Telegram.
 
 ## Log maintenance
 
@@ -119,8 +157,32 @@ Tuning lives in `config.ini` under `[account_safety]` (`hard_cooldown_hours`,
 ```powershell
 Clear-Content .\app.log                  # empty it (keep the file)
 ```
+## Check ITALY with custom proxy
 
----
+### 1. Create the temporary proxy config
+
+```powershell
+Set-Content -Path "$env:TEMP\vfs_proxy_test.ini" -Encoding ascii -Value @("[proxy-routes]","AE-ITA = socks5://47.91.121.127:80")
+```
+
+### 2. Point the application to the config
+
+```powershell
+$env:VFS_BOT_CONFIG_PATH = "$env:TEMP\vfs_proxy_test.ini"
+```
+
+### 3. Run the supervisor
+
+```powershell
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v
+```
+
+### 4. Clean up
+
+```powershell
+Remove-Item Env:VFS_BOT_CONFIG_PATH
+```
+
 
 ## Notes
 
@@ -130,25 +192,13 @@ Clear-Content .\app.log                  # empty it (keep the file)
   the account advances by clock hour (`cred1` at 06:00, `cred2` at 07:00, ...).
 - Telegram: slot reports go to the **success** chat (`TELEGRAM_chat_id`); failure/
   error alerts go to the **summary** chat (`TELEGRAM_SUMMARY_CHAT_ID`).
-- Wrong email/password **stops that run immediately** (no retries) and alerts the
-  summary chat. An unregistered email just **skips** that portal (no alert).
-```
+- Wrong email/password or a 429002 block **disables that account** (alert sent)
+  until you fix it and flag it healthy. A 429001/429202 block **benches it**
+  for the configured cooldown. An unregistered email just **skips** that portal.
+- Run from a normal PowerShell (Win key → type PowerShell → Enter), starting with
+  `cd "c:\Users\ASRAB\Documents\VFS\vfs-malta-slot-checker"`.
 
 
-Open a normal PowerShell (not VS Code's): press Win, type PowerShell, Enter. Then:
 
 
-cd "c:\Users\ASRAB\Documents\VFS\vfs-malta-slot-checker"
 
-# Is it scheduled? Last result (0 = success) and next run time:
-Get-ScheduledTaskInfo -TaskName "VFS Slot Checker" | Format-List LastRunTime, LastTaskResult, NextRunTime
-
-# Per-tick history (fired / skipped / exit code):
-Get-Content .\task_runner.log -Tail 20
-
-# Last run's detail:
-Get-Content .\app.log -Tail 40
-Optional — fire one run right now to confirm end-to-end (a Chrome window will open ~2 min):
-
-
-Start-ScheduledTask -TaskName "VFS Slot Checker"

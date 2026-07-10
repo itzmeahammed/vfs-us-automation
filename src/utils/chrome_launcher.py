@@ -36,6 +36,15 @@ def _profile_base() -> str:
     return os.environ.get("TEMP") or "/tmp"
 
 
+def _split_proxy(url: str):
+    """(host, port, user, password) from a proxy URL; parts may be '' / None."""
+    from urllib.parse import urlparse
+    if url and "://" not in url:
+        url = "http://" + url
+    p = urlparse(url or "")
+    return p.hostname, p.port, (p.username or ""), (p.password or "")
+
+
 def kill_stale_bot_chrome() -> None:
     """
     Best-effort: kill any Chrome left over from a PREVIOUS bot run.
@@ -149,8 +158,9 @@ class ChromeProcess:
         self.port = port
         self.url = url
         self.startup_timeout_s = startup_timeout_s
-        self.proxy = proxy  # e.g. "socks5://127.0.0.1:1080" — routes all traffic
+        self.proxy = proxy  # full URL; user:pass runs through a local forwarder
         self._proc = None
+        self._forwarder = None  # local auth-injecting forwarder, if the proxy needs it
 
         # Throwaway profile dir, DELETED on close. Rationale: this runs on the
         # user's own (limited-disk) PC, where leaving Chrome profiles in TEMP
@@ -190,12 +200,24 @@ class ChromeProcess:
             "--disable-dev-shm-usage",
         ]
         if self.proxy:
-            # Route ALL of Chrome's traffic through this proxy (e.g. an SSH
-            # reverse tunnel back to your home PC, so VFS sees your residential
-            # IP instead of the EC2 datacenter IP). With socks5:// Chrome also
-            # resolves DNS through the proxy, so the EC2 IP isn't leaked via DNS.
-            args.append(f"--proxy-server={self.proxy}")
-            logging.debug(f"Chrome routing through proxy: {self.proxy}")
+            # Route ALL of Chrome's traffic through this proxy so VFS sees the
+            # residential IP. Chrome's --proxy-server IGNORES user:pass, so if the
+            # proxy carries credentials we run it through a tiny LOCAL forwarder
+            # (proxy_forwarder) that injects the auth, and point Chrome at that
+            # auth-less local port instead.
+            proxy_arg = self.proxy
+            host, port_, user, pw = _split_proxy(self.proxy)
+            if user and pw and host and port_:
+                from src.utils.proxy_forwarder import ProxyForwarder
+                self._forwarder = ProxyForwarder(host, port_, user, pw)
+                local_port = self._forwarder.start()
+                proxy_arg = f"http://127.0.0.1:{local_port}"
+                logging.debug(
+                    f"Chrome proxy via local forwarder :{local_port} -> {host}:{port_}"
+                )
+            else:
+                logging.debug(f"Chrome routing through proxy: {host}:{port_}")
+            args.append(f"--proxy-server={proxy_arg}")
         if self.url:
             args.append(self.url)
 
@@ -241,7 +263,14 @@ class ChromeProcess:
     def close(self) -> None:
         """
         Kills Chrome and its entire process tree. Safe to call more than once.
+        Also stops the local proxy forwarder, if one was started.
         """
+        if self._forwarder:
+            try:
+                self._forwarder.stop()
+            except Exception:
+                pass
+            self._forwarder = None
         if not self._proc:
             return
         if self._proc.poll() is not None:

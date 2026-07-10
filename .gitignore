@@ -17,6 +17,10 @@ task_stderr.log
 # Per-account health / cooldown state (circuit breaker)
 account_health.json
 account_health.json.tmp
+# Proxy lists / credentials — never commit
+config/proxylist.txt
+proxylist.txt
+proxies.local.ini
 
 # Local secret overrides (see VFS_BOT_CONFIG_PATH in the README)
 config/config.local.ini

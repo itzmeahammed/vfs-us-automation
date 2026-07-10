@@ -200,6 +200,7 @@ if __name__ == "__main__":
     #   python -m src.utils.account_health              # list all records
     #   python -m src.utils.account_health clear <email>
     #   python -m src.utils.account_health clear-all
+    #   python -m src.utils.account_health bench <email> [hours]   # manual bench
     import sys
     from datetime import datetime
 
@@ -225,6 +226,12 @@ if __name__ == "__main__":
     elif args[0] == "clear-all":
         _save({})
         print("All account-health records cleared.")
+    elif args[0] == "bench" and len(args) in (2, 3):
+        hours = int(args[2]) if len(args) == 3 else hard_cooldown_hours()
+        bench(args[1], hours, "manual bench")
+        until = datetime.fromtimestamp(benched_until(args[1])).strftime("%Y-%m-%d %H:%M")
+        print(f"Benched {args[1]} for {hours}h (until {until}).")
     else:
-        print("Usage: python -m src.utils.account_health [clear <email> | clear-all]")
+        print("Usage: python -m src.utils.account_health "
+              "[clear <email> | clear-all | bench <email> [hours]]")
         sys.exit(2)
