@@ -65,10 +65,15 @@ Get-Content .\app.log -Wait              # live tail; Ctrl+C stops watching (not
 Get-Content .\task_stderr.log            # startup/import/config crashes land here
 ```
 
-## Preview the credential rotation (which account each hour)
+## Preview the credential rotation (which account each run of the day)
+
+Cadence is set in `config.ini` `[schedule]` (`runs_per_hour`, `start_hour`,
+`end_hour`) — one place that drives both the task triggers and this spread.
+After changing it, **re-run `.\setup_task.ps1`** to update the scheduler.
 
 ```powershell
-& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import credentials as c; [print(f'{h:02d}:00 -> cred{idx}  {em}') for h,idx,em in c.rotation_schedule()]"
+# Which account each run uses for a route (run-of-day rotation):
+& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import credentials as c; [print(f'{t} run#{ri:<2} {em}') for t,ri,em in c.rotation_schedule('AE-ITA')]"
 ```
 
 ## Cleanup sanity check (both should be 0 after a run)
@@ -127,28 +132,45 @@ Select-String -Path .\app.log -Pattern "RESTRICTED|benched|DISABLED|Route AE-" |
 Tuning lives in `config.ini` under `[account_safety]` (`hard_cooldown_hours`,
 `soft_cooldown_hours`, `fail_threshold`, `max_attempts`).
 
-## Proxy / IP rotation (per account + route)
+## Proxy / IP (per account, shared pool)
 
-Every `(account, route)` pairing gets its **own dedicated residential IP** from
-`config/proxylist.txt` (gitignored; one `user:pass@host:port` per line): one IP =
-one account on one route, and the **next route in a run egresses from a different
-IP**. The bot routes each run through a tiny built-in forwarder that injects the
-proxy auth (Chrome ignores `user:pass`), and probes/skips dead exit nodes.
+The proxy pool lives in `config/proxylist.txt` (gitignored; one
+`http://user:pass@host:port` per line — provider CSV also accepted). Each account
+is **pinned to one IP** (`account_index mod N`) and uses it across **all routes** —
+a stable identity. The bot injects proxy auth via a built-in forwarder (Chrome
+ignores `user:pass`) and probes/skips a dead IP by trying the next in the pool.
 
+**Master switch** — `config.ini` `[proxy] enabled = true|false`. Flip per run:
 ```powershell
-# Show the dedicated IP for each account x route (fast, no network):
-& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import proxy_pool as pp, credentials as c; from src.supervisor import _all_routes; [print(f\"{e.split('@')[0]:10} {s}-{d} -> {pp.label(pp.account_proxy(e, f'{s}-{d}'))}\") for e,_,_ in c._load_pool() for s,d in _all_routes()]"
-
-# Probe the live exit IP for an account+route (slow — makes a real request):
-& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import proxy_pool as pp; u,ip = pp.pick_for_run('AE-ITA', email='zaid@travnook.com'); print(pp.label(u), '-> exit', ip)"
-
-# Quick health scan: how many of the first N ports have a working UAE exit:
-& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import proxy_pool as pp; lines=pp._proxylist()[:10]; [print(pp.label(pp._as_url(l)), '->', pp.probe(pp._as_url(l)) or 'no exit') for l in lines]"
+& .venv\Scripts\python.exe -m src.supervisor --local    # this run: no proxy (local IP)
+& .venv\Scripts\python.exe -m src.supervisor --proxy    # this run: force proxy IPs
 ```
 
-Notes: only **residential IPs in a VFS-accepted region (UAE)** help — proxy-seller
-here returns UAE/Dubai residential exits (verified). Egress IPs are logged to
-`app.log` but **not** shown in Telegram.
+```powershell
+# Show each account's pinned IP (fast, no network):
+& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import proxy_pool as pp, credentials as c; [print(f\"{e.split('@')[0]:16} -> {pp.label(pp.account_proxy(e))}\") for e,_,_ in c._load_pool()]"
+
+# Probe every IP in the pool: exit IP + is it alive? (slow — real requests):
+& .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.utils import proxy_pool as pp; [print(pp.label(u), '->', pp.probe(u) or 'NO EXIT') for u in pp.pool()]"
+```
+
+Notes: only IPs in a **VFS-accepted region (UAE)** avoid the 403203 geo-block;
+**datacenter** IPs still risk Cloudflare's bot checks (residential is safest).
+Egress IPs are logged to `app.log` but **not** shown in Telegram.
+
+## Analytics dashboard (accounts · routes · health · IPs · slots)
+
+One consolidated view built from `app.log` + `account_health.json` + config —
+overview, per-route and per-account stats, health/cooldowns, recent runs, and
+auto-flagged insights (e.g. "route PAUSED — all accounts benched").
+
+```powershell
+& .venv\Scripts\python.exe -m src.utils.analytics                 # print dashboard
+& .venv\Scripts\python.exe -m src.utils.analytics --write analytics_report.txt   # also save
+```
+
+Read-only (never changes state). To act on what it shows, use the account-health
+commands above.
 
 ## Log maintenance
 

@@ -238,9 +238,7 @@ class VfsBot(ABC):
             email_id, password = self._cred_override
         else:
             from src.utils import credentials
-            email_id, password = credentials.get_credential(
-                datetime.now().hour, url_key.upper()
-            )
+            email_id, password = credentials.get_credential(url_key.upper())
         if not email_id or not password:
             raise LoginError(
                 f"No credential is registered for route '{url_key.upper()}' — "

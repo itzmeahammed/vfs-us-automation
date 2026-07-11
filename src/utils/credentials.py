@@ -131,19 +131,42 @@ def eligible_emails(route: str = None) -> list:
     return [c[0] for c in _eligible(_load_pool(), route)]
 
 
-def get_credential(hour: int, route: str = None) -> tuple:
+def _sched():
+    """(runs_per_hour, start_hour, end_hour) from [schedule], with safe defaults."""
+    def _i(key, dflt):
+        try:
+            return int(str(get_config_value("schedule", key, str(dflt))).strip())
+        except (ValueError, TypeError):
+            return dflt
+    return max(1, _i("runs_per_hour", 2)), _i("start_hour", 6), _i("end_hour", 24)
+
+
+def run_index(dt=None) -> int:
     """
-    Returns the (email, password) to use for the given clock `hour` (0-23) on
-    the given `route` (e.g. 'AE-CHE').
+    The 0-based index of THIS run within the day's schedule, so the rotation can
+    spread accounts across every run (not just every hour). Derived from the
+    clock: run_index = (hour - start_hour) * runs_per_hour + slot-within-hour.
 
-    Rotates through the credentials ELIGIBLE for that route by hour. Falls
-    back to the single [vfs-credential] account when no pool file is
-    configured. Also logs which account is active (email masked).
+    With runs_per_hour=3 the 3 hourly runs (:00/:20/:40) get consecutive indices,
+    so each fires a DIFFERENT account; each account then recurs every
+    `num_accounts` runs — as widely spaced as possible.
+    """
+    from datetime import datetime
+    dt = dt or datetime.now()
+    rph, start_hour, _ = _sched()
+    step = max(1, 60 // rph)
+    slot = min(dt.minute // step, rph - 1)
+    return max(0, dt.hour - start_hour) * rph + slot
 
-    Returns:
-        (email, password). (None, None) if the pool exists but NO credential
-        is eligible for this route — the caller should skip the route. Either
-        may be None if nothing is configured at all.
+
+def get_credential(route: str = None, dt=None) -> tuple:
+    """
+    Returns the (email, password) to use for `route` on THIS run, spread across
+    the day's runs (see run_index). Skips benched/disabled accounts. Falls back
+    to the single [vfs-credential] account when no pool file is configured.
+
+    Returns (None, None) if the pool exists but no account is available for this
+    route (none registered, or all benched).
     """
     pool = _load_pool()
 
@@ -162,11 +185,11 @@ def get_credential(hour: int, route: str = None) -> tuple:
                     f"(checked {len(pool)} account(s) in {CREDENTIALS_FILE})."
                 )
             return None, None
-        idx = (hour - START_HOUR) % len(available)
+        idx = run_index(dt) % len(available)
         email, pwd, _routes = available[idx]
         logging.info(
             f"Using credential {idx + 1}/{len(available)} available for "
-            f"{route or 'any route'} at hour {hour:02d}: {_mask(email)}"
+            f"{route or 'any route'} (run #{run_index(dt)}): {_mask(email)}"
         )
         return email, pwd
 
@@ -181,18 +204,17 @@ def get_credential(hour: int, route: str = None) -> tuple:
     return email, pwd
 
 
-def active_account(hour: int, route: str = None) -> str:
+def active_account(route: str = None, dt=None) -> str:
     """
-    Returns a masked, human-friendly label for the account active at `hour`
-    on `route`, for display in the run summary — e.g.
-    'pa***@travnook.com (cred 2/3)', or '' when no credential is eligible.
+    Masked label for the account active on `route` this run — e.g.
+    'pa***@travnook.com (cred 2/3)', or '' when none is available.
     """
     pool = _load_pool()
     if pool:
         available = _available(pool, route)
         if not available:
             return ""
-        idx = (hour - START_HOUR) % len(available)
+        idx = run_index(dt) % len(available)
         return f"{_mask(available[idx][0])} (cred {idx + 1}/{len(available)})"
     email = get_config_value("vfs-credential", "email") or ""
     return _mask(email)
@@ -218,20 +240,25 @@ def warn_unknown_routes() -> None:
 
 def rotation_schedule(route: str = None) -> list:
     """
-    Returns a preview of which account is used each active hour (06:00-23:00)
-    for `route` (or ignoring route restrictions when omitted), as a list of
-    (hour, index, masked_email). For verifying the rotation after edits.
+    Preview of which account each RUN of the day uses for `route`, as a list of
+    (time_str, run_index, masked_email) across the configured window. Uses the
+    currently-available pool (benched accounts excluded). For verifying the
+    spread after edits.
     """
     pool = _load_pool()
-    eligible = _eligible(pool, route) if pool else []
+    avail = _available(pool, route) if pool else []
+    rph, start_hour, end_hour = _sched()
+    step = max(1, 60 // rph)
     out = []
-    for hour in range(START_HOUR, 24):
-        if eligible:
-            idx = (hour - START_HOUR) % len(eligible)
-            out.append((hour, idx + 1, _mask(eligible[idx][0])))
-        elif pool:
-            out.append((hour, 0, "(no eligible credential)"))
-        else:
-            email = get_config_value("vfs-credential", "email") or ""
-            out.append((hour, 1, _mask(email)))
+    ri = 0
+    for hour in range(start_hour, end_hour):
+        for k in range(rph):
+            if avail:
+                who = _mask(avail[ri % len(avail)][0])
+            elif pool:
+                who = "(no available account)"
+            else:
+                who = _mask(get_config_value("vfs-credential", "email") or "")
+            out.append((f"{hour:02d}:{k * step:02d}", ri, who))
+            ri += 1
     return out

@@ -1,51 +1,35 @@
-"""Per (account, route) proxy (IP) selection from config/proxylist.txt.
+"""Per-account proxy (IP) selection — a small fixed pool of IPs shared by ALL routes.
 
-Each (account, ROUTE) pairing is pinned to its OWN dedicated residential IP, so:
-  * one IP = one account on one route (stable across runs), and
-  * consecutive routes in a run egress from DIFFERENT IPs (route 1 -> IP a,
-    route 2 -> IP b, ...), even when the same account serves both.
+Each account is PINNED to one IP from the pool (account_index mod N), so it always
+egresses from the SAME IP across every route — a stable, consistent identity. With
+5 IPs and ~10 accounts, each IP hosts ~2 accounts.
 
-The line index in proxylist.txt is  account_index*ROUTE_STRIDE + route_index,
-so distinct accounts and distinct routes land on distinct lines.
+Pool source (first that is set):
+  * [proxy-pool] list in config/proxies.local.ini, else
+  * config/proxylist.txt — one proxy per line, either
+        user:pass@host:port   (or host:port), or the provider CSV
+        IP, PORT, LOGIN, PASSWORD          (a header row is ignored)
 
-proxylist.txt lines are `user:pass@host:port` (proxy-seller residential). Because
-Chrome ignores proxy credentials, ChromeProcess runs each through a tiny local
-forwarder (src/utils/proxy_forwarder.py) that adds the auth.
+Chrome ignores proxy credentials, so ChromeProcess runs authenticated proxies
+through a tiny local forwarder (proxy_forwarder). Selection PROBES the pinned IP
+for a working exit and falls back to the next pool entry if it's down.
 
-Some proxy ports transiently return '503 No exit node', so selection PROBES the
-assigned line (quick request through a temp forwarder) and, only if it has no
-exit, scans the next few lines before giving up (direct connection).
-
-Optional overrides (config/proxies.local.ini):
-  [proxy-routes] <ROUTE> = <proxy>   — pin a route to one proxy (used as-is)
+Master switch: [proxy] enabled (config.ini); per run: supervisor --proxy / --local.
 """
 
 import logging
 import os
 import urllib.request
 
-from src.utils.config_reader import get_config_section, get_config_value
+from src.utils.config_reader import get_config_value
 
 PROXYLIST_FILE = os.path.join("config", "proxylist.txt")
-# Lines reserved per account for its routes — account i's routes occupy lines
-# [i*STRIDE .. i*STRIDE+STRIDE-1]. Must be >= the max number of routes.
-_ROUTE_STRIDE = 8
 _PROBE_URL = "https://api.ipify.org"
 
 
-def _proxylist() -> list:
-    """Raw `user:pass@host:port` lines from proxylist.txt ([] if absent)."""
-    try:
-        with open(PROXYLIST_FILE, encoding="utf-8") as f:
-            return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
-    except OSError:
-        return []
-
-
-def _as_url(line: str) -> str:
-    """Normalize a proxylist line / proxy value to a full URL (default http://)."""
-    line = line.strip()
-    return line if "://" in line else "http://" + line
+def _as_url(s: str) -> str:
+    s = s.strip()
+    return s if "://" in s else "http://" + s
 
 
 def parse(url: str):
@@ -56,19 +40,57 @@ def parse(url: str):
 
 
 def _mask(url: str) -> str:
-    """Hide credentials when logging a proxy URL."""
     if "@" in url:
         scheme, _, rest = url.partition("://")
-        return f"{scheme}://***@{rest.rsplit('@', 1)[-1]}" if scheme else "***@" + rest.rsplit("@", 1)[-1]
+        tail = rest.rsplit("@", 1)[-1]
+        return (f"{scheme}://***@{tail}" if scheme else "***@" + tail)
     return url
 
 
 def label(url: str) -> str:
-    """Short host:port label (no scheme/creds) for logs."""
+    """Short host:port label (no scheme/creds)."""
     if not url:
         return ""
     h, p, _, _ = parse(url)
     return f"{h}:{p}" if h else _mask(url)
+
+
+def _parse_line(line: str) -> str:
+    """A proxylist.txt line -> proxy URL, or '' to skip (blank/comment/header)."""
+    line = line.strip()
+    if not line or line[0] in "#;":
+        return ""
+    if "@" in line:                         # user:pass@host:port
+        return _as_url(line)
+    if "," in line:                         # provider CSV: IP, PORT, LOGIN, PASSWORD
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2 and parts[1].isdigit():
+            ip, port = parts[0], parts[1]
+            if len(parts) >= 4 and parts[2]:
+                return f"http://{parts[2]}:{parts[3]}@{ip}:{port}"
+            return f"http://{ip}:{port}"
+        return ""                           # header row / malformed
+    if ":" in line:                         # host:port
+        return _as_url(line)
+    return ""
+
+
+def _proxylist() -> list:
+    try:
+        with open(PROXYLIST_FILE, encoding="utf-8") as f:
+            return [u for u in (_parse_line(ln) for ln in f) if u]
+    except OSError:
+        return []
+
+
+def _pool_list() -> list:
+    raw = get_config_value("proxy-pool", "list", "") or ""
+    return [_as_url(p.strip()) for p in raw.replace(";", ",").split(",") if p.strip()]
+
+
+def pool() -> list:
+    """The IP pool: [proxy-pool] if set, else parsed proxylist.txt."""
+    return _pool_list() or _proxylist()
 
 
 def _route_pin(route: str) -> str:
@@ -78,46 +100,25 @@ def _route_pin(route: str) -> str:
 
 
 def _account_index(email: str) -> int:
-    """Stable index for `email` among the configured accounts (file order)."""
+    """Stable index for `email` among configured accounts (file order)."""
     from src.utils import credentials
     emails = [c[0] for c in credentials._load_pool()]
     if email in emails:
         return emails.index(email)
-    # Fallback: stable hash (not process-random) so it's consistent across runs.
     import hashlib
     return int(hashlib.md5((email or "").encode()).hexdigest(), 16)
 
 
-def _route_index(route: str) -> int:
-    """Stable index for `route` among configured [vfs-url] routes (config order)."""
-    keys = [k.upper() for k in (get_config_section("vfs-url") or {})]
-    r = (route or "").upper()
-    if r in keys:
-        return keys.index(r) % _ROUTE_STRIDE
-    import hashlib
-    return int(hashlib.md5(r.encode()).hexdigest(), 16) % _ROUTE_STRIDE
-
-
-def _line_for(email: str, route: str) -> int:
-    """The proxylist.txt line index dedicated to this (account, route) pairing."""
-    lines = _proxylist()
-    slot = _account_index(email) * _ROUTE_STRIDE + _route_index(route)
-    return slot % len(lines)
-
-
-def account_proxy(email: str, route: str) -> str:
-    """The proxy URL dedicated to this (account, route), or '' if no list."""
-    lines = _proxylist()
-    if not lines:
+def account_proxy(email: str, route: str = None) -> str:
+    """The IP this account is pinned to (route is ignored — same IP everywhere)."""
+    p = pool()
+    if not p or not email:
         return ""
-    return _as_url(lines[_line_for(email, route)])
+    return p[_account_index(email) % len(p)]
 
 
 def probe(proxy_url: str, timeout: int = 15) -> str:
-    """
-    Returns the exit IP if `proxy_url` currently has a working exit node, else ''.
-    Runs the request through a short-lived local forwarder (handles auth).
-    """
+    """Exit IP if `proxy_url` has a working exit right now, else '' (auth handled)."""
     from src.utils.proxy_forwarder import ProxyForwarder
     host, port, user, pw = parse(proxy_url)
     if not host:
@@ -137,41 +138,46 @@ def probe(proxy_url: str, timeout: int = 15) -> str:
         fwd.stop()
 
 
-def pick_for_run(route: str, email: str = None, scan: int = 8):
-    """
-    Choose a WORKING proxy for this (account, route) run. Returns (proxy_url,
-    exit_ip), or (None, None) for a direct connection.
+def is_enabled() -> bool:
+    """Master switch: proxy pool (True) or the PC's own IP (False). VFS_PROXY env
+    (on/off/proxy/local/1/0) overrides the [proxy] enabled config for one run."""
+    ov = os.environ.get("VFS_PROXY")
+    if ov is not None:
+        return ov.strip().lower() in ("1", "true", "on", "yes", "proxy")
+    return str(get_config_value("proxy", "enabled", "true")).strip().lower() \
+        in ("1", "true", "on", "yes")
 
-    Order: [proxy-routes] pin (used as-is) > this (account, route)'s dedicated
-    line (probed) > a short scan of the next lines if that exit is empty > direct.
+
+def pick_for_run(route: str, email: str = None):
     """
+    Choose a WORKING proxy for this account (pinned IP), shared across all routes.
+    Returns (proxy_url, exit_ip), or (None, None) for a direct connection.
+
+    Order: switch off -> direct > [proxy-routes] pin > account's pinned pool IP
+    (probed; falls through the pool if its exit is down) > direct.
+    """
+    if not is_enabled():
+        logging.info(f"{route}: proxy disabled — using local IP (direct).")
+        return None, None
+
     pin = _route_pin(route)
     if pin:
         logging.info(f"{route}: using pinned proxy {_mask(_as_url(pin))}")
         return _as_url(pin), ""
 
-    lines = _proxylist()
-    if not lines or not email:
+    p = pool()
+    if not p or not email:
         return None, None
-
-    start = _line_for(email, route)
     who = email.split("@")[0]
-    for k in range(scan + 1):
-        proxy = _as_url(lines[(start + k) % len(lines)])
+    base = _account_index(email) % len(p)
+    for k in range(len(p)):
+        proxy = p[(base + k) % len(p)]
         ip = probe(proxy)
         if ip:
-            _h, _p, _, _ = parse(proxy)
-            logging.info(
-                f"proxyseller ip used here : {ip}:{_p}  "
-                f"({who} on {route}{', fell back +' + str(k) if k else ''})"
-            )
+            _h, _pt, _, _ = parse(proxy)
+            logging.info(f"proxyseller ip used here : {ip}:{_pt}  "
+                         f"({who} on {route}{', pool+' + str(k) if k else ''})")
             return proxy, ip
-        logging.warning(f"{route}: {who} proxy {label(proxy)} no exit node — trying next.")
-
-    logging.error(f"{route}: no working proxy exit for {who} — falling back to DIRECT.")
+        logging.warning(f"{route}: {who} proxy {label(proxy)} no exit — trying next.")
+    logging.error(f"{route}: no working proxy for {who} — falling back to DIRECT.")
     return None, None
-
-
-def is_configured() -> bool:
-    """True if a proxylist or a route pin is configured."""
-    return bool(_proxylist())

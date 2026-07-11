@@ -177,11 +177,10 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0) -> dict:
     from datetime import datetime
 
     route = f"{source.upper()}-{dest.upper()}"
-    hour = datetime.now().hour
 
     # Select the credential ONCE, up front. get_credential skips benched/disabled
-    # accounts, so a struggling/blocked account is never picked.
-    email, password = credentials.get_credential(hour, route)
+    # accounts and spreads accounts across the day's runs (run-of-day rotation).
+    email, password = credentials.get_credential(route)
     if not email or not password:
         # Tell 'no account registered' apart from 'all eligible are benched'.
         if credentials.eligible_emails(route):
@@ -191,7 +190,7 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0) -> dict:
         reason = "no registered credential for this route"
         logging.warning(f"{route}: {reason} — skipping.")
         return _outcome(source, dest, "SKIPPED", 0, error=reason)
-    account = credentials.active_account(hour, route)
+    account = credentials.active_account(route)
 
     # Select this (account, route)'s dedicated proxy ONCE — one IP for one account
     # on one route, so the NEXT route egresses from a different IP. Probed for a
@@ -397,10 +396,7 @@ def _alert_failure(source: str, dest: str, error: str, attempts: int,
     """
     login_url = _vfs_url(source, dest) or ""
     if account is None:
-        from datetime import datetime
-        account = credentials.active_account(
-            datetime.now().hour, f"{source.upper()}-{dest.upper()}"
-        )
+        account = credentials.active_account(f"{source.upper()}-{dest.upper()}")
     msg = telegram_message.failure_alert(
         source, dest, error, attempts, login_url, account or ""
     )
@@ -430,6 +426,15 @@ def main() -> None:
         help="Detailed step-by-step (DEBUG) logs. Omit for prod/schedule, which "
              "logs only major events.",
     )
+    proxy_grp = parser.add_mutually_exclusive_group()
+    proxy_grp.add_argument(
+        "--proxy", action="store_true",
+        help="Force proxy-seller residential IPs for this run (overrides config).",
+    )
+    proxy_grp.add_argument(
+        "--local", action="store_true",
+        help="Force this PC's own IP for this run — no proxy (overrides config).",
+    )
     args = parser.parse_args()
 
     initialize_config()
@@ -437,6 +442,11 @@ def main() -> None:
     # events are logged. LOG_LEVEL is read by initialize_logger(), so set it first.
     if args.verbose:
         os.environ["LOG_LEVEL"] = "DEBUG"
+    # One-run override of the [proxy] enabled config switch.
+    if args.local:
+        os.environ["VFS_PROXY"] = "off"
+    elif args.proxy:
+        os.environ["VFS_PROXY"] = "on"
     initialize_logger()
 
     if args.source_country_code and args.destination_country_code:

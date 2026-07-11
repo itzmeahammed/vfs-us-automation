@@ -1,28 +1,20 @@
-; Per-route proxy (IP) rotation. Copy this file to  config/proxies.local.ini
-; (gitignored — *.local.ini is never committed) and fill in real proxies.
+; Optional proxy OVERRIDES. Copy to  config/proxies.local.ini  (gitignored).
 ;
-; How routes get an IP each run:
-;   1. A [proxy-routes] pin for the route wins (that route ALWAYS uses that proxy).
-;   2. Otherwise the [proxy-pool] list rotates per run: 1st route -> 1st proxy,
-;      2nd route -> 2nd proxy, ... wrapping around. Each route runs in its own
-;      fresh Chrome, so closing one route's browser and opening the next with a
-;      different proxy IS the IP change.
-;   3. If neither is set, the single [browser] proxy from config.ini is used
-;      (blank = direct connection, today's behaviour).
+; The proxy pool normally lives in  config/proxylist.txt  (one proxy per line,
+; http://user:pass@host:port, or the provider CSV  IP, PORT, LOGIN, PASSWORD).
+; Each account is PINNED to one IP from the pool (account_index mod N) and uses
+; it across ALL routes — a stable identity. You usually need nothing in here.
 ;
-; IMPORTANT — read before buying proxies:
-;   * Chrome's --proxy-server IGNORES user:pass in the URL. Use proxies with
-;     IP-whitelist auth, or run a local forwarder (gost / 3proxy) that holds the
-;     credentials and point these entries at 127.0.0.1:<port>.
-;   * VFS + Cloudflare block DATACENTER IPs hard. Only residential/mobile
-;     proxies in a VFS-accepted region (e.g. UAE) will help; wrong-region IPs
-;     geo-block with 403203.
-;   * socks5:// also resolves DNS through the proxy (no IP leak via DNS).
+; Notes:
+;   * Authenticated proxies work: the bot injects auth via a local forwarder
+;     (Chrome ignores user:pass on --proxy-server).
+;   * Only IPs in a VFS-accepted region (UAE) avoid the 403203 geo-block.
+;     Datacenter IPs still risk Cloudflare's bot checks — residential is safest.
 
-[proxy-pool]
-; Comma-separated rotation pool, in order.
-list = socks5://1.2.3.4:1080, socks5://5.6.7.8:1080, http://9.10.11.12:3128
+; [proxy-pool]
+; ; Explicit pool that OVERRIDES proxylist.txt (comma-separated).
+; list = http://user:pass@1.2.3.4:50100, http://user:pass@5.6.7.8:50100
 
 [proxy-routes]
-; Optional per-route pins (SRC-DST = proxy). Overrides the pool for that route.
-; AE-ITA = socks5://9.9.9.9:1080
+; Pin a whole route to one proxy (overrides that route's account pinning).
+; AE-ITA = http://user:pass@1.2.3.4:50100
