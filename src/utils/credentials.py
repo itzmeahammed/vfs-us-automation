@@ -123,6 +123,18 @@ def _available(pool: list, route: str) -> list:
     return [c for c in _eligible(pool, route) if not account_health.is_benched(c[0])]
 
 
+def password_for(email: str) -> str:
+    """Password for `email` from the pool (or the single [vfs-credential]), or ''.
+    Used by the --email test override to force a specific account."""
+    key = (email or "").strip().lower()
+    for e, pw, _ in _load_pool():
+        if e.lower() == key:
+            return pw
+    if key and key == (get_config_value("vfs-credential", "email") or "").lower():
+        return get_config_value("vfs-credential", "password") or ""
+    return ""
+
+
 def eligible_emails(route: str = None) -> list:
     """
     Emails registered for `route`, IGNORING cooldown — lets a caller tell
@@ -254,11 +266,11 @@ def rotation_schedule(route: str = None) -> list:
     for hour in range(start_hour, end_hour):
         for k in range(rph):
             if avail:
-                who = _mask(avail[ri % len(avail)][0])
+                who = avail[ri % len(avail)][0]   # full email (local preview)
             elif pool:
                 who = "(no available account)"
             else:
-                who = _mask(get_config_value("vfs-credential", "email") or "")
+                who = get_config_value("vfs-credential", "email") or ""
             out.append((f"{hour:02d}:{k * step:02d}", ri, who))
             ri += 1
     return out

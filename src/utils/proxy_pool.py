@@ -120,10 +120,12 @@ def account_proxy(email: str, route: str = None) -> str:
 def probe(proxy_url: str, timeout: int = 15) -> str:
     """Exit IP if `proxy_url` has a working exit right now, else '' (auth handled)."""
     from src.utils.proxy_forwarder import ProxyForwarder
+    from urllib.parse import urlparse
     host, port, user, pw = parse(proxy_url)
     if not host:
         return ""
-    fwd = ProxyForwarder(host, port, user, pw)
+    scheme = urlparse(_as_url(proxy_url)).scheme or "http"
+    fwd = ProxyForwarder(host, port, user, pw, scheme=scheme)
     try:
         lp = fwd.start()
         local = f"http://127.0.0.1:{lp}"
@@ -148,20 +150,25 @@ def is_enabled() -> bool:
         in ("1", "true", "on", "yes")
 
 
-def pick_for_run(route: str, email: str = None):
+def pick_for_run(route: str, email: str = None, exclude=None):
     """
     Choose a WORKING proxy for this account (pinned IP), shared across all routes.
     Returns (proxy_url, exit_ip), or (None, None) for a direct connection.
 
+    `exclude` is a set of proxy URLs already tried (e.g. one that returned 403201)
+    — they are skipped so the caller can rotate to a DIFFERENT IP.
+
     Order: switch off -> direct > [proxy-routes] pin > account's pinned pool IP
-    (probed; falls through the pool if its exit is down) > direct.
+    (probed; falls through the pool if its exit is down/excluded) > direct.
     """
     if not is_enabled():
         logging.info(f"{route}: proxy disabled — using local IP (direct).")
         return None, None
 
+    exclude = set(exclude or [])
+
     pin = _route_pin(route)
-    if pin:
+    if pin and _as_url(pin) not in exclude:
         logging.info(f"{route}: using pinned proxy {_mask(_as_url(pin))}")
         return _as_url(pin), ""
 
@@ -172,6 +179,8 @@ def pick_for_run(route: str, email: str = None):
     base = _account_index(email) % len(p)
     for k in range(len(p)):
         proxy = p[(base + k) % len(p)]
+        if proxy in exclude:
+            continue
         ip = probe(proxy)
         if ip:
             _h, _pt, _, _ = parse(proxy)

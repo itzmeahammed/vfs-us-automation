@@ -37,12 +37,12 @@ def _profile_base() -> str:
 
 
 def _split_proxy(url: str):
-    """(host, port, user, password) from a proxy URL; parts may be '' / None."""
+    """(scheme, host, port, user, password) from a proxy URL; parts may be ''."""
     from urllib.parse import urlparse
     if url and "://" not in url:
         url = "http://" + url
     p = urlparse(url or "")
-    return p.hostname, p.port, (p.username or ""), (p.password or "")
+    return (p.scheme or "http"), p.hostname, p.port, (p.username or ""), (p.password or "")
 
 
 def kill_stale_bot_chrome() -> None:
@@ -206,14 +206,15 @@ class ChromeProcess:
             # (proxy_forwarder) that injects the auth, and point Chrome at that
             # auth-less local port instead.
             proxy_arg = self.proxy
-            host, port_, user, pw = _split_proxy(self.proxy)
+            scheme, host, port_, user, pw = _split_proxy(self.proxy)
             if user and pw and host and port_:
                 from src.utils.proxy_forwarder import ProxyForwarder
-                self._forwarder = ProxyForwarder(host, port_, user, pw)
+                self._forwarder = ProxyForwarder(host, port_, user, pw, scheme=scheme)
                 local_port = self._forwarder.start()
                 proxy_arg = f"http://127.0.0.1:{local_port}"
                 logging.debug(
-                    f"Chrome proxy via local forwarder :{local_port} -> {host}:{port_}"
+                    f"Chrome proxy via local forwarder :{local_port} -> "
+                    f"{scheme}://{host}:{port_}"
                 )
             else:
                 logging.debug(f"Chrome routing through proxy: {host}:{port_}")

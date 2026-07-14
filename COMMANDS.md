@@ -224,3 +224,32 @@ Remove-Item Env:VFS_BOT_CONFIG_PATH
 
 
 
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.242.128.49:50100
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.244.143.160:50100
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.244.143.243:50100
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.244.143.32:50100
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.244.143.64:50100
+
+
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url socks5://travnookmarketing:JJmaqyo8yc@151.242.128.49:50101
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url socks5://travnookmarketing:JJmaqyo8yc@151.244.143.160:50101
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url socks5://travnookmarketing:JJmaqyo8yc@151.244.143.243:50101
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url socks5://travnookmarketing:JJmaqyo8yc@151.244.143.32:50101
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url socks5://travnookmarketing:JJmaqyo8yc@151.244.143.64:50101
+
+
+
+
+check next run with account time ip route:
+& .venv\Scripts\python.exe -c @"
+from src.utils.config_reader import initialize_config, get_config_value
+initialize_config()
+from src.utils import credentials as c
+from src.supervisor import _all_routes
+for s,d in _all_routes():
+    r=f'{s}-{d}'
+    print(f'=== {r}   {get_config_value("vfs-url", r)} ===')
+    for t,ri,em in c.rotation_schedule(r):
+        print(f'  {t}   run#{ri:<2}  {em}')
+    print()
+"@

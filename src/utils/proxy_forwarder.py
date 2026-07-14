@@ -26,15 +26,65 @@ _BUF = 65536
 
 class ProxyForwarder:
     def __init__(self, up_host: str, up_port: int, username: str, password: str,
-                 bind_host: str = "127.0.0.1"):
+                 bind_host: str = "127.0.0.1", scheme: str = "http"):
         self.up_host = up_host
         self.up_port = int(up_port)
+        self._user = username or ""
+        self._pw = password or ""
         self._auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+        # Upstream protocol: 'http' (HTTP CONNECT) or 'socks5'/'socks' (SOCKS5).
+        self.scheme = (scheme or "http").lower()
         self.bind_host = bind_host
         self._srv = None
         self._thread = None
         self._stop = threading.Event()
         self.port = None
+        self._err_logged = False  # log the first upstream error only (avoid spam)
+
+    @staticmethod
+    def _recvn(sock: socket.socket, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            c = sock.recv(n - len(buf))
+            if not c:
+                break
+            buf += c
+        return buf
+
+    def _socks5_connect(self, up: socket.socket, target: bytes) -> None:
+        """SOCKS5 handshake to the upstream (with username/password auth) for
+        CONNECT to `target` (b'host:port'). Raises on failure."""
+        host, _, port = target.partition(b":")
+        host = host.decode()
+        port = int(port or b"443")
+        # Greeting: offer no-auth (0) and username/password (2).
+        up.sendall(b"\x05\x02\x00\x02")
+        r = self._recvn(up, 2)
+        if len(r) < 2 or r[0] != 5:
+            raise OSError("socks5 greeting failed")
+        method = r[1]
+        if method == 0x02:                     # username/password (RFC 1929)
+            u, p = self._user.encode(), self._pw.encode()
+            up.sendall(b"\x01" + bytes([len(u)]) + u + bytes([len(p)]) + p)
+            a = self._recvn(up, 2)
+            if len(a) < 2 or a[1] != 0:
+                raise OSError("socks5 auth rejected")
+        elif method != 0x00:                   # 0 = no auth needed
+            raise OSError(f"socks5 no acceptable auth method ({method})")
+        # CONNECT command, address type 3 (domain name).
+        hb = host.encode()
+        up.sendall(b"\x05\x01\x00\x03" + bytes([len(hb)]) + hb + port.to_bytes(2, "big"))
+        rep = self._recvn(up, 4)
+        if len(rep) < 4 or rep[1] != 0:
+            raise OSError(f"socks5 connect rejected (rep {rep[1] if len(rep) > 1 else '?'})")
+        atyp = rep[3]                           # consume the bound-address that follows
+        if atyp == 1:
+            self._recvn(up, 4 + 2)
+        elif atyp == 3:
+            ln = self._recvn(up, 1)
+            self._recvn(up, (ln[0] if ln else 0) + 2)
+        elif atyp == 4:
+            self._recvn(up, 16 + 2)
 
     def start(self) -> int:
         """Bind an ephemeral local port and serve in the background. Returns the port."""
@@ -82,9 +132,21 @@ class ProxyForwarder:
 
             up = socket.create_connection((self.up_host, self.up_port), timeout=30)
             auth = self._auth.encode()
+            is_socks = self.scheme.startswith("socks")
 
             if method == b"CONNECT":
-                # HTTPS: open the tunnel to the upstream proxy WITH auth, then pipe.
+                if is_socks:
+                    # SOCKS5: authenticate + CONNECT to the target, then pipe.
+                    try:
+                        self._socks5_connect(up, target)
+                    except Exception as e:
+                        logging.debug(f"socks5 connect failed: {e}")
+                        client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                        return
+                    client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                    self._pipe(client, up)
+                    return
+                # HTTP upstream: open the tunnel WITH auth, then pipe.
                 up.sendall(
                     b"CONNECT " + target + b" HTTP/1.1\r\n"
                     b"Host: " + target + b"\r\n"
@@ -103,6 +165,10 @@ class ProxyForwarder:
                     self._pipe(client, up)
                 else:
                     client.sendall(resp)  # forward the upstream error (e.g. 407)
+            elif is_socks:
+                # Plain HTTP over a SOCKS upstream is uncommon (VFS is all HTTPS);
+                # not supported — the browser will just retry over HTTPS.
+                client.sendall(b"HTTP/1.1 501 Not Implemented\r\n\r\n")
             else:
                 # Plain HTTP proxy request: inject Proxy-Authorization, forward as-is.
                 rest = head.split(b"\r\n", 1)[1]
@@ -110,7 +176,13 @@ class ProxyForwarder:
                            + b"Proxy-Authorization: Basic " + auth + b"\r\n" + rest)
                 self._pipe(client, up)
         except Exception as e:
-            logging.debug(f"Proxy forwarder connection error: {e}")
+            # Log ONCE per forwarder (Chrome opens many connections; a refused/
+            # broken upstream would otherwise spam dozens of identical lines).
+            if not self._err_logged:
+                self._err_logged = True
+                logging.warning(
+                    f"Proxy forwarder: upstream {self.scheme}://{self.up_host}:"
+                    f"{self.up_port} error: {e} (further errors suppressed)")
         finally:
             for s in (client, up):
                 try:

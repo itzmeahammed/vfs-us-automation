@@ -98,6 +98,17 @@ class GeoBlockedError(Exception):
     """
 
 
+class IpBlockedError(Exception):
+    """
+    VFS returned code 403201 — an IP-BASED block (too many requests from this IP,
+    or a flagged/datacenter IP). It is tied to the IP, not the account.
+
+    Retrying on the SAME IP is pointless, but a DIFFERENT IP may work — so the
+    supervisor rotates to another proxy and tries once more, without penalising
+    the account's health.
+    """
+
+
 class EmailNotRegisteredError(Exception):
     """
     The login page showed 'The entered email id is not registered with us' — the
@@ -189,10 +200,53 @@ class VfsBot(ABC):
         # skipping benched accounts). When set, the bot uses it instead of
         # selecting its own — keeps selection in ONE place.
         self._cred_override = None
+        # Set by the network watcher when VFS returns an HTTP 403 (code in the
+        # body if we could read it) — caught even if the page then closes.
+        self._block_code = None
 
     def set_credential(self, email: str, password: str) -> None:
         """Supervisor-provided credential to use for this run (overrides self-select)."""
         self._cred_override = (email, password)
+
+    def _attach_block_watcher(self, page) -> None:
+        """
+        Watch network responses for an HTTP 403 (VFS's IP/access blocks —
+        403201 / 403203). Records the code on self._block_code so the flow can
+        fail FAST and rotate the IP, even if the page dies right after.
+        """
+        def _on_resp(resp):
+            # Do NOT read the body here (sync handler -> deadlock risk). Flag only
+            # a 403 from a VFS API/XHR call (that's the 403201 block) — not
+            # Cloudflare challenge documents or third-party assets.
+            try:
+                if resp.status != 403:
+                    return
+                url = (resp.url or "").lower()
+                if "vfsglobal" not in url:
+                    return
+                try:
+                    rtype = resp.request.resource_type
+                except Exception:
+                    rtype = ""
+                if rtype in ("xhr", "fetch", ""):
+                    self._block_code = "403"
+                    logging.warning(f"VFS HTTP 403 ({rtype or '?'}) from {resp.url} "
+                                    "— treating as IP block.")
+            except Exception:
+                pass
+        try:
+            page.on("response", _on_resp)
+        except Exception:
+            pass
+
+    def _check_blocked(self, page) -> None:
+        """Raise the right block error from the DOM (specific code) or a seen 403
+        response (generic IP block). No-op if not blocked. Call inside wait loops
+        to fail fast."""
+        VfsBot._raise_if_blocked(page)  # DOM: 403201 / 403203 / 429xxx (specific)
+        if self._block_code:
+            raise IpBlockedError(
+                "VFS HTTP 403 — IP blocked (too many requests / flagged IP). Rotate IP.")
 
     def run(self) -> bool:
         """
@@ -293,6 +347,11 @@ class VfsBot(ABC):
                 stealth_sync(page)
 
             VfsBot._attach_activity_logging(page)
+            # Watch for HTTP 403 (IP/access blocks) at the network level, so we
+            # catch 403201 even when it's an XHR/JSON that never renders (or the
+            # page dies right after).
+            self._block_code = None
+            self._attach_block_watcher(page)
 
             # Pin a fixed viewport so the page layout (and thus the Turnstile
             # checkbox position for the coordinate click) is deterministic.
@@ -307,17 +366,19 @@ class VfsBot(ABC):
             logging.debug(f"Navigating to {vfs_url}")
             page.goto(vfs_url, timeout=60000, wait_until="domcontentloaded")
 
+            # Bail immediately if the very first load was a block page.
+            self._check_blocked(page)
             self.pre_login_steps(page)
 
             try:
                 self.login(page, email_id, password)
             except (GeoBlockedError, EmailNotRegisteredError, InvalidCredentialsError,
-                    AccountLockedError, AccessRestrictedError, AccountBlockedError):
-                # Non-retryable & expected: geo-block (same IP won't help), the
-                # email isn't registered here (skip this URL), wrong password (same
-                # creds fail identically), account locked (429202 cooldown), or
-                # access restricted (back off this route+credential pair).
-                # Let it propagate so the supervisor handles it without retrying.
+                    AccountLockedError, AccessRestrictedError, AccountBlockedError,
+                    IpBlockedError):
+                # Non-retryable ON THIS IP/account & expected: geo-block, email not
+                # registered, wrong password, account locked/restricted/blocked, or
+                # 403201 IP block (the supervisor rotates the IP for that one).
+                # Propagate so the supervisor handles it without a same-IP retry.
                 raise
             except RetryableError:
                 # A classified, expected failure — screenshot the end state and
@@ -594,17 +655,26 @@ class VfsBot(ABC):
         Fills the login form, signs in, and — once on the dashboard — clicks
         Start New Booking and runs the slot check.
         """
-        # Wait for login form to be ready (VFS can take a while behind Cloudflare).
-        try:
-            page.wait_for_selector(USERNAME_SELECTOR, timeout=120000)
-        except Exception as e:
-            # The form may be absent because VFS served a block page in its
-            # place — classify those before falling back to a retryable error.
-            VfsBot._raise_if_blocked(page, e)
+        # Wait for the login form OR a block page — POLL (don't block 120s) so a
+        # 403201 / 429xxx page is caught within ~1.5s and we fail fast.
+        waited, form_ready = 0, False
+        while waited < 120000:
+            self._check_blocked(page)  # raises IpBlocked/Geo/etc if a block appeared
+            try:
+                el = page.locator(USERNAME_SELECTOR).first
+                if el.count() > 0 and el.is_visible():
+                    form_ready = True
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(1500)
+            waited += 1500
+        if not form_ready:
+            self._check_blocked(page)
             raise LoginFormNotReadyError(
                 "Login form never appeared within 120s (Cloudflare spinner / 403 / "
-                f"slow load): {e}"
-            ) from e
+                "slow load)."
+            )
         logging.debug("Login form loaded")
 
         # Dismiss the cookie banner (it overlays the form and blocks fields).
@@ -625,6 +695,10 @@ class VfsBot(ABC):
         # the token is populated we fill credentials, and Sign In enables itself.
         passed = False
         for turn_attempt in range(1, TURNSTILE_REFRESH_ATTEMPTS + 2):  # 1 + N reloads
+            # Fail FAST if VFS served a block page instead of a solvable Turnstile
+            # (403201 IP block / 429xxx / a seen HTTP 403) — no point waiting or
+            # refreshing for a challenge that will never appear.
+            self._check_blocked(page)
             logging.debug(
                 f"Waiting for Cloudflare Turnstile to pass "
                 f"(try {turn_attempt}/{TURNSTILE_REFRESH_ATTEMPTS + 1})..."
@@ -727,10 +801,10 @@ class VfsBot(ABC):
                 raise RetryableError(f"Could not click Sign In: {e}") from e
         VfsBot._take_final_screenshot(page, "after_signin")
 
-        # If the portal says this email isn't registered for THIS site, there's
-        # nothing to wait for and nothing to retry — skip this URL for this
-        # account immediately. Give the banner a moment to render first.
+        # The Sign In API is the most common place VFS returns 403201 (IP block).
+        # Check both the network 403 and the page before waiting on the dashboard.
         page.wait_for_timeout(2000)
+        self._check_blocked(page)
         if VfsBot._email_not_registered(page):
             raise EmailNotRegisteredError(
                 "Login page: 'The entered email id is not registered with us' — "
@@ -1243,6 +1317,43 @@ class VfsBot(ABC):
         return "403203" in body or "permission issues" in body
 
     @staticmethod
+    def _page_text(page) -> str:
+        """
+        Best-effort ALL text of the current page for block-code detection: the
+        body innerText, the full serialized HTML (catches raw-JSON error pages
+        that Chrome shows in a JSON viewer / <pre>), and every sub-frame. Lowered.
+        """
+        parts = []
+        try:
+            parts.append(page.evaluate(
+                "() => document.body ? document.body.innerText : ''") or "")
+        except Exception:
+            pass
+        try:
+            parts.append(page.content() or "")   # full HTML source
+        except Exception:
+            pass
+        try:
+            for fr in page.frames:
+                try:
+                    parts.append(fr.evaluate(
+                        "() => document.body ? document.body.innerText : ''") or "")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return " ".join(parts).lower()
+
+    @staticmethod
+    def _ip_blocked(page) -> bool:
+        """
+        True if VFS returned code 403201 — an IP-based block (this IP made too
+        many requests / is flagged). VFS renders it as JSON like
+        {"code":"403201"}, so we scan the full page text (HTML + frames).
+        """
+        return "403201" in VfsBot._page_text(page)
+
+    @staticmethod
     def _email_not_registered(page) -> bool:
         """
         True if the login page is showing the 'email id is not registered'
@@ -1327,6 +1438,10 @@ class VfsBot(ABC):
 
         No-op if the page isn't a block page. `cause` (if given) is chained.
         """
+        if VfsBot._ip_blocked(page):
+            VfsBot._take_final_screenshot(page, "ip_blocked_403201")
+            raise IpBlockedError("VFS 403201 — IP blocked (too many requests / "
+                                 "flagged IP). Rotate to a different IP.") from cause
         if VfsBot._access_denied(page):
             VfsBot._take_final_screenshot(page, "access_denied")
             raise AccountBlockedError(VfsBot._landing_status(page)) from cause

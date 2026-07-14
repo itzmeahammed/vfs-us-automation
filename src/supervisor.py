@@ -43,6 +43,7 @@ from src.vfs_bot.vfs_bot import (
     EmailNotRegisteredError,
     GeoBlockedError,
     InvalidCredentialsError,
+    IpBlockedError,
     RetryableError,
 )
 from src.vfs_bot.vfs_bot_factory import UnsupportedCountryError, get_vfs_bot
@@ -162,52 +163,85 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
     }
 
 
-def run(source: str = "AE", dest: str = "MT", route_index: int = 0) -> dict:
+def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
+        force_email: str = None, force_password: str = None,
+        force_proxy: str = None) -> dict:
     """
-    Runs up to max_attempts attempts with a fresh browser each time, using ONE
-    account selected up front (skipping benched/disabled accounts), and updates
-    that account's health based on the outcome (circuit breaker).
+    Runs a route with ONE account (selected up front, skipping benched/disabled)
+    and its pinned proxy IP, updating account health per the outcome.
 
-    `route_index` is this route's position in the run (0-based) — it drives the
-    per-route proxy rotation (route 1 -> proxy 1, route 2 -> proxy 2, ...), so
-    each route's fresh Chrome egresses from a different IP.
+    On a 403201 IP block it rotates to a DIFFERENT IP and retries once (up to
+    MAX_IP_TRIES IPs) WITHOUT penalising the account — it's the IP, not the user.
+
+    Test overrides (single-route only): `force_email`(+`force_password`) forces a
+    specific account; `force_proxy` forces a proxy URL ('' = direct/local).
 
     Returns a per-route outcome dict (see _outcome).
     """
-    from datetime import datetime
-
     route = f"{source.upper()}-{dest.upper()}"
+    forced_proxy = force_proxy is not None
 
-    # Select the credential ONCE, up front. get_credential skips benched/disabled
-    # accounts and spreads accounts across the day's runs (run-of-day rotation).
-    email, password = credentials.get_credential(route)
-    if not email or not password:
-        # Tell 'no account registered' apart from 'all eligible are benched'.
-        if credentials.eligible_emails(route):
-            reason = "all eligible accounts are in cooldown (protecting them)"
-            logging.warning(f"{route}: {reason} — pausing this run.")
-            return _outcome(source, dest, "PAUSED", 0, error=reason)
-        reason = "no registered credential for this route"
-        logging.warning(f"{route}: {reason} — skipping.")
-        return _outcome(source, dest, "SKIPPED", 0, error=reason)
-    account = credentials.active_account(route)
+    # --- credential ---
+    if force_email:
+        email = force_email
+        password = force_password or credentials.password_for(force_email)
+        if not password:
+            reason = (f"forced account {force_email} has no known password "
+                      "(pass --password)")
+            logging.error(f"{route}: {reason}")
+            return _outcome(source, dest, "FAILED", 0, error=reason)
+        account = credentials.mask(email) + " (forced)"
+    else:
+        # get_credential skips benched/disabled accounts, spread across the day.
+        email, password = credentials.get_credential(route)
+        if not email or not password:
+            if credentials.eligible_emails(route):
+                reason = "all eligible accounts are in cooldown (protecting them)"
+                logging.warning(f"{route}: {reason} — pausing this run.")
+                return _outcome(source, dest, "PAUSED", 0, error=reason)
+            reason = "no registered credential for this route"
+            logging.warning(f"{route}: {reason} — skipping.")
+            return _outcome(source, dest, "SKIPPED", 0, error=reason)
+        account = credentials.active_account(route)
 
-    # Select this (account, route)'s dedicated proxy ONCE — one IP for one account
-    # on one route, so the NEXT route egresses from a different IP. Probed for a
-    # live exit (scans on to the next line if empty). None = direct connection.
-    proxy, exit_ip = proxy_pool.pick_for_run(route, email=email)
-    proxy_label = proxy_pool.label(proxy) if proxy else ""
+    # --- proxy (the account's pinned IP, or a forced one) ---
+    tried_proxies = set()
+    if forced_proxy:
+        proxy = proxy_pool._as_url(force_proxy) if force_proxy else None
+    else:
+        proxy, _ip = proxy_pool.pick_for_run(route, email=email)
+    if proxy:
+        tried_proxies.add(proxy)
+    proxy_label = proxy_pool.label(proxy) if proxy else "local"
 
     max_attempts = _max_attempts()
+    MAX_IP_TRIES = 2
     last_error = None
+    ip_blocked = False
     for attempt in range(1, max_attempts + 1):
-        logging.info(f"=== Attempt {attempt}/{max_attempts} ===")
+        logging.info(f"=== Attempt {attempt}/{max_attempts} (ip {proxy_label}) ===")
         try:
             slots = run_once_with_fresh_browser(source, dest, email, password, proxy)
             logging.info(f"Success on attempt {attempt}.")
             account_health.record_success(email)  # healthy → clear any strikes
             return _outcome(source, dest, "OK", attempt, slot_results=slots,
                             account=account, proxy=proxy_label)
+        except IpBlockedError as e:
+            # 403201: this IP is blocked. Rotate to a DIFFERENT IP and try once
+            # more — do NOT touch the account's health (it's the IP, not the user).
+            last_error = f"IP blocked (403201) on {proxy_label}"
+            logging.warning(f"{route}: {last_error} [{account}].")
+            if forced_proxy or len(tried_proxies) >= MAX_IP_TRIES:
+                ip_blocked = True
+                break
+            newp, _ip = proxy_pool.pick_for_run(route, email=email, exclude=tried_proxies)
+            if not newp:
+                ip_blocked = True
+                break
+            proxy, proxy_label = newp, proxy_pool.label(newp)
+            tried_proxies.add(newp)
+            logging.warning(f"{route}: rotating to a different IP {proxy_label} — retrying.")
+            continue  # retry with the new IP (no backoff, not an account strike)
         except EmailNotRegisteredError as e:
             # Neutral: the account simply isn't registered on THIS portal — not a
             # success and not a failure, so leave its health untouched. Skip.
@@ -280,6 +314,17 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0) -> dict:
         if attempt < max_attempts:
             logging.info(f"Backing off {BACKOFF_SECONDS}s before next attempt...")
             time.sleep(BACKOFF_SECONDS)
+
+    # IP block that couldn't be worked around (all tried IPs 403201, or forced/
+    # no alternate). Do NOT penalise the account — it's the IP. Just alert & fail.
+    if ip_blocked:
+        n = len(tried_proxies) or 1
+        msg = (f"IP blocked (403201) — tried {n} IP(s), all blocked. "
+               f"Route failed this run; a different/residential IP is needed.")
+        logging.error(f"{route}: {msg}")
+        _alert_failure(source, dest, msg, attempts=n, account=account)
+        return _outcome(source, dest, "FAILED", n, error=msg,
+                        account=account, proxy=proxy_label)
 
     # All attempts stuck/failed: count a strike; the breaker benches the account
     # after enough consecutive strikes so we stop hammering it into a block.
@@ -435,6 +480,15 @@ def main() -> None:
         "--local", action="store_true",
         help="Force this PC's own IP for this run — no proxy (overrides config).",
     )
+    # Test overrides (single-route only): force a specific account and/or proxy IP.
+    parser.add_argument("--email", default=None,
+                        help="TEST: force this account (single route). Password is "
+                             "looked up from credentials, or pass --password.")
+    parser.add_argument("--password", default=None,
+                        help="TEST: password for --email (if not in credentials).")
+    parser.add_argument("--proxy-url", dest="proxy_url", default=None,
+                        help="TEST: force this proxy URL for the run, e.g. "
+                             "http://user:pass@host:port (single route).")
     args = parser.parse_args()
 
     initialize_config()
@@ -445,15 +499,21 @@ def main() -> None:
     # One-run override of the [proxy] enabled config switch.
     if args.local:
         os.environ["VFS_PROXY"] = "off"
-    elif args.proxy:
+    elif args.proxy or args.proxy_url:
         os.environ["VFS_PROXY"] = "on"
     initialize_logger()
 
     if args.source_country_code and args.destination_country_code:
-        outcome = run(args.source_country_code, args.destination_country_code)
+        outcome = run(
+            args.source_country_code, args.destination_country_code,
+            force_email=args.email, force_password=args.password,
+            force_proxy=args.proxy_url,
+        )
         _send_run_summary([outcome])
         ok = outcome["ok"]
     else:
+        if args.email or args.proxy_url:
+            logging.warning("--email / --proxy-url only apply with -sc/-dc (one route); ignored.")
         ok = run_all_routes()
     sys.exit(0 if ok else 1)
 
