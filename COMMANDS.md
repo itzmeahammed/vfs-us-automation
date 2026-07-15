@@ -220,9 +220,40 @@ Remove-Item Env:VFS_BOT_CONFIG_PATH
 - Run from a normal PowerShell (Win key → type PowerShell → Enter), starting with
   `cd "c:\Users\ASRAB\Documents\VFS\vfs-malta-slot-checker"`.
 
+---
 
+## Ad-hoc: force one run through a specific proxy
 
+Bypass the pool and pin a single run to one proxy with `--proxy-url`. Supports
+`http://` and `socks5://`. **Replace `USER:PASS@HOST:PORT` with real values — do
+not commit real proxy credentials into this file.**
 
+```powershell
+# HTTP proxy:
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://USER:PASS@HOST:PORT
+
+# SOCKS5 proxy:
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url socks5://USER:PASS@HOST:PORT
+```
+
+## Preview full rotation (route · account · time · IP)
+
+Every route's per-hour account schedule with its login URL:
+
+```powershell
+& .venv\Scripts\python.exe -c @"
+from src.utils.config_reader import initialize_config, get_config_value
+initialize_config()
+from src.utils import credentials as c
+from src.supervisor import _all_routes
+for s,d in _all_routes():
+    r=f'{s}-{d}'
+    print(f'=== {r}   {get_config_value(\"vfs-url\", r)} ===')
+    for t,ri,em in c.rotation_schedule(r):
+        print(f'  {t}   run#{ri:<2}  {em}')
+    print()
+"@
+```
 
 & .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.242.128.49:50100
 & .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.244.143.160:50100
