@@ -70,8 +70,15 @@ def _parse_line(line: str) -> str:
                 return f"http://{parts[2]}:{parts[3]}@{ip}:{port}"
             return f"http://{ip}:{port}"
         return ""                           # header row / malformed
-    if ":" in line:                         # host:port
-        return _as_url(line)
+    if ":" in line:
+        parts = line.split(":")
+        if len(parts) == 4:                 # provider colon format (4 fields)
+            a, b, host, d = parts
+            if d.isdigit() and not host.isdigit():     # USER:PASS:HOST:PORT
+                return f"http://{a}:{b}@{host}:{d}"
+            if b.isdigit():                            # HOST:PORT:USER:PASS
+                return f"http://{host}:{d}@{a}:{b}"
+        return _as_url(line)                # host:port
     return ""
 
 
