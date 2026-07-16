@@ -199,6 +199,29 @@ class ChromeProcess:
             "--no-sandbox",
             "--disable-dev-shm-usage",
         ]
+
+        # Bandwidth: silence Chrome's OWN background/phone-home traffic —
+        # SafeBrowsing list downloads (can be MB), component & field-trial
+        # updates, telemetry, crash reports. On a throwaway profile this would
+        # otherwise egress through the metered proxy on EVERY launch.
+        try:
+            from src.settings import settings
+            bw = settings().bandwidth
+        except Exception:
+            bw = None
+        if bw and bw.mute_chrome:
+            args += [
+                "--disable-background-networking",
+                "--disable-component-update",
+                "--disable-domain-reliability",
+                "--disable-sync",
+                "--disable-client-side-phishing-detection",
+                "--safebrowsing-disable-auto-update",
+                "--no-pings",
+                "--metrics-recording-only",
+                "--disable-breakpad",
+            ]
+
         if self.proxy:
             # Route ALL of Chrome's traffic through this proxy so VFS sees the
             # residential IP. Chrome's --proxy-server IGNORES user:pass, so if the
@@ -219,7 +242,13 @@ class ChromeProcess:
             else:
                 logging.debug(f"Chrome routing through proxy: {host}:{port_}")
             args.append(f"--proxy-server={proxy_arg}")
-        if self.url:
+
+        # With in-browser resource blocking enabled, open a BLANK tab so the first
+        # real page load is the bot's own (intercepted) navigation — nothing loads
+        # through the metered proxy before Playwright attaches its request filter.
+        if bw and bw.blocked_types:
+            args.append("about:blank")
+        elif self.url:
             args.append(self.url)
 
         logging.debug(f"Launching Chrome (CDP :{self.port}) — {chrome}")
@@ -267,11 +296,21 @@ class ChromeProcess:
         Also stops the local proxy forwarder, if one was started.
         """
         if self._forwarder:
+            # Capture the billed byte count BEFORE stopping, then report this
+            # route's proxy usage (only the real browser run logs this — the
+            # short-lived IP-probe forwarder stays silent).
+            fwd_mb = getattr(self._forwarder, "mb", 0.0)
             try:
                 self._forwarder.stop()
             except Exception:
                 pass
             self._forwarder = None
+            try:
+                from src.settings import settings
+                if settings().bandwidth.log_usage and fwd_mb:
+                    logging.info(f"Proxy traffic this route: {fwd_mb:.1f} MB")
+            except Exception:
+                pass
         if not self._proc:
             return
         if self._proc.poll() is not None:

@@ -80,3 +80,14 @@ Grouped as in the file:
   listed in the Telegram run summary.
 - `label` format is `Centre - Category` or `Centre - Category - SubCategory`;
   the last segment is treated as the visa type in the run summary.
+- `"selectors"` (optional) — override the login-form field selectors for this
+  route WITHOUT a code change, for when VFS ships different markup on a portal:
+  ```jsonc
+  "selectors": {
+    "username": "input[formcontrolname='username']",
+    "password": "input[type='password']",
+    "otp":      "input[autocomplete='one-time-code']"
+  }
+  ```
+  Any key you omit falls back to the built-in default (`DEFAULT_*_SELECTOR` in
+  `src/vfs_bot/vfs_bot.py`). Omit the whole object to use defaults everywhere.

@@ -18,6 +18,7 @@ config/routes/<ROUTE>.json):
     timeout_seconds = 120    ; total time to wait for the email
     poll_seconds    = 5      ; mailbox poll interval
     otp_length      = 6      ; expected number of digits
+    read_attempts   = 3      ; OpenAI image-read retries before giving up
 
 The mailbox login is NOT configured here — it reuses the active VFS
 credential's email/password (accounts rotate hourly; each account's email is
@@ -35,6 +36,7 @@ DEFAULT_SEARCH_TEXT = "The OTP for your application with VFS Global is"
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_POLL_SECONDS = 5
 DEFAULT_OTP_LENGTH = 6
+DEFAULT_READ_ATTEMPTS = 3   # OpenAI image-read tries before giving up on a code
 
 
 class OtpError(Exception):
@@ -73,6 +75,7 @@ def get_otp(email_user: str, email_password: str, since_epoch: float) -> str:
     timeout_s = _int_config("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
     poll_s = max(1, _int_config("poll_seconds", DEFAULT_POLL_SECONDS))
     otp_len = _int_config("otp_length", DEFAULT_OTP_LENGTH)
+    read_attempts = max(1, _int_config("read_attempts", DEFAULT_READ_ATTEMPTS))
 
     logging.info(
         f"Waiting for OTP email on {host} for {email_user} "
@@ -86,7 +89,7 @@ def get_otp(email_user: str, email_password: str, since_epoch: float) -> str:
         )
         if mail is not None:
             logging.info("OTP email arrived — extracting the code.")
-            return _extract_code(mail, otp_len)
+            return _extract_code(mail, otp_len, read_attempts)
         time.sleep(poll_s)
 
     raise OtpError(
@@ -95,10 +98,16 @@ def get_otp(email_user: str, email_password: str, since_epoch: float) -> str:
     )
 
 
-def _extract_code(mail: otp_email.OtpMail, otp_len: int) -> str:
+def _extract_code(mail: otp_email.OtpMail, otp_len: int,
+                  read_attempts: int = 1) -> str:
     """
     Pulls the OTP out of a fetched email: plain-text body first (free), then
     the image attachment via OpenAI. Raises OtpError if neither yields a code.
+
+    The image read is retried up to `read_attempts` times on the SAME image
+    before giving up — a transient OCR miss (e.g. a 7-digit misread of a 6-digit
+    code) is then recovered in-place instead of costing a whole browser relaunch.
+    Retries raise the temperature so a re-read can differ from the first answer.
     """
     # Cheap path: the code is sometimes right in the body text.
     code = _find_digits(mail.body_text, otp_len)
@@ -111,13 +120,31 @@ def _extract_code(mail: otp_email.OtpMail, otp_len: int) -> str:
             "OTP email has no code in its text body and no image attachment."
         )
 
-    text = otp_openai.read_otp_image(mail.image, mail.image_mime or "image/png")
-    code = _find_digits(text, otp_len)
-    if code:
-        logging.info(f"OTP read from the email image: {code}")
-        return code
+    attempts = max(1, read_attempts)
+    last_text = ""
+    for attempt in range(1, attempts + 1):
+        # First read deterministic; retries get a nudge of temperature so the
+        # model can produce a different (hopefully correct) answer rather than
+        # repeating the same misread.
+        temperature = 0.0 if attempt == 1 else 0.4
+        last_text = otp_openai.read_otp_image(
+            mail.image, mail.image_mime or "image/png",
+            expected_len=otp_len, temperature=temperature,
+        )
+        code = _find_digits(last_text, otp_len)
+        if code:
+            where = f" on attempt {attempt}" if attempt > 1 else ""
+            logging.info(f"OTP read from the email image{where}: {code}")
+            return code
+        logging.warning(
+            f"OTP image read attempt {attempt}/{attempts} gave no "
+            f"{otp_len}-digit code (got '{last_text}')."
+            + (" Retrying..." if attempt < attempts else "")
+        )
+
     raise OtpError(
-        f"OpenAI reply did not contain a {otp_len}-digit code: '{text}'"
+        f"OpenAI reply did not contain a {otp_len}-digit code after "
+        f"{attempts} attempt(s); last reply: '{last_text}'"
     )
 
 

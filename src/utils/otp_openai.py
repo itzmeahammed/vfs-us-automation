@@ -39,10 +39,19 @@ def is_configured() -> bool:
     return bool(get_config_value("openai", "api_key"))
 
 
-def read_otp_image(image: bytes, mime: str = "image/png") -> str:
+def read_otp_image(image: bytes, mime: str = "image/png",
+                   expected_len: int = None, temperature: float = 0.0) -> str:
     """
     Sends the image to the configured OpenAI vision model and returns the
     model's text reply (expected to be the OTP digits, but NOT validated here).
+
+    Args:
+        expected_len: if given, the model is told the exact digit count — this
+            directly prevents the common off-by-one misread (e.g. returning 7
+            digits when the OTP is 6).
+        temperature: 0 is deterministic (same image -> same answer). The caller
+            raises it on retries so a re-read can actually differ from a first
+            wrong read instead of repeating it.
 
     Raises OpenAiError if the API key is missing or the request fails.
     """
@@ -54,15 +63,22 @@ def read_otp_image(image: bytes, mime: str = "image/png") -> str:
         )
     model = get_config_value("openai", "model", DEFAULT_MODEL) or DEFAULT_MODEL
 
+    prompt = PROMPT
+    if expected_len:
+        prompt += (
+            f" The OTP is exactly {expected_len} digits long — "
+            f"return exactly {expected_len} digits, no more and no fewer."
+        )
+
     data_url = f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
     payload = {
         "model": model,
         "max_tokens": 20,
-        "temperature": 0,
+        "temperature": temperature,
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "text", "text": PROMPT},
+                {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": data_url}},
             ],
         }],

@@ -28,6 +28,7 @@ import sys
 import time
 
 from src.main import initialize_logger
+from src.settings import settings
 from src.utils import account_health, credentials, proxy_pool, telegram, telegram_message
 from src.utils.chrome_launcher import ChromeProcess
 from src.utils.config_reader import (
@@ -48,19 +49,12 @@ from src.vfs_bot.vfs_bot import (
 )
 from src.vfs_bot.vfs_bot_factory import UnsupportedCountryError, get_vfs_bot
 
-# In-run browser relaunches on failure. Overridable via [account_safety]
-# max_attempts (default 2) — fewer relaunches is gentler on accounts.
-DEFAULT_MAX_ATTEMPTS = 2
-BACKOFF_SECONDS = 15
-
-
 def _max_attempts() -> int:
-    try:
-        return max(1, int(str(get_config_value(
-            "account_safety", "max_attempts", str(DEFAULT_MAX_ATTEMPTS))).strip()))
-    except (ValueError, TypeError):
-        return DEFAULT_MAX_ATTEMPTS
-CDP_PORT = 9222
+    """In-run browser relaunches on failure ([account_safety] max_attempts).
+
+    Fewer relaunches is gentler on accounts. Typed/validated in src.settings.
+    """
+    return max(1, settings().account_safety.max_attempts)
 
 
 def _vfs_url(source: str, dest: str) -> str:
@@ -80,7 +74,7 @@ def run_once_with_fresh_browser(source: str, dest: str,
     retry.
     """
     url = _vfs_url(source, dest)
-    chrome = ChromeProcess(port=CDP_PORT, url=url, proxy=proxy)
+    chrome = ChromeProcess(port=settings().retry.cdp_port, url=url, proxy=proxy)
     try:
         chrome.start()
         # Point the bot at the Chrome we just launched.
@@ -215,7 +209,7 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
     proxy_label = proxy_pool.label(proxy) if proxy else "local"
 
     max_attempts = _max_attempts()
-    MAX_IP_TRIES = 2
+    MAX_IP_TRIES = settings().retry.max_ip_tries
     last_error = None
     ip_blocked = False
     for attempt in range(1, max_attempts + 1):
@@ -312,8 +306,9 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             logging.exception(f"Attempt {attempt} failed (unexpected): {last_error}")
 
         if attempt < max_attempts:
-            logging.info(f"Backing off {BACKOFF_SECONDS}s before next attempt...")
-            time.sleep(BACKOFF_SECONDS)
+            backoff = settings().retry.backoff_seconds
+            logging.info(f"Backing off {backoff}s before next attempt...")
+            time.sleep(backoff)
 
     # IP block that couldn't be worked around (all tried IPs 403201, or forced/
     # no alternate). Do NOT penalise the account — it's the IP. Just alert & fail.
@@ -403,6 +398,12 @@ def run_all_routes() -> bool:
 
     all_ok = all(o["ok"] for o in outcomes)
     logging.info(f"All routes done. Overall {'OK' if all_ok else 'with failures'}.")
+    if settings().bandwidth.log_usage:
+        from src.utils import proxy_forwarder
+        logging.info(
+            f"Total proxy traffic this run: {proxy_forwarder.session_mb():.1f} MB "
+            f"across {len(routes)} route(s)."
+        )
     _send_run_summary(outcomes)
     return all_ok
 

@@ -1,5 +1,6 @@
 playwright>=1.43.0
 playwright-stealth==1.0.6
+pydantic-settings>=2.0,<3
 # playwright-stealth 1.0.6 imports pkg_resources, which needs setuptools on
 # Python 3.12+ (where it's no longer bundled). Pin below its removal.
 setuptools<81

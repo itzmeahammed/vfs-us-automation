@@ -23,6 +23,23 @@ import threading
 
 _BUF = 65536
 
+# Running total of bytes tunnelled across ALL forwarders this process (i.e. the
+# whole supervisor run — every route). Lets run_all_routes report a single
+# "proxy traffic this run" figure. Reset per process start (fresh import).
+_session_bytes = 0
+_session_lock = threading.Lock()
+
+
+def session_mb() -> float:
+    """Total proxy bytes tunnelled so far this process, in MB."""
+    return _session_bytes / (1024 * 1024)
+
+
+def reset_session_bytes() -> None:
+    global _session_bytes
+    with _session_lock:
+        _session_bytes = 0
+
 
 class ProxyForwarder:
     def __init__(self, up_host: str, up_port: int, username: str, password: str,
@@ -40,6 +57,8 @@ class ProxyForwarder:
         self._stop = threading.Event()
         self.port = None
         self._err_logged = False  # log the first upstream error only (avoid spam)
+        self._bytes = 0           # bytes tunnelled through THIS forwarder (billed)
+        self._bytes_lock = threading.Lock()
 
     @staticmethod
     def _recvn(sock: socket.socket, n: int) -> bytes:
@@ -211,11 +230,19 @@ class ProxyForwarder:
                     return
                 if not data:
                     return
+                # Meter it: every byte tunnelled here is billed by the proxy.
+                with self._bytes_lock:
+                    self._bytes += len(data)
                 dst = b if s is a else a
                 try:
                     dst.sendall(data)
                 except OSError:
                     return
+
+    @property
+    def mb(self) -> float:
+        """MB tunnelled through this forwarder (billed proxy traffic)."""
+        return self._bytes / (1024 * 1024)
 
     def stop(self) -> None:
         self._stop.set()
@@ -224,3 +251,9 @@ class ProxyForwarder:
                 self._srv.close()
         except OSError:
             pass
+        # Roll this forwarder's tally into the process-wide session total. The
+        # per-route human-readable log is emitted by ChromeProcess (which knows
+        # THIS forwarder is the real browser run, not a short-lived IP probe).
+        global _session_bytes
+        with _session_lock:
+            _session_bytes += self._bytes
