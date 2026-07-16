@@ -37,7 +37,7 @@ class TestExtractCodeRetry(unittest.TestCase):
     def test_recovers_on_second_read(self):
         # First read misreads 7 digits; second read gets the real 6-digit code.
         self._patch(["4142127", "414212"])
-        code = otp_service._extract_code(_fake_mail(), otp_len=6, read_attempts=3)
+        code = otp_service.extract_code(_fake_mail(), otp_len=6, read_attempts=3)
         self.assertEqual(code, "414212")
         self.assertEqual(len(self.calls), 2, "should stop as soon as it succeeds")
         # The digit count is handed to the model, and retries vary temperature.
@@ -48,12 +48,22 @@ class TestExtractCodeRetry(unittest.TestCase):
     def test_gives_up_after_all_attempts(self):
         self._patch(["4142127", "9999999", "1234567"])
         with self.assertRaises(otp_service.OtpError):
-            otp_service._extract_code(_fake_mail(), otp_len=6, read_attempts=3)
+            otp_service.extract_code(_fake_mail(), otp_len=6, read_attempts=3)
         self.assertEqual(len(self.calls), 3)
+
+    def test_excludes_already_rejected_code(self):
+        # First image read returns a code VFS already rejected; the retry must
+        # skip it and return the next, different reading.
+        self._patch(["596916", "596915"])
+        code = otp_service.extract_code(
+            _fake_mail(), otp_len=6, read_attempts=3, exclude={"596916"}
+        )
+        self.assertEqual(code, "596915")
+        self.assertEqual(len(self.calls), 2)
 
     def test_body_code_skips_openai(self):
         self._patch(["should-not-be-called"])
-        code = otp_service._extract_code(
+        code = otp_service.extract_code(
             _fake_mail(body="Your OTP is 246813 thanks"), otp_len=6, read_attempts=3
         )
         self.assertEqual(code, "246813")

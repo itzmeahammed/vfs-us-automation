@@ -63,7 +63,7 @@ def _vfs_url(source: str, dest: str) -> str:
 
 def run_once_with_fresh_browser(source: str, dest: str,
                                 email: str = None, password: str = None,
-                                proxy: str = None) -> list:
+                                proxy: str = None, keep_open: bool = False) -> list:
     """
     One attempt: launch a fresh Chrome, run the flow, always kill Chrome after.
 
@@ -72,9 +72,15 @@ def run_once_with_fresh_browser(source: str, dest: str,
     the egress for this route's Chrome (None = direct). Returns the bot's
     slot_results on success; raises on failure — the caller decides whether to
     retry.
+
+    keep_open (manual debugging only) leaves the browser open at the end and
+    blocks until you press Enter, so you can inspect the final page.
     """
     url = _vfs_url(source, dest)
-    chrome = ChromeProcess(port=settings().retry.cdp_port, url=url, proxy=proxy)
+    # profile_key ties the (optional) persistent cache to the ACCOUNT, so each
+    # account reuses only its own warm cache + its own IP's cf_clearance.
+    chrome = ChromeProcess(port=settings().retry.cdp_port, url=url, proxy=proxy,
+                           profile_key=email)
     try:
         chrome.start()
         # Point the bot at the Chrome we just launched.
@@ -88,6 +94,12 @@ def run_once_with_fresh_browser(source: str, dest: str,
             raise RetryableError("Flow returned without completing.")
         return getattr(bot, "slot_results", [])
     finally:
+        if keep_open:
+            # Debug: hold the browser open for inspection until the user is done.
+            try:
+                input("\n[keep-open] Browser left open. Press Enter to close it...")
+            except EOFError:
+                pass
         # Guaranteed cleanup — this is the anti-zombie guarantee.
         chrome.close()
 
@@ -159,7 +171,7 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
 
 def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
         force_email: str = None, force_password: str = None,
-        force_proxy: str = None) -> dict:
+        force_proxy: str = None, keep_open: bool = False) -> dict:
     """
     Runs a route with ONE account (selected up front, skipping benched/disabled)
     and its pinned proxy IP, updating account health per the outcome.
@@ -208,14 +220,17 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
         tried_proxies.add(proxy)
     proxy_label = proxy_pool.label(proxy) if proxy else "local"
 
-    max_attempts = _max_attempts()
-    MAX_IP_TRIES = settings().retry.max_ip_tries
+    # keep_open is a single-shot debug mode — don't relaunch (that would close the
+    # window you asked to keep) and don't rotate IPs.
+    max_attempts = 1 if keep_open else _max_attempts()
+    MAX_IP_TRIES = 1 if keep_open else settings().retry.max_ip_tries
     last_error = None
     ip_blocked = False
     for attempt in range(1, max_attempts + 1):
         logging.info(f"=== Attempt {attempt}/{max_attempts} (ip {proxy_label}) ===")
         try:
-            slots = run_once_with_fresh_browser(source, dest, email, password, proxy)
+            slots = run_once_with_fresh_browser(source, dest, email, password, proxy,
+                                                keep_open=keep_open)
             logging.info(f"Success on attempt {attempt}.")
             account_health.record_success(email)  # healthy → clear any strikes
             return _outcome(source, dest, "OK", attempt, slot_results=slots,
@@ -490,6 +505,10 @@ def main() -> None:
     parser.add_argument("--proxy-url", dest="proxy_url", default=None,
                         help="TEST: force this proxy URL for the run, e.g. "
                              "http://user:pass@host:port (single route).")
+    parser.add_argument("--keep-open", dest="keep_open", action="store_true",
+                        help="DEBUG (single route): leave the browser open at the "
+                             "end and wait for Enter, so you can inspect the page. "
+                             "Disables retries/IP-rotation.")
     args = parser.parse_args()
 
     initialize_config()
@@ -508,13 +527,14 @@ def main() -> None:
         outcome = run(
             args.source_country_code, args.destination_country_code,
             force_email=args.email, force_password=args.password,
-            force_proxy=args.proxy_url,
+            force_proxy=args.proxy_url, keep_open=args.keep_open,
         )
         _send_run_summary([outcome])
         ok = outcome["ok"]
     else:
-        if args.email or args.proxy_url:
-            logging.warning("--email / --proxy-url only apply with -sc/-dc (one route); ignored.")
+        if args.email or args.proxy_url or args.keep_open:
+            logging.warning("--email / --proxy-url / --keep-open only apply with "
+                            "-sc/-dc (one route); ignored.")
         ok = run_all_routes()
     sys.exit(0 if ok else 1)
 

@@ -20,6 +20,7 @@ has somewhere to render.
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import time
@@ -154,7 +155,7 @@ class ChromeProcess:
     """
 
     def __init__(self, port=9222, url=None, profile_dir=None, startup_timeout_s=30,
-                 proxy=None):
+                 proxy=None, profile_key=None):
         self.port = port
         self.url = url
         self.startup_timeout_s = startup_timeout_s
@@ -162,16 +163,37 @@ class ChromeProcess:
         self._proc = None
         self._forwarder = None  # local auth-injecting forwarder, if the proxy needs it
 
-        # Throwaway profile dir, DELETED on close. Rationale: this runs on the
-        # user's own (limited-disk) PC, where leaving Chrome profiles in TEMP
-        # across many runs is unwanted residue. On a residential IP Cloudflare's
-        # Turnstile auto-passes each run, so we don't need to persist cf_clearance
-        # (the reason the EC2 build kept the profile). Pass profile_dir=... to
-        # override with a caller-owned dir (then we won't delete it).
+        # Bandwidth: opt-in persistent cache (settings [bandwidth] persist_cache).
+        try:
+            from src.settings import settings
+            bw = settings().bandwidth
+            persist = bool(bw.persist_cache)
+            self._cache_mb = int(bw.cache_size_mb)
+        except Exception:
+            persist, self._cache_mb = False, 128
+        # Persist only when a per-ACCOUNT key is supplied — never share ONE profile
+        # across accounts: cf_clearance is IP-bound (each account has its own pinned
+        # IP) and cookies would cross-contaminate accounts.
+        self._persist = persist and bool(profile_key)
+
         if profile_dir:
+            # Caller owns it — don't delete on close.
             self.profile_dir = profile_dir
-            self._owns_profile = False  # caller owns it — don't delete on close
+            self._owns_profile = False
+        elif self._persist:
+            # Per-account profile KEPT across runs, so that account's static assets
+            # (JS/CSS/fonts) and its own cf_clearance are served from disk cache
+            # instead of re-fetched through the metered proxy. VFS *session* cookies
+            # are still cleared each run (VfsBot._clear_site_session), which keeps
+            # cf_clearance but avoids the stale "Session Expired" page.
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(profile_key))[:64]
+            self.profile_dir = os.path.join(_profile_base(), f"{PROFILE_PREFIX}acct-{safe}")
+            self._owns_profile = False  # keep it — this is the whole point
         else:
+            # Default: throwaway dir, DELETED on close. Rationale: on a limited-disk
+            # PC, leaving Chrome profiles in TEMP across many runs is unwanted
+            # residue; on a residential IP Turnstile auto-passes each run so
+            # persisting cf_clearance isn't required.
             self.profile_dir = os.path.join(_profile_base(), f"{PROFILE_PREFIX}{port}")
             self._owns_profile = True  # ours — delete on close (no residue)
 
@@ -184,8 +206,12 @@ class ChromeProcess:
         # bot run and wipe stale profile dirs. This guarantees each run starts
         # fresh with no residue and no port/profile lock conflicts. Surgical —
         # only OUR bot Chrome (PROFILE_PREFIX) is matched, never the user's.
+        # Always kill leftover bot Chrome (frees any profile lock from a crashed
+        # run). Only WIPE profile dirs in throwaway mode — in persist mode the
+        # per-account dirs are the cache we want to keep.
         kill_stale_bot_chrome()
-        remove_stale_profiles()
+        if not self._persist:
+            remove_stale_profiles()
 
         chrome = _find_chrome()
         args = [
@@ -199,6 +225,10 @@ class ChromeProcess:
             "--no-sandbox",
             "--disable-dev-shm-usage",
         ]
+
+        if self._persist:
+            # Cap the on-disk HTTP cache so a kept profile can't grow without bound.
+            args.append(f"--disk-cache-size={max(1, self._cache_mb) * 1024 * 1024}")
 
         # Bandwidth: silence Chrome's OWN background/phone-home traffic —
         # SafeBrowsing list downloads (can be MB), component & field-trial

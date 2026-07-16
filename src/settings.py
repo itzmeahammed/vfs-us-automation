@@ -88,7 +88,11 @@ class Otp(_Section):
     timeout_seconds: int = 120
     poll_seconds: int = 5
     otp_length: int = 6
-    read_attempts: int = 2   # OpenAI image-read retries before relaunching browser
+    read_attempts: int = 2   # OpenAI image-read retries to obtain a valid code
+    # How many times to submit an OTP to VFS. On each rejection ("Please enter a
+    # valid one time password") the image is re-read for a DIFFERENT code and
+    # re-submitted. Keep small — each wrong submit counts toward VFS lockout.
+    submit_attempts: int = 3
 
 
 class Proxy(_Section):
@@ -113,6 +117,13 @@ class Bandwidth(_Section):
     # re-verified Turnstile still passes.
     mute_chrome: bool = False         # disable Chrome's background/phone-home traffic
     block_resource_types: str = ""    # Playwright resource types to abort (comma list)
+    # Persist a PER-ACCOUNT browser profile across runs so static JS/CSS/fonts (and
+    # that account's cf_clearance) are served from disk cache instead of re-fetched
+    # through the metered proxy. Off by default — verify Turnstile with a live run
+    # before enabling on the scheduler. Cache is per account (never shared: cf_clearance
+    # is IP-bound and cookies would cross-contaminate accounts).
+    persist_cache: bool = False
+    cache_size_mb: int = 128          # disk-cache cap PER account profile
 
     @property
     def blocked_types(self) -> set:

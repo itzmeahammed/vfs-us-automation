@@ -80,5 +80,41 @@ class TestResourceFilter(unittest.TestCase):
         self.assertIsNone(handler, "no filter should be installed when list is empty")
 
 
+class TestPersistProfile(unittest.TestCase):
+    """ChromeProcess profile selection: throwaway by default, per-account when
+    persist_cache is on, and safe fallback when no account key is given."""
+
+    def _chrome(self, persist, key):
+        import src.settings as s
+        from src.utils.chrome_launcher import ChromeProcess
+
+        original = s._cached
+        s._cached = s.Settings(bandwidth=Bandwidth(persist_cache=persist))
+        try:
+            return ChromeProcess(port=9222, profile_key=key)
+        finally:
+            s._cached = original
+
+    def test_default_is_throwaway(self):
+        c = self._chrome(persist=False, key="gusal@travnook.com")
+        self.assertFalse(c._persist)
+        self.assertTrue(c._owns_profile, "throwaway profile must be deleted on close")
+        self.assertTrue(c.profile_dir.endswith("9222"))
+
+    def test_persist_is_per_account(self):
+        a = self._chrome(persist=True, key="gusal@travnook.com")
+        b = self._chrome(persist=True, key="zaid@travnook.com")
+        self.assertTrue(a._persist)
+        self.assertFalse(a._owns_profile, "persistent profile must NOT be deleted")
+        self.assertIn("acct-gusal_travnook.com", a.profile_dir)
+        # Different accounts get DIFFERENT dirs (no cf_clearance / cookie mixing).
+        self.assertNotEqual(a.profile_dir, b.profile_dir)
+
+    def test_persist_without_key_falls_back(self):
+        c = self._chrome(persist=True, key=None)
+        self.assertFalse(c._persist, "no account key -> never share one profile")
+        self.assertTrue(c._owns_profile)
+
+
 if __name__ == "__main__":
     unittest.main()

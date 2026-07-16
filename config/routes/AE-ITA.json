@@ -4,8 +4,8 @@
   "otp": true,
   "slot_check": {
     "combinations": [
-      { "label": "Italy Visa Application Center ,Dubai", "disabled": true,
-        "centre": "Dubai", "category": "Short Stay - Business", "sub_category": "" },
+      { "label": "Italy Visa Application Center ,Dubai",
+        "centre": "Dubai", "category": "Schengen Visa", "sub_category": "" },
       { "label": "Italy Visa Application Center ,Dubai",
         "centre": "Dubai", "category": "Short Stay", "sub_category": "Tourist visa" }       
     ]

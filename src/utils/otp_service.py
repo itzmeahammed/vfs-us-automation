@@ -64,6 +64,25 @@ def get_otp(email_user: str, email_password: str, since_epoch: float) -> str:
         OtpError: if the [otp] config is missing, no matching email arrives
         within the timeout, or the code can't be read/validated.
     """
+    mail = wait_for_otp_mail(email_user, email_password, since_epoch)
+    read_attempts = max(1, _int_config("read_attempts", DEFAULT_READ_ATTEMPTS))
+    return extract_code(mail, otp_length(), read_attempts)
+
+
+def otp_length() -> int:
+    """Configured OTP digit count ([otp] otp_length)."""
+    return _int_config("otp_length", DEFAULT_OTP_LENGTH)
+
+
+def wait_for_otp_mail(email_user: str, email_password: str,
+                      since_epoch: float) -> otp_email.OtpMail:
+    """
+    Polls the mailbox and returns the fresh OTP email (OtpMail) WITHOUT reading
+    the code — so the caller can read AND RE-READ the image on demand (e.g. to
+    recover after VFS rejects a misread code with 'Please enter a valid OTP').
+
+    Raises OtpError if [otp] is misconfigured or no matching email arrives in time.
+    """
     host = get_config_value("otp", "imap_host")
     if not host:
         raise OtpError("[otp] imap_host is not configured — cannot fetch OTP.")
@@ -74,22 +93,19 @@ def get_otp(email_user: str, email_password: str, since_epoch: float) -> str:
     )
     timeout_s = _int_config("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
     poll_s = max(1, _int_config("poll_seconds", DEFAULT_POLL_SECONDS))
-    otp_len = _int_config("otp_length", DEFAULT_OTP_LENGTH)
-    read_attempts = max(1, _int_config("read_attempts", DEFAULT_READ_ATTEMPTS))
 
     logging.info(
         f"Waiting for OTP email on {host} for {email_user} "
         f"(up to {timeout_s}s, polling every {poll_s}s)..."
     )
-
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         mail = otp_email.fetch_latest_otp_mail(
             host, port, email_user, email_password, search_text, since_epoch
         )
         if mail is not None:
-            logging.info("OTP email arrived — extracting the code.")
-            return _extract_code(mail, otp_len, read_attempts)
+            logging.info("OTP email arrived.")
+            return mail
         time.sleep(poll_s)
 
     raise OtpError(
@@ -98,20 +114,26 @@ def get_otp(email_user: str, email_password: str, since_epoch: float) -> str:
     )
 
 
-def _extract_code(mail: otp_email.OtpMail, otp_len: int,
-                  read_attempts: int = 1) -> str:
+def extract_code(mail: otp_email.OtpMail, otp_len: int, read_attempts: int = 1,
+                 min_temperature: float = 0.0, exclude=None) -> str:
     """
-    Pulls the OTP out of a fetched email: plain-text body first (free), then
-    the image attachment via OpenAI. Raises OtpError if neither yields a code.
+    Reads the OTP out of a fetched email: plain-text body first (free), then the
+    image attachment via OpenAI. Raises OtpError if neither yields a usable code.
 
-    The image read is retried up to `read_attempts` times on the SAME image
-    before giving up — a transient OCR miss (e.g. a 7-digit misread of a 6-digit
-    code) is then recovered in-place instead of costing a whole browser relaunch.
-    Retries raise the temperature so a re-read can differ from the first answer.
+    The image read is retried up to `read_attempts` times on the SAME image so a
+    transient OCR miss (e.g. a 7-digit misread of a 6-digit code) is recovered
+    in-place instead of costing a browser relaunch. Temperature rises each retry
+    (from `min_temperature`) so a re-read can differ from the previous answer.
+
+    `exclude` is a set of codes already REJECTED by VFS — the reader keeps trying
+    until it produces a valid code NOT in that set, so we never re-submit a code
+    VFS has already refused (which would just burn an attempt toward lockout).
     """
+    exclude = exclude or set()
+
     # Cheap path: the code is sometimes right in the body text.
     code = _find_digits(mail.body_text, otp_len)
-    if code:
+    if code and code not in exclude:
         logging.info(f"OTP found in the email body: {code}")
         return code
 
@@ -123,27 +145,25 @@ def _extract_code(mail: otp_email.OtpMail, otp_len: int,
     attempts = max(1, read_attempts)
     last_text = ""
     for attempt in range(1, attempts + 1):
-        # First read deterministic; retries get a nudge of temperature so the
-        # model can produce a different (hopefully correct) answer rather than
-        # repeating the same misread.
-        temperature = 0.0 if attempt == 1 else 0.4
+        temperature = min(1.0, min_temperature + 0.4 * (attempt - 1))
         last_text = otp_openai.read_otp_image(
             mail.image, mail.image_mime or "image/png",
             expected_len=otp_len, temperature=temperature,
         )
         code = _find_digits(last_text, otp_len)
-        if code:
+        if code and code not in exclude:
             where = f" on attempt {attempt}" if attempt > 1 else ""
             logging.info(f"OTP read from the email image{where}: {code}")
             return code
+        why = (f"already-rejected code {code}" if code and code in exclude
+               else f"no {otp_len}-digit code (raw '{last_text}')")
         logging.warning(
-            f"OTP image read attempt {attempt}/{attempts} gave no "
-            f"{otp_len}-digit code (got '{last_text}')."
+            f"OTP image read attempt {attempt}/{attempts}: {why}."
             + (" Retrying..." if attempt < attempts else "")
         )
 
     raise OtpError(
-        f"OpenAI reply did not contain a {otp_len}-digit code after "
+        f"OpenAI could not produce a usable {otp_len}-digit code after "
         f"{attempts} attempt(s); last reply: '{last_text}'"
     )
 

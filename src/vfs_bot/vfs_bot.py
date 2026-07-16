@@ -107,6 +107,9 @@ class VfsBot(ABC):
         self._block_code = None
         # How many resource requests the bandwidth filter aborted this run.
         self._blocked_requests = 0
+        # Wire bytes the browser received this run (counted with OR without a
+        # proxy, so local-IP and proxy runs can be compared on the same metric).
+        self._net_bytes = 0
 
     def set_credential(self, email: str, password: str) -> None:
         """Supervisor-provided credential to use for this run (overrides self-select)."""
@@ -183,6 +186,28 @@ class VfsBot(ABC):
             logging.debug(f"Bandwidth: blocking resource types {sorted(blocked)}.")
         except Exception as e:
             logging.warning(f"Could not install resource blocking (continuing): {e}")
+
+    def _install_traffic_meter(self, context) -> None:
+        """Sum the wire bytes of every finished request so a run's data usage can
+        be measured in BOTH proxy and local-IP modes (the proxy forwarder only
+        meters proxied runs). Covers all frames incl. the Turnstile iframe.
+        Best-effort — never breaks the flow.
+        """
+        if not settings().bandwidth.log_usage:
+            return
+
+        def _count(request):
+            try:
+                s = request.sizes()
+                self._net_bytes += (s.get("responseBodySize") or 0)
+                self._net_bytes += (s.get("responseHeadersSize") or 0)
+            except Exception:
+                pass
+
+        try:
+            context.on("requestfinished", _count)
+        except Exception as e:
+            logging.debug(f"Could not install traffic meter (continuing): {e}")
 
     def run(self) -> bool:
         """
@@ -303,6 +328,10 @@ class VfsBot(ABC):
             # so it also covers the Cloudflare Turnstile iframe. JS + CSS are kept.
             self._install_resource_blocking(context)
 
+            # Bandwidth: count wire bytes the browser receives — works WITH or
+            # WITHOUT a proxy, so local-IP and proxy runs compare on one metric.
+            self._install_traffic_meter(context)
+
             # Pin a fixed viewport so the page layout (and thus the Turnstile
             # checkbox position for the coordinate click) is deterministic.
             try:
@@ -341,6 +370,15 @@ class VfsBot(ABC):
                 # the page/browser died mid-flow) is also retryable.
                 self._take_final_screenshot(page, "final")
                 raise RetryableError(f"Unexpected flow error: {e}") from e
+            finally:
+                # Report browser data usage on success AND failure (matches the
+                # proxy forwarder's per-route line; this one also works on local IP).
+                if settings().bandwidth.log_usage and self._net_bytes:
+                    logging.info(
+                        f"Browser traffic this route: "
+                        f"{self._net_bytes / (1024 * 1024):.1f} MB "
+                        f"(all requests, proxy or local IP)."
+                    )
 
             # Single final screenshot capturing the successful end state.
             self._take_final_screenshot(page, "final")
@@ -867,18 +905,78 @@ class VfsBot(ABC):
         logging.info("OTP step detected — fetching the code from email.")
         VfsBot._take_screenshot(page, "otp_step")
 
+        # Fetch the email ONCE; we re-read its image on each submit so a VFS
+        # rejection can be recovered without waiting for a whole new OTP email.
         try:
-            code = otp_service.get_otp(email_id, password, since_epoch)
+            mail = otp_service.wait_for_otp_mail(email_id, password, since_epoch)
         except Exception as e:
             VfsBot._take_final_screenshot(page, "otp_fetch_failed")
-            raise OtpVerificationError(f"Could not obtain the OTP: {e}") from e
+            raise OtpVerificationError(f"Could not obtain the OTP email: {e}") from e
 
-        VfsBot._fill_field(page, otp_input, code)
-        page.wait_for_timeout(500)
-        logging.info("OTP entered; submitting...")
+        otp_len = otp_service.otp_length()
+        read_attempts = settings().otp.read_attempts
+        submit_attempts = max(1, settings().otp.submit_attempts)
+        rejected = set()
 
-        # The confirm button's label isn't pinned down — try the likely ones,
-        # falling back to force/JS clicks (same ladder as Sign In).
+        for attempt in range(1, submit_attempts + 1):
+            # Read a valid code VFS hasn't already rejected. After a rejection the
+            # temperature is raised so the re-read can differ from the last one.
+            try:
+                code = otp_service.extract_code(
+                    mail, otp_len, read_attempts,
+                    min_temperature=0.0 if attempt == 1 else 0.4,
+                    exclude=rejected,
+                )
+            except Exception as e:
+                VfsBot._take_final_screenshot(page, "otp_read_failed")
+                raise OtpVerificationError(f"Could not read the OTP: {e}") from e
+
+            if attempt > 1:
+                logging.info(
+                    f"Re-fetched OTP from AI after VFS rejection "
+                    f"(submit {attempt}/{submit_attempts}): {code}"
+                )
+
+            # Re-locate the field (it may re-render after a rejection) and enter it.
+            try:
+                otp_input = page.locator(self.selectors["otp"]).first
+            except Exception:
+                pass
+            VfsBot._fill_field(page, otp_input, code)
+            page.wait_for_timeout(500)
+            logging.info(f"OTP {code} entered; submitting ({attempt}/{submit_attempts})...")
+
+            if not self._submit_otp(page):
+                VfsBot._take_final_screenshot(page, "otp_submit_missing")
+                raise OtpVerificationError(
+                    "OTP entered but no Verify/Submit button could be clicked."
+                )
+
+            # Did VFS reject it? Poll briefly for the 'valid OTP' banner.
+            if not VfsBot._otp_rejected_after_submit(page):
+                return  # accepted (or progressing to the dashboard) — done here
+
+            rejected.add(code)
+            logging.warning(
+                f"VFS REJECTED the OTP '{code}' — 'Please enter a valid one time "
+                f"password (OTP)'. RE-FETCHING a fresh reading from AI and retrying "
+                f"(submit {attempt}/{submit_attempts})."
+            )
+            VfsBot._take_screenshot(page, f"otp_rejected_{attempt}")
+
+        VfsBot._take_final_screenshot(page, "otp_rejected_final")
+        raise OtpVerificationError(
+            f"VFS rejected the OTP on all {submit_attempts} submit attempt(s) "
+            "('Please enter a valid one time password')."
+        )
+
+    # Text VFS shows when a submitted OTP is wrong.
+    OTP_REJECTED_TEXT = "valid one time password"
+
+    @staticmethod
+    def _submit_otp(page) -> bool:
+        """Click the OTP confirm button (label ladder + force/JS fallback).
+        Returns True if a click was issued, False if no button was found."""
         for label in ("Verify", "Submit", "Confirm", "Sign In", "Continue"):
             try:
                 btn = page.get_by_role("button", name=label).first
@@ -895,14 +993,40 @@ class VfsBot(ABC):
                         btn.evaluate("el => el.click()")
                 logging.info(f"Submitted OTP via '{label}'.")
                 VfsBot._take_screenshot(page, "otp_submitted")
-                return
+                return True
             except Exception:
                 continue
+        return False
 
-        VfsBot._take_final_screenshot(page, "otp_submit_missing")
-        raise OtpVerificationError(
-            "OTP was entered but no Verify/Submit button could be clicked."
-        )
+    @staticmethod
+    def _otp_rejected(page) -> bool:
+        """True if VFS's 'Please enter a valid one time password (OTP).' banner
+        is on the page."""
+        try:
+            return VfsBot.OTP_REJECTED_TEXT in (VfsBot._page_text(page) or "").lower()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _otp_rejected_after_submit(page, timeout_ms: int = 12000) -> bool:
+        """Poll briefly after submitting: True if VFS shows the invalid-OTP banner
+        (=> re-fetch and retry); False if we progress toward the dashboard or
+        nothing rejects within the window (=> treat as accepted)."""
+        step_ms = 1000
+        waited = 0
+        while waited < timeout_ms:
+            try:
+                if "/dashboard" in (page.url or ""):
+                    return False  # moved on — accepted
+            except Exception:
+                pass
+            VfsBot._raise_if_blocked(page)   # an account block can surface here
+            if VfsBot._otp_rejected(page):
+                return True
+            VfsBot._dismiss_captcha(page)
+            page.wait_for_timeout(step_ms)
+            waited += step_ms
+        return False
 
     # ===== Booking start & slot check =======================================
 
