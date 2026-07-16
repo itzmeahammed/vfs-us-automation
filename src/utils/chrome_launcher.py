@@ -230,16 +230,27 @@ class ChromeProcess:
             # Cap the on-disk HTTP cache so a kept profile can't grow without bound.
             args.append(f"--disk-cache-size={max(1, self._cache_mb) * 1024 * 1024}")
 
-        # Bandwidth: silence Chrome's OWN background/phone-home traffic —
-        # SafeBrowsing list downloads (can be MB), component & field-trial
-        # updates, telemetry, crash reports. On a throwaway profile this would
-        # otherwise egress through the metered proxy on EVERY launch.
+        # Bandwidth: silence Chrome's OWN background/phone-home traffic — which the
+        # per-host proxy breakdown proved is ~90% of the bill (Chrome downloading
+        # from *.googleapis.com / googleusercontent.com, NOT from VFS). The worst
+        # offender is the Optimization Guide ML model from
+        # optimizationguide-pa.googleapis.com (tens of MB) — it never finishes
+        # before we kill Chrome, so it re-downloads on EVERY launch. The
+        # --disable-features list below stops it (and the other phone-homes) at the
+        # source. None of these affect page rendering or the Turnstile widget.
         try:
             from src.settings import settings
             bw = settings().bandwidth
         except Exception:
             bw = None
         if bw and bw.mute_chrome:
+            muted_features = (
+                "OptimizationHints,OptimizationGuideModelDownloading,"
+                "OptimizationTargetPrediction,OptimizationHintsFetching,"
+                "Translate,MediaRouter,InterestFeedContentSuggestions,"
+                "DownloadBubble,PasswordLeakDetection,AutofillServerCommunication,"
+                "CalculateNativeWinOcclusion"
+            )
             args += [
                 "--disable-background-networking",
                 "--disable-component-update",
@@ -247,10 +258,13 @@ class ChromeProcess:
                 "--disable-sync",
                 "--disable-client-side-phishing-detection",
                 "--safebrowsing-disable-auto-update",
+                "--disable-features=" + muted_features,
                 "--no-pings",
                 "--metrics-recording-only",
                 "--disable-breakpad",
             ]
+            logging.debug("Bandwidth: mute_chrome ON — Google background traffic "
+                          "disabled (incl. Optimization Guide model download).")
 
         if self.proxy:
             # Route ALL of Chrome's traffic through this proxy so VFS sees the
@@ -326,12 +340,17 @@ class ChromeProcess:
         Also stops the local proxy forwarder, if one was started.
         """
         if self._forwarder:
-            # Capture the billed byte count BEFORE stopping, then report this
-            # route's proxy usage (only the real browser run logs this — the
-            # short-lived IP-probe forwarder stays silent).
-            fwd_mb = getattr(self._forwarder, "mb", 0.0)
+            # Capture the billed byte count + per-host breakdown BEFORE stopping,
+            # then report this route's proxy usage (only the real browser run logs
+            # this — the short-lived IP-probe forwarder stays silent).
+            fwd = self._forwarder
+            fwd_mb = getattr(fwd, "mb", 0.0)
             try:
-                self._forwarder.stop()
+                hosts = fwd.top_hosts(6)
+            except Exception:
+                hosts = []
+            try:
+                fwd.stop()
             except Exception:
                 pass
             self._forwarder = None
@@ -339,6 +358,10 @@ class ChromeProcess:
                 from src.settings import settings
                 if settings().bandwidth.log_usage and fwd_mb:
                     logging.info(f"Proxy traffic this route: {fwd_mb:.1f} MB")
+                    # Where the bytes went — reveals Chrome background (google/
+                    # gstatic/safebrowsing) vs Cloudflare vs VFS.
+                    for host, nbytes in hosts:
+                        logging.info(f"    {nbytes / (1024 * 1024):6.1f} MB  {host}")
             except Exception:
                 pass
         if not self._proc:

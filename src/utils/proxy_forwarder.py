@@ -58,6 +58,7 @@ class ProxyForwarder:
         self.port = None
         self._err_logged = False  # log the first upstream error only (avoid spam)
         self._bytes = 0           # bytes tunnelled through THIS forwarder (billed)
+        self._bytes_by_host = {}  # per-destination-host byte tally (diagnostics)
         self._bytes_lock = threading.Lock()
 
     @staticmethod
@@ -148,6 +149,9 @@ class ProxyForwarder:
             if len(parts) < 2:
                 return
             method, target = parts[0].upper(), parts[1]
+            # Destination host (for the per-host byte breakdown). For CONNECT the
+            # target is 'host:port' in cleartext even though the payload is TLS.
+            host = target.split(b":", 1)[0].decode("ascii", "ignore") or None
 
             up = socket.create_connection((self.up_host, self.up_port), timeout=30)
             auth = self._auth.encode()
@@ -163,7 +167,7 @@ class ProxyForwarder:
                         client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
                         return
                     client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                    self._pipe(client, up)
+                    self._pipe(client, up, host=host)
                     return
                 # HTTP upstream: open the tunnel WITH auth, then pipe.
                 up.sendall(
@@ -181,7 +185,7 @@ class ProxyForwarder:
                 status_line = resp.split(b"\r\n", 1)[0]
                 if b" 200 " in status_line:
                     client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                    self._pipe(client, up)
+                    self._pipe(client, up, host=host)
                 else:
                     client.sendall(resp)  # forward the upstream error (e.g. 407)
             elif is_socks:
@@ -210,7 +214,7 @@ class ProxyForwarder:
                 except OSError:
                     pass
 
-    def _pipe(self, a: socket.socket, b: socket.socket) -> None:
+    def _pipe(self, a: socket.socket, b: socket.socket, host: str = None) -> None:
         a.setblocking(False)
         b.setblocking(False)
         socks = [a, b]
@@ -231,8 +235,11 @@ class ProxyForwarder:
                 if not data:
                     return
                 # Meter it: every byte tunnelled here is billed by the proxy.
+                n = len(data)
                 with self._bytes_lock:
-                    self._bytes += len(data)
+                    self._bytes += n
+                    if host:
+                        self._bytes_by_host[host] = self._bytes_by_host.get(host, 0) + n
                 dst = b if s is a else a
                 try:
                     dst.sendall(data)
@@ -243,6 +250,13 @@ class ProxyForwarder:
     def mb(self) -> float:
         """MB tunnelled through this forwarder (billed proxy traffic)."""
         return self._bytes / (1024 * 1024)
+
+    def top_hosts(self, n: int = 6):
+        """The n destination hosts that ate the most bytes: [(host, bytes), ...]."""
+        with self._bytes_lock:
+            items = sorted(self._bytes_by_host.items(), key=lambda kv: kv[1],
+                           reverse=True)
+        return items[:n]
 
     def stop(self) -> None:
         self._stop.set()
