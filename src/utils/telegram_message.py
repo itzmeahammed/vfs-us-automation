@@ -176,8 +176,13 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
                 head += "OK | " + " | ".join(
                     f"{t}: 🎫 {c} slot(s)" for t, c in slot_types
                 )
+            elif slots:
+                head += f"OK · 🎫 {slots} slot(s)"
+            elif o.get("waitlist"):
+                # No bookable slot, but VFS offered a waitlist for this route.
+                head += "OK · 📝 waitlist"
             else:
-                head += f"OK · 🎫 {slots} slot(s)" if slots else "OK · no slots"
+                head += "OK · no slots"
         elif status == "FAILED" and combo_errors:
             # Completed, but one or more combinations errored during slot search.
             head += f"FAILED · ⚠️ {len(combo_errors)} combo error(s)"
@@ -255,8 +260,6 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
         roll += f" · ⏭️ {counts['SKIPPED']}"
     roll += f"  |  🎫 {total_slots} slot(s)"
 
-    lines.append("")
-    lines.append("━━━━━━━━━━━━━━")
     lines.append(roll)
     return "\n".join(lines)
 

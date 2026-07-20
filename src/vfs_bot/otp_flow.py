@@ -1,0 +1,201 @@
+"""OTP verification for routes flagged "otp": true in their route schema.
+
+Runs after Sign In and before the dashboard: waits for the emailed one-time-
+password field, reads the code from the account's mailbox (src/utils/
+otp_service.py — same email/password as the VFS login), enters it and submits.
+VFS occasionally rejects a submitted OTP (a misread digit, or the image
+render lagging the actual code); on rejection this re-reads the SAME email
+for a fresh reading and resubmits, up to settings().otp.submit_attempts times,
+before giving up with OtpVerificationError (retryable — a fresh browser
+re-triggers Sign In, which sends a fresh OTP).
+"""
+
+import logging
+
+from src.settings import settings
+from src.vfs_bot import block_detection, diagnostics, turnstile
+from src.vfs_bot.dom_utils import fill_field
+from src.vfs_bot.errors import OtpVerificationError
+
+# Text VFS shows when a submitted OTP is wrong.
+OTP_REJECTED_TEXT = "valid one time password"
+
+
+def submit_otp(page) -> bool:
+    """Click the OTP confirm button (label ladder + force/JS fallback).
+    Returns True if a click was issued, False if no button was found."""
+    for label in ("Verify", "Submit", "Confirm", "Sign In", "Continue"):
+        try:
+            btn = page.get_by_role("button", name=label).first
+            if btn.count() == 0 or not btn.is_visible():
+                continue
+            if not btn.is_enabled():
+                # This step can show its OWN Cloudflare 'Verify you are human'
+                # checkbox (separate widget from the login page's), which VFS
+                # gates the button on. A flat wait alone was too often too
+                # short AND never clicked the checkbox — give it a real
+                # auto-solve window, then coordinate-click it same as the
+                # login page, then wait a lot longer for the token to land.
+                if not turnstile.wait_for_signin_enabled(page, btn, timeout_ms=10000):
+                    turnstile.click_turnstile_by_coords(page)
+                    turnstile.wait_for_signin_enabled(page, btn, timeout_ms=45000)
+            try:
+                btn.click(timeout=10000)
+            except Exception:
+                try:
+                    btn.click(force=True, timeout=10000)
+                except Exception:
+                    btn.evaluate("el => el.click()")
+            logging.info(f"Submitted OTP via '{label}'.")
+            diagnostics.take_screenshot(page, "otp_submitted")
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def otp_rejected(page) -> bool:
+    """True if VFS's 'Please enter a valid one time password (OTP).' banner
+    is on the page."""
+    try:
+        return OTP_REJECTED_TEXT in (block_detection.full_page_text(page) or "")
+    except Exception:
+        return False
+
+
+def otp_rejected_after_submit(page, timeout_ms: int = 12000) -> bool:
+    """Poll briefly after submitting: True if VFS shows the invalid-OTP banner
+    (=> re-fetch and retry); False if we progress toward the dashboard or
+    nothing rejects within the window (=> treat as accepted)."""
+    step_ms = 500
+    waited = 0
+    while waited < timeout_ms:
+        try:
+            if "/dashboard" in (page.url or ""):
+                return False  # moved on — accepted
+        except Exception:
+            pass
+        block_detection.raise_if_blocked(page)   # an account block can surface here
+        if otp_rejected(page):
+            return True
+        turnstile.dismiss_captcha(page)
+        page.wait_for_timeout(step_ms)
+        waited += step_ms
+    return False
+
+
+def verify_otp(page, otp_selector: str, email_id: str, password: str,
+                since_epoch: float) -> None:
+    """
+    Completes the OTP step on routes flagged "otp": true.
+
+    Waits for the OTP input to appear (skipping cleanly if the portal went
+    straight to the dashboard), fetches the code from the account's mailbox,
+    types it in and submits. Raises OtpVerificationError (retryable) on any
+    failure. `otp_selector` is the route's (possibly overridden) OTP field
+    selector; `since_epoch` is the time.time() recorded just before Sign In,
+    so a stale code from a previous run can never be used.
+    """
+    from src.utils import otp_service
+
+    # Wait for the OTP field — or the dashboard, if VFS skipped the step
+    # (e.g. a recently-verified session). Captcha can pop here too.
+    otp_input = None
+    waited = 0
+    while waited < 60000:
+        try:
+            if "/dashboard" in (page.url or ""):
+                logging.info("No OTP step — portal went straight to dashboard.")
+                return
+        except Exception:
+            pass
+        # The OTP page can be replaced by an account-block page (429002 denied
+        # / 429202 locked / 429001 restricted). Classify it here — so it's
+        # handled correctly instead of masquerading as an OTP timeout — and
+        # bail immediately rather than waiting the full 60s.
+        block_detection.raise_if_blocked(page)
+        try:
+            candidate = page.locator(otp_selector).first
+            if candidate.count() > 0 and candidate.is_visible():
+                otp_input = candidate
+                break
+        except Exception:
+            pass
+        turnstile.dismiss_captcha(page)
+        page.wait_for_timeout(1000)
+        waited += 1000
+    if otp_input is None:
+        # One last classification pass before the generic OTP-timeout error.
+        block_detection.raise_if_blocked(page)
+        diagnostics.take_final_screenshot(page, "otp_field_missing")
+        raise OtpVerificationError(
+            "Route is flagged otp=true but no OTP input appeared within 60s "
+            f"(landed on: {block_detection.landing_status(page)})."
+        )
+    logging.info("OTP step detected — fetching the code from email.")
+    diagnostics.take_screenshot(page, "otp_step")
+
+    # Fetch the email ONCE; we re-read its image on each submit so a VFS
+    # rejection can be recovered without waiting for a whole new OTP email.
+    try:
+        mail = otp_service.wait_for_otp_mail(email_id, password, since_epoch)
+    except Exception as e:
+        diagnostics.take_final_screenshot(page, "otp_fetch_failed")
+        raise OtpVerificationError(f"Could not obtain the OTP email: {e}") from e
+
+    otp_len = otp_service.otp_length()
+    read_attempts = settings().otp.read_attempts
+    submit_attempts = max(1, settings().otp.submit_attempts)
+    rejected = set()
+
+    for attempt in range(1, submit_attempts + 1):
+        # Read a valid code VFS hasn't already rejected. After a rejection the
+        # temperature is raised so the re-read can differ from the last one.
+        try:
+            code = otp_service.extract_code(
+                mail, otp_len, read_attempts,
+                min_temperature=0.0 if attempt == 1 else 0.4,
+                exclude=rejected,
+            )
+        except Exception as e:
+            diagnostics.take_final_screenshot(page, "otp_read_failed")
+            raise OtpVerificationError(f"Could not read the OTP: {e}") from e
+
+        if attempt > 1:
+            logging.info(
+                f"Re-fetched OTP from AI after VFS rejection "
+                f"(submit {attempt}/{submit_attempts}): {code}"
+            )
+
+        # Re-locate the field (it may re-render after a rejection) and enter it.
+        try:
+            otp_input = page.locator(otp_selector).first
+        except Exception:
+            pass
+        fill_field(page, otp_input, code)
+        page.wait_for_timeout(500)
+        logging.info(f"OTP {code} entered; submitting ({attempt}/{submit_attempts})...")
+
+        if not submit_otp(page):
+            diagnostics.take_final_screenshot(page, "otp_submit_missing")
+            raise OtpVerificationError(
+                "OTP entered but no Verify/Submit button could be clicked."
+            )
+
+        # Did VFS reject it? Poll briefly for the 'valid OTP' banner.
+        if not otp_rejected_after_submit(page):
+            return  # accepted (or progressing to the dashboard) — done here
+
+        rejected.add(code)
+        logging.warning(
+            f"VFS REJECTED the OTP '{code}' — 'Please enter a valid one time "
+            f"password (OTP)'. RE-FETCHING a fresh reading from AI and retrying "
+            f"(submit {attempt}/{submit_attempts})."
+        )
+        diagnostics.take_screenshot(page, f"otp_rejected_{attempt}")
+
+    diagnostics.take_final_screenshot(page, "otp_rejected_final")
+    raise OtpVerificationError(
+        f"VFS rejected the OTP on all {submit_attempts} submit attempt(s) "
+        "('Please enter a valid one time password')."
+    )

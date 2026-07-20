@@ -37,6 +37,19 @@ def _profile_base() -> str:
     return os.environ.get("TEMP") or "/tmp"
 
 
+def _mask_egress(egress: str) -> str:
+    """Human label for an egress identity (host:port or 'local') without leaking
+    the proxy's user:pass credentials into the log."""
+    if not egress or egress == "local":
+        return egress or "?"
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(egress if "://" in egress else "http://" + egress)
+        return f"{u.hostname}:{u.port}" if u.hostname else "proxy"
+    except Exception:
+        return "proxy"
+
+
 def _split_proxy(url: str):
     """(scheme, host, port, user, password) from a proxy URL; parts may be ''."""
     from urllib.parse import urlparse
@@ -162,6 +175,9 @@ class ChromeProcess:
         self.proxy = proxy  # full URL; user:pass runs through a local forwarder
         self._proc = None
         self._forwarder = None  # local auth-injecting forwarder, if the proxy needs it
+        # Set by _mark_egress(): True when a persistent profile is reused from a
+        # DIFFERENT egress IP than last time (so its IP-bound cf_clearance must go).
+        self.egress_changed = False
 
         # Bandwidth: opt-in persistent cache (settings [bandwidth] persist_cache).
         try:
@@ -184,8 +200,8 @@ class ChromeProcess:
             # Per-account profile KEPT across runs, so that account's static assets
             # (JS/CSS/fonts) and its own cf_clearance are served from disk cache
             # instead of re-fetched through the metered proxy. VFS *session* cookies
-            # are still cleared each run (VfsBot._clear_site_session), which keeps
-            # cf_clearance but avoids the stale "Session Expired" page.
+            # are still cleared each run (src.vfs_bot.session.clear_site_session),
+            # which keeps cf_clearance but avoids the stale "Session Expired" page.
             safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(profile_key))[:64]
             self.profile_dir = os.path.join(_profile_base(), f"{PROFILE_PREFIX}acct-{safe}")
             self._owns_profile = False  # keep it — this is the whole point
@@ -201,6 +217,37 @@ class ChromeProcess:
     def cdp_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
+    def _mark_egress(self) -> None:
+        """Detect whether this persistent profile is being reused from a DIFFERENT
+        egress IP than last time, and record the current egress for next time.
+
+        If it changed (e.g. a cache warmed on the local IP is now run through a
+        proxy), sets self.egress_changed so the bot drops the IP-bound cf_clearance
+        while keeping the HTTP asset cache. No-op for throwaway profiles.
+        """
+        self.egress_changed = False
+        if not self._persist:
+            return
+        marker = os.path.join(self.profile_dir, ".vfs_egress")
+        current = self.proxy or "local"
+        try:
+            os.makedirs(self.profile_dir, exist_ok=True)
+            prev = None
+            if os.path.isfile(marker):
+                with open(marker, "r", encoding="utf-8") as f:
+                    prev = f.read().strip()
+            if prev and prev != current:
+                self.egress_changed = True
+                logging.info(
+                    f"Profile egress changed ({_mask_egress(prev)} -> "
+                    f"{_mask_egress(current)}) — cf_clearance will be dropped, "
+                    "HTTP cache kept."
+                )
+            with open(marker, "w", encoding="utf-8") as f:
+                f.write(current)
+        except Exception as e:
+            logging.debug(f"egress marker check failed (ignored): {e}")
+
     def start(self) -> "ChromeProcess":
         # Clean slate before launching: kill any Chrome left over from a previous
         # bot run and wipe stale profile dirs. This guarantees each run starts
@@ -212,6 +259,10 @@ class ChromeProcess:
         kill_stale_bot_chrome()
         if not self._persist:
             remove_stale_profiles()
+
+        # Note the egress IP for this (persistent) profile so the bot can drop a
+        # stale, IP-bound cf_clearance if the profile was last used from another IP.
+        self._mark_egress()
 
         chrome = _find_chrome()
         args = [

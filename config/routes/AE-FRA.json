@@ -7,10 +7,9 @@
         "centre": "Abu Dhabi", "category": "Short Stay - Business", "sub_category": "" },
       { "label": "Abu Dhabi",
         "centre": "Abu Dhabi", "category": "Short Stay (any purpose)", "sub_category": "" },
-      { "label": "Temporary Enrolment Location - Damac Hills",
-        "centre": "Dubai", "category": "Short Stay - Business", "sub_category": "" },
-      { "label": "Temporary Enrolment Location - Damac Hills",
-        "centre": "Dubai", "category": "Temporary Location-Damac Hills", "sub_category": "" }
+      
+      { "label": "Temporary Enrolment Location - Damac Hills", "centre": "Temporary Enrolment Location - Damac Hills", "category": "Short Stay - Business", "sub_category": "" },
+      { "label": "Temporary Enrolment Location - Damac Hills", "centre": "Temporary Enrolment Location - Damac Hills", "category": "Temporary Location-Damac Hills", "sub_category": "" }
     ]
   }
 }

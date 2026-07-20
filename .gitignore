@@ -17,6 +17,9 @@ task_stderr.log
 # Per-account health / cooldown state (circuit breaker)
 account_health.json
 account_health.json.tmp
+# Per-country waitlist-notification cooldown state
+waitlist_cooldown.json
+waitlist_cooldown.json.tmp
 # Proxy lists / credentials — never commit
 config/proxylist.txt
 proxylist.txt

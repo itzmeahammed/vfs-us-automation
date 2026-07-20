@@ -46,6 +46,7 @@ from src.vfs_bot.vfs_bot import (
     InvalidCredentialsError,
     IpBlockedError,
     RetryableError,
+    SignInDisabledError,
 )
 from src.vfs_bot.vfs_bot_factory import UnsupportedCountryError, get_vfs_bot
 
@@ -85,6 +86,11 @@ def run_once_with_fresh_browser(source: str, dest: str,
         chrome.start()
         # Point the bot at the Chrome we just launched.
         set_config_value("browser", "cdp_url", chrome.cdp_url)
+        # If this account's cached profile was last used from a DIFFERENT egress IP
+        # (e.g. warmed on local, now run via proxy), tell the bot to drop the stale
+        # IP-bound cf_clearance while keeping the HTTP asset cache.
+        set_config_value("browser", "keep_cf_clearance",
+                         "false" if getattr(chrome, "egress_changed", False) else "true")
         bot = get_vfs_bot(source, dest)
         if email and password:
             bot.set_credential(email, password)
@@ -135,10 +141,12 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
     is reported (with the offending combos) in the summary. Genuine 'no
     availability' is NOT an error and does not fail the route.
     """
+    from src.vfs_bot import waitlist
     slots = slot_results or []
     slot_count = sum(1 for _label, message in slots if telegram_message._has_slot(message))
     combo_errors = _combo_errors(slots)
     disabled = [label for label, message in slots if message == "DISABLED"]
+    waitlist_count = waitlist.count_waitlist(slots)
 
     # Slots grouped by visa type (the last label segment, e.g. 'Tourism'), so
     # the summary can say 'Tourism: 2 slot(s)' instead of just a total.
@@ -163,6 +171,7 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
         "error": error, "slots": slot_count, "combos": len(slots) - len(disabled),
         "combo_errors": combo_errors, "disabled": disabled,
         "slot_types": slot_types, "account": account, "proxy": proxy,
+        "waitlist": waitlist_count,
         # OK/SKIPPED/PAUSED are not failures for the exit code; PAUSED means we
         # deliberately held off (all accounts cooling) — not an error.
         "ok": status in ("OK", "SKIPPED", "PAUSED"),
@@ -235,22 +244,33 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             account_health.record_success(email)  # healthy → clear any strikes
             return _outcome(source, dest, "OK", attempt, slot_results=slots,
                             account=account, proxy=proxy_label)
-        except IpBlockedError as e:
-            # 403201: this IP is blocked. Rotate to a DIFFERENT IP and try once
-            # more — do NOT touch the account's health (it's the IP, not the user).
-            last_error = f"IP blocked (403201) on {proxy_label}"
-            logging.warning(f"{route}: {last_error} [{account}].")
-            if forced_proxy or len(tried_proxies) >= MAX_IP_TRIES:
+        except (IpBlockedError, SignInDisabledError) as e:
+            # Both mean "this IP isn't working here": a hard 403201 block, or
+            # Cloudflare/Turnstile that wouldn't pass. Rotate to a DIFFERENT IP
+            # instead of hammering (and re-downloading) the same one, and do NOT
+            # penalise the account — it's the IP, not the user.
+            is_block = isinstance(e, IpBlockedError)
+            last_error = (f"IP blocked (403201) on {proxy_label}" if is_block
+                          else f"Cloudflare/Turnstile not passed on {proxy_label}")
+            newp = None
+            if not forced_proxy and len(tried_proxies) < MAX_IP_TRIES:
+                newp, _ip = proxy_pool.pick_for_run(
+                    route, email=email, exclude=tried_proxies)
+            if newp:
+                proxy, proxy_label = newp, proxy_pool.label(newp)
+                tried_proxies.add(newp)
+                logging.warning(f"{route}: {last_error} [{account}] — rotating to a "
+                                f"different IP {proxy_label}, retrying.")
+                continue  # retry on the new IP (no backoff, not an account strike)
+            if is_block:
+                # 403201 and no alternate IP left: fail this run (don't hammer).
+                logging.warning(f"{route}: {last_error} [{account}] — no alternate IP.")
                 ip_blocked = True
                 break
-            newp, _ip = proxy_pool.pick_for_run(route, email=email, exclude=tried_proxies)
-            if not newp:
-                ip_blocked = True
-                break
-            proxy, proxy_label = newp, proxy_pool.label(newp)
-            tried_proxies.add(newp)
-            logging.warning(f"{route}: rotating to a different IP {proxy_label} — retrying.")
-            continue  # retry with the new IP (no backoff, not an account strike)
+            # Turnstile failure with no alternate IP (local run / pool exhausted):
+            # fall through to a same-IP retry — a fresh browser may pass.
+            logging.warning(f"{route}: {last_error} [{account}] — no alternate IP; "
+                            "retrying on the same IP.")
         except EmailNotRegisteredError as e:
             # Neutral: the account simply isn't registered on THIS portal — not a
             # success and not a failure, so leave its health untouched. Skip.
@@ -444,6 +464,11 @@ def _send_run_summary(outcomes: list) -> None:
         telegram.send_error(msg)
     else:
         logging.warning("Telegram summary channel not configured — run summary logged only.")
+    # Log-file-only marker for "this run's output ends here" — deliberately
+    # NOT part of the Telegram message itself (that shouldn't carry a divider
+    # with nothing after it); printed last so it sits right before the next
+    # run's startup log lines.
+    logging.info("━━━━━━━━━━━━━━")
 
 
 def _alert_failure(source: str, dest: str, error: str, attempts: int,

@@ -238,22 +238,39 @@ not commit real proxy credentials into this file.**
 
 ## Preview full rotation (route · account · time · IP)
 
-Every route's per-hour account schedule with its login URL:
+Every route's per-hour account schedule, its login URL, and the **pinned exit
+IP:port** each account egresses from (4th column). Probes each account's proxy
+**once** (cached) — so it makes a few live requests and takes a moment; a dead or
+auth-failed pin shows as `DEAD:<port>`, and `(no proxy)` means the pool is
+empty / disabled.
 
 ```powershell
 & .venv\Scripts\python.exe -c @"
 from src.utils.config_reader import initialize_config, get_config_value
 initialize_config()
 from src.utils import credentials as c
+from src.utils import proxy_pool as p
 from src.supervisor import _all_routes
-for s,d in _all_routes():
-    r=f'{s}-{d}'
+_ip = {}
+def exit_ip(em, r):
+    url = p.account_proxy(em, r)
+    if not url:
+        return '(no proxy)'
+    if em not in _ip:
+        host, port, *_ = p.parse(url)
+        _ip[em] = f'{p.probe(url) or \"DEAD\"}:{port}'
+    return _ip[em]
+for s, d in _all_routes():
+    r = f'{s}-{d}'
     print(f'=== {r}   {get_config_value(\"vfs-url\", r)} ===')
-    for t,ri,em in c.rotation_schedule(r):
-        print(f'  {t}   run#{ri:<2}  {em}')
+    for t, ri, em in c.rotation_schedule(r):
+        print(f'  {t}   run#{ri:<2}  {em:<28}  {exit_ip(em, r)}')
     print()
 "@
 ```
+
+Want it **instant** (no network, shows the pinned endpoint `host:port` instead of
+the live IP)? Swap the `exit_ip(em, r)` call for `p.label(p.account_proxy(em, r))`.
 
 & .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.242.128.49:50100
 & .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url http://travnookmarketing:JJmaqyo8yc@151.244.143.160:50100
@@ -271,16 +288,9 @@ for s,d in _all_routes():
 
 
 
-check next run with account time ip route:
-& .venv\Scripts\python.exe -c @"
-from src.utils.config_reader import initialize_config, get_config_value
-initialize_config()
-from src.utils import credentials as c
-from src.supervisor import _all_routes
-for s,d in _all_routes():
-    r=f'{s}-{d}'
-    print(f'=== {r}   {get_config_value("vfs-url", r)} ===')
-    for t,ri,em in c.rotation_schedule(r):
-        print(f'  {t}   run#{ri:<2}  {em}')
-    print()
-"@
+## command to fetch all line with Browser traffic this route
+
+```powershell
+findstr /N /C:"Browser traffic this route" app.log
+
+```

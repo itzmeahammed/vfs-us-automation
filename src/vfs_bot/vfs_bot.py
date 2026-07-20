@@ -2,14 +2,22 @@ import logging
 import os
 import time
 from abc import ABC
-from datetime import datetime
 
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 
 from src.settings import settings
 from src.utils.config_reader import get_config_value
 from src.utils.route_schema import get_route_schema
+from src.vfs_bot import (
+    block_detection,
+    browser_setup,
+    diagnostics,
+    otp_flow,
+    session,
+    slot_check,
+    turnstile,
+)
+from src.vfs_bot.dom_utils import fill_field
 # Exceptions live in errors.py; re-exported so existing imports such as
 # `from src.vfs_bot.vfs_bot import LoginError` keep working unchanged.
 from src.vfs_bot.errors import (  # noqa: F401
@@ -29,26 +37,6 @@ from src.vfs_bot.errors import (  # noqa: F401
     SignInDisabledError,
     SlotCheckError,
 )
-
-
-def _browser_activity_enabled() -> bool:
-    """
-    Whether to attach verbose Playwright page hooks (navigations, network
-    requests/responses, console messages, page errors). Controlled by the
-    BROWSER_ACTIVITY_LOG env var or [logging] browser_activity in config.
-    """
-    raw = (
-        os.environ.get("BROWSER_ACTIVITY_LOG")
-        or get_config_value("logging", "browser_activity", "False")
-    )
-    return str(raw).strip().lower() in ("1", "true", "yes", "on")
-
-SCREENSHOT_DIR = "screenshots"
-
-# Tunables that used to be module constants now live in typed settings:
-#   settings().browser.screenshots_enabled      (was SCREENSHOTS_ENABLED)
-#   settings().retry.turnstile_refresh_attempts (was refresh_attempts)
-# Page timeouts + viewport come from settings().timeouts / settings().browser.
 
 # Default field selectors. A route can override any of these WITHOUT a code
 # change by adding a "selectors" object to its config/routes/<ROUTE>.json, e.g.
@@ -74,11 +62,25 @@ class VfsBot(ABC):
     """
     Slot-check bot for the VFS Malta portal.
 
-    This is the trimmed, production slice of the original schema-driven VFS bot:
-    it only reaches Step 1 (Appointment Details), reads the 'Earliest available
-    slot' banner for each configured combination, and reports the results via
-    Telegram. The booking/OTP/payment machinery is intentionally absent — this
-    project never books anything.
+    This orchestrates the flow (login -> Cloudflare -> OTP -> dashboard ->
+    slot check) end to end; each stage's actual page automation lives in its
+    own module next to this one:
+
+        session.py         cookie consent + cross-run cookie hygiene
+        turnstile.py        Cloudflare Turnstile + 'Verify Captcha' + loader
+        otp_flow.py          the emailed one-time-password step
+        slot_check.py        appointment dropdowns, slot read, Telegram report
+        block_detection.py   classifying VFS/Cloudflare block pages
+        browser_setup.py     CDP attach vs. launching a fresh browser
+        diagnostics.py       screenshots + verbose activity logging
+
+    This class itself only holds per-run instance state (selected credential,
+    schema, byte/request counters, results) and the handful of methods that
+    genuinely need that state; everything else is a free function in the
+    modules above. It only reaches Step 1 (Appointment Details), reads the
+    'Earliest available slot' banner for each configured combination, and
+    reports the results via Telegram — the booking/payment machinery is
+    intentionally absent. This project never books anything.
     """
 
     def __init__(self):
@@ -115,6 +117,11 @@ class VfsBot(ABC):
         """Supervisor-provided credential to use for this run (overrides self-select)."""
         self._cred_override = (email, password)
 
+    # ------------------------------------------------------------------ #
+    # Per-run network instrumentation (genuinely instance-stateful, so    #
+    # these stay methods rather than moving to browser_setup.py)         #
+    # ------------------------------------------------------------------ #
+
     def _attach_block_watcher(self, page) -> None:
         """
         Watch network responses for an HTTP 403 (VFS's IP/access blocks —
@@ -150,7 +157,7 @@ class VfsBot(ABC):
         """Raise the right block error from the DOM (specific code) or a seen 403
         response (generic IP block). No-op if not blocked. Call inside wait loops
         to fail fast."""
-        VfsBot._raise_if_blocked(page)  # DOM: 403201 / 403203 / 429xxx (specific)
+        block_detection.raise_if_blocked(page)  # DOM: 403201 / 403203 / 429xxx (specific)
         if self._block_code:
             raise IpBlockedError(
                 "VFS HTTP 403 — IP blocked (too many requests / flagged IP). Rotate IP.")
@@ -209,6 +216,64 @@ class VfsBot(ABC):
         except Exception as e:
             logging.debug(f"Could not install traffic meter (continuing): {e}")
 
+    def _instrument_page(self, page, context) -> None:
+        """Wires up everything that observes (but never drives) the flow:
+        activity logging, the 403 block watcher, and the two bandwidth-saving
+        installs. Called once per run, right after the page/context exist."""
+        diagnostics.attach_activity_logging(page)
+        # Watch for HTTP 403 (IP/access blocks) at the network level, so we
+        # catch 403201 even when it's an XHR/JSON that never renders (or the
+        # page dies right after).
+        self._block_code = None
+        self._attach_block_watcher(page)
+
+        # Bandwidth: abort unneeded resource types (image/media/font) so their
+        # bytes never egress through the metered proxy. Installed on the CONTEXT
+        # so it also covers the Cloudflare Turnstile iframe. JS + CSS are kept.
+        self._install_resource_blocking(context)
+
+        # Bandwidth: count wire bytes the browser receives — works WITH or
+        # WITHOUT a proxy, so local-IP and proxy runs compare on one metric.
+        self._install_traffic_meter(context)
+
+    # ------------------------------------------------------------------ #
+    # run() setup steps                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _load_schema_and_selectors(self) -> None:
+        """Loads the route's flow schema and merges any selector overrides
+        it declares over the module defaults."""
+        self.schema = get_route_schema(
+            self.source_country_code, self.destination_country_code
+        )
+        sel = self.schema.get("selectors", {}) if isinstance(self.schema, dict) else {}
+        self.selectors = {
+            "username": sel.get("username") or DEFAULT_USERNAME_SELECTOR,
+            "password": sel.get("password") or DEFAULT_PASSWORD_SELECTOR,
+            "otp": sel.get("otp") or DEFAULT_OTP_INPUT_SELECTOR,
+        }
+
+    def _resolve_credential(self, url_key: str) -> tuple:
+        """Returns the (email, password) to use for this run: the supervisor-
+        injected one if set, else this bot's own self-selection.
+
+        Raises LoginError if no credential is registered for the route at all.
+        """
+        # Use the supervisor-injected credential if present (it selects once,
+        # skipping benched accounts); else self-select for this hour AND route
+        # (each route rotates through its registered accounts — see credentials.py).
+        if self._cred_override:
+            email_id, password = self._cred_override
+        else:
+            from src.utils import credentials
+            email_id, password = credentials.get_credential(url_key.upper())
+        if not email_id or not password:
+            raise LoginError(
+                f"No credential is registered for route '{url_key.upper()}' — "
+                "add it to a [credN] 'routes' list in config/credentials.local.ini."
+            )
+        return email_id, password
+
     def run(self) -> bool:
         """
         Connects to a browser over CDP, navigates to the VFS login URL, logs in,
@@ -231,19 +296,7 @@ class VfsBot(ABC):
             f"{self.source_country_code.upper()}-{self.destination_country_code.upper()}"
         )
 
-        # Load the per-route flow schema (the combinations to check).
-        self.schema = get_route_schema(
-            self.source_country_code, self.destination_country_code
-        )
-
-        # Field selectors: route JSON "selectors" overrides win over the defaults,
-        # so VFS markup changes are a config edit, not a code change.
-        sel = self.schema.get("selectors", {}) if isinstance(self.schema, dict) else {}
-        self.selectors = {
-            "username": sel.get("username") or DEFAULT_USERNAME_SELECTOR,
-            "password": sel.get("password") or DEFAULT_PASSWORD_SELECTOR,
-            "otp": sel.get("otp") or DEFAULT_OTP_INPUT_SELECTOR,
-        }
+        self._load_schema_and_selectors()
 
         browser_type = get_config_value("browser", "type", "chromium")
         headless_mode = get_config_value("browser", "headless", "True")
@@ -255,82 +308,17 @@ class VfsBot(ABC):
             )
             return False
 
-        # Use the supervisor-injected credential if present (it selects once,
-        # skipping benched accounts); else self-select for this hour AND route
-        # (each route rotates through its registered accounts — see credentials.py).
-        if self._cred_override:
-            email_id, password = self._cred_override
-        else:
-            from src.utils import credentials
-            email_id, password = credentials.get_credential(url_key.upper())
-        if not email_id or not password:
-            raise LoginError(
-                f"No credential is registered for route '{url_key.upper()}' — "
-                "add it to a [credN] 'routes' list in config/credentials.local.ini."
-            )
+        email_id, password = self._resolve_credential(url_key)
         self.active_email = email_id
 
-        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+        os.makedirs(diagnostics.SCREENSHOT_DIR, exist_ok=True)
 
         with sync_playwright() as p:
             cdp_url = get_config_value("browser", "cdp_url")
-            if cdp_url:
-                # Attach to an existing Chrome launched with --remote-debugging-port.
-                # The supervisor launches/kills that Chrome and injects its cdp_url
-                # at runtime; we only attach here.
-                logging.debug(f"Connecting to Chrome via CDP: {cdp_url}")
-                try:
-                    browser = p.chromium.connect_over_cdp(cdp_url)
-                except Exception as e:
-                    raise CdpConnectError(
-                        f"Could not connect to Chrome at {cdp_url}: {e}"
-                    ) from e
-                context = (
-                    browser.contexts[0] if browser.contexts else browser.new_context()
-                )
-                # Drop only VFS's stale login/session cookies while KEEPING
-                # Cloudflare's clearance (cf_clearance / __cf*). The persistent
-                # profile keeps cf_clearance so we don't get a fresh 403, but its
-                # old VFS session would otherwise land us on "Session Expired" —
-                # clearing it makes each run log in fresh.
-                VfsBot._clear_site_session(context)
-                # Reuse Chrome's startup tab if present, else open one. Either way
-                # we (re)navigate below so the page loads with clearance kept but
-                # the VFS session gone.
-                page = context.pages[0] if context.pages else context.new_page()
-            else:
-                # Launch our own browser (the prod path — headless on a server).
-                is_headless = headless_mode in ("True", "true")
-                launch_args = {}
-                if browser_type == "chromium":
-                    launch_args["args"] = [
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                    ]
-                browser = getattr(p, browser_type).launch(
-                    headless=is_headless, **launch_args
-                )
-                context = browser.new_context(
-                    viewport={"width": 1280, "height": 720},
-                )
-                page = context.new_page()
-                stealth_sync(page)
-
-            VfsBot._attach_activity_logging(page)
-            # Watch for HTTP 403 (IP/access blocks) at the network level, so we
-            # catch 403201 even when it's an XHR/JSON that never renders (or the
-            # page dies right after).
-            self._block_code = None
-            self._attach_block_watcher(page)
-
-            # Bandwidth: abort unneeded resource types (image/media/font) so their
-            # bytes never egress through the metered proxy. Installed on the CONTEXT
-            # so it also covers the Cloudflare Turnstile iframe. JS + CSS are kept.
-            self._install_resource_blocking(context)
-
-            # Bandwidth: count wire bytes the browser receives — works WITH or
-            # WITHOUT a proxy, so local-IP and proxy runs compare on one metric.
-            self._install_traffic_meter(context)
+            browser, context, page = browser_setup.launch_or_attach(
+                p, browser_type, headless_mode, cdp_url
+            )
+            self._instrument_page(page, context)
 
             # Pin a fixed viewport so the page layout (and thus the Turnstile
             # checkbox position for the coordinate click) is deterministic.
@@ -363,12 +351,12 @@ class VfsBot(ABC):
             except RetryableError:
                 # A classified, expected failure — screenshot the end state and
                 # let it bubble up so the supervisor retries with a fresh browser.
-                self._take_final_screenshot(page, "final")
+                diagnostics.take_final_screenshot(page, "final")
                 raise
             except Exception as e:
                 # Anything unclassified (incl. Playwright TargetClosedError when
                 # the page/browser died mid-flow) is also retryable.
-                self._take_final_screenshot(page, "final")
+                diagnostics.take_final_screenshot(page, "final")
                 raise RetryableError(f"Unexpected flow error: {e}") from e
             finally:
                 # Report browser data usage on success AND failure (matches the
@@ -381,7 +369,7 @@ class VfsBot(ABC):
                     )
 
             # Single final screenshot capturing the successful end state.
-            self._take_final_screenshot(page, "final")
+            diagnostics.take_final_screenshot(page, "final")
             if self._blocked_requests:
                 logging.info(
                     f"Bandwidth: aborted {self._blocked_requests} asset request(s) "
@@ -391,272 +379,25 @@ class VfsBot(ABC):
             return True
 
     # ------------------------------------------------------------------ #
-    # Flow steps                                                          #
+    # Pre-login: cookies & session                                       #
     # ------------------------------------------------------------------ #
-
-    # ===== Pre-login: cookies & session =====================================
 
     def pre_login_steps(self, page) -> None:
         """
         Accept ALL cookies on the consent banner. We deliberately ACCEPT (never
         reject) — both as the desired behaviour and because the banner overlays
         the bottom of the page and blocks the login fields until cleared.
-
-        The banner often appears a few seconds AFTER the form, so we poll for it
-        for a short while, and we click via several strategies (the OneTrust id,
-        an exact-text 'Accept Cookies' button/link, force-click) because a single
-        role-based lookup was missing it.
         """
-        VfsBot._accept_cookies(page, attempts=8, interval_ms=1000)
+        session.accept_cookies(page, attempts=8, interval_ms=1000)
 
-    @staticmethod
-    def _accept_cookies(page, attempts: int = 8, interval_ms: int = 1000) -> bool:
-        """Polls for the cookie banner and clicks Accept. Returns True if clicked."""
-        for _ in range(attempts):
-            # Strategy 1: OneTrust's stable accept-all id.
-            for sel in (
-                "#onetrust-accept-btn-handler",
-                "button#onetrust-accept-btn-handler",
-            ):
-                try:
-                    el = page.locator(sel).first
-                    if el.count() > 0 and el.is_visible():
-                        el.click(timeout=3000, force=True)
-                        logging.debug("Accepted all cookies (OneTrust id).")
-                        page.wait_for_timeout(600)
-                        return True
-                except Exception:
-                    pass
+    # ------------------------------------------------------------------ #
+    # Login                                                              #
+    # ------------------------------------------------------------------ #
 
-            # Strategy 2: any clickable element whose visible text is an accept
-            # label (button OR link), exact-ish match, force-clicked.
-            try:
-                btn = page.get_by_text("Accept Cookies", exact=True).first
-                if btn.count() > 0 and btn.is_visible():
-                    btn.click(timeout=3000, force=True)
-                    logging.debug("Accepted all cookies (text 'Accept Cookies').")
-                    page.wait_for_timeout(600)
-                    return True
-            except Exception:
-                pass
-
-            # Strategy 3: role-based fallbacks.
-            for label in ["Accept Cookies", "Accept All Cookies", "Accept All", "Accept"]:
-                try:
-                    btn = page.get_by_role("button", name=label).first
-                    if btn.count() > 0 and btn.is_visible():
-                        btn.click(timeout=3000, force=True)
-                        logging.debug(f"Accepted all cookies via '{label}'.")
-                        page.wait_for_timeout(600)
-                        return True
-                except Exception:
-                    continue
-
-            # Banner not present yet — wait and poll again.
-            page.wait_for_timeout(interval_ms)
-
-        logging.debug("No cookie banner found after polling, skipping.")
-        return False
-
-    # Cookie domains to PRESERVE across runs — Cloudflare's clearance lives here.
-    # Everything else on the VFS domains (the login/auth session) is cleared so
-    # each run starts logged-out but still trusted by Cloudflare.
-    _KEEP_COOKIE_NAMES = ("cf_clearance",)
-    _KEEP_COOKIE_PREFIXES = ("__cf", "__cflb", "cf_")
-
-    @staticmethod
-    def _clear_site_session(context) -> None:
-        """
-        Clears VFS's stale login/session cookies while KEEPING Cloudflare's
-        clearance cookies (cf_clearance / __cf*).
-
-        Why: we run on a persistent Chrome profile so Cloudflare's clearance
-        survives between runs (avoiding a fresh 403 on a datacenter IP). But that
-        same profile would carry an expired VFS *login* session, landing us on
-        "Session Expired or Invalid". So we surgically drop the VFS cookies and
-        re-keep the Cloudflare ones by re-adding them after a full clear.
-        """
-        try:
-            all_cookies = context.cookies()
-        except Exception as e:
-            logging.warning(f"Could not read cookies to clear session: {e}")
-            return
-
-        def _is_cloudflare(c) -> bool:
-            name = c.get("name", "")
-            return name in VfsBot._KEEP_COOKIE_NAMES or any(
-                name.startswith(p) for p in VfsBot._KEEP_COOKIE_PREFIXES
-            )
-
-        keep = [c for c in all_cookies if _is_cloudflare(c)]
-        dropped = len(all_cookies) - len(keep)
-
-        try:
-            context.clear_cookies()  # nukes everything...
-            if keep:
-                context.add_cookies(keep)  # ...then restore Cloudflare's only
-            logging.debug(
-                f"Cleared {dropped} VFS session cookie(s); kept {len(keep)} "
-                f"Cloudflare cookie(s)."
-            )
-        except Exception as e:
-            logging.warning(f"Failed to selectively clear cookies: {e}")
-
-    # ===== Cloudflare Turnstile =============================================
-
-    @staticmethod
-    def _wait_for_signin_enabled(page, sign_in, timeout_ms: int = 60000) -> bool:
-        """
-        Polls until the Sign In button becomes enabled (Cloudflare Turnstile
-        auto-solved) or the timeout elapses.
-
-        Logs progress periodically and reports when the Turnstile token appears,
-        so a stuck challenge is visible in the logs rather than a silent wait.
-        Returns True if Sign In became enabled.
-        """
-        step_ms = 2000
-        waited = 0
-        token_seen = False
-        while waited < timeout_ms:
-            try:
-                if sign_in.is_enabled():
-                    logging.debug(f"Sign In enabled after {waited/1000:.0f}s.")
-                    return True
-            except Exception:
-                pass
-
-            # Surface when the Turnstile token populates (challenge solved) even
-            # if the button takes another moment to flip enabled.
-            if not token_seen:
-                try:
-                    val = page.evaluate(
-                        "() => { const i = document.querySelector(\"input[name='cf-turnstile-response']\");"
-                        " return i ? i.value : ''; }"
-                    )
-                    if val:
-                        token_seen = True
-                        logging.debug("Turnstile token populated (challenge passed).")
-                except Exception:
-                    pass
-
-            page.wait_for_timeout(step_ms)
-            waited += step_ms
-            if waited % 10000 == 0:
-                logging.debug(f"Waiting for Cloudflare to enable Sign In... ({waited/1000:.0f}s)")
-        return False
-
-    @staticmethod
-    def _turnstile_token(page) -> str:
-        """Returns the current cf-turnstile-response token value (or '')."""
-        try:
-            return page.evaluate(
-                "() => { const i = document.querySelector(\"input[name='cf-turnstile-response']\");"
-                " return i ? i.value : ''; }"
-            ) or ""
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _wait_for_turnstile_passed(page, timeout_ms: int) -> bool:
-        """
-        Waits until the Cloudflare Turnstile is solved — i.e. the
-        cf-turnstile-response token is populated.
-
-        This is the correct gate (NOT the Sign In button): VFS only enables Sign
-        In once the token exists AND the credentials are filled, so we must wait
-        on the token, then fill the form, after which Sign In enables on its own.
-        """
-        step_ms = 1000
-        waited = 0
-        while waited < timeout_ms:
-            if VfsBot._turnstile_token(page):
-                logging.debug(f"Turnstile passed (token populated) after {waited/1000:.0f}s.")
-                return True
-            page.wait_for_timeout(step_ms)
-            waited += step_ms
-            if waited % 10000 == 0:
-                logging.debug(f"Waiting for Turnstile to pass... ({waited/1000:.0f}s)")
-        return False
-
-    @staticmethod
-    def _click_turnstile_by_coords(page) -> bool:
-        """
-        Attempts to click the Turnstile 'Verify you are human' checkbox by
-        coordinates. The challenge iframe is cross-origin-isolated so its
-        checkbox can't be targeted as an element — but a real mouse click at the
-        widget's on-screen position can still land it.
-
-        We anchor on the `cf-turnstile-response` token input (always present),
-        find the nearest sized ancestor (the visible widget), and click near its
-        left edge, vertically centred (where the checkbox renders).
-        """
-        try:
-            box = page.evaluate(
-                """() => {
-                    const inp = document.querySelector("input[name='cf-turnstile-response']");
-                    if (!inp) return null;
-                    let el = inp;
-                    for (let i = 0; i < 6 && el; i++) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 50 && r.height > 30) {
-                            return {x: r.x, y: r.y, w: r.width, h: r.height};
-                        }
-                        el = el.parentElement;
-                    }
-                    return null;
-                }"""
-            )
-            if not box:
-                logging.debug("Turnstile widget box not found; can't coord-click.")
-                return False
-            x = box["x"] + 30      # checkbox is near the left edge
-            y = box["y"] + box["h"] / 2
-            logging.debug(f"Clicking Turnstile checkbox by coordinates ({x:.0f}, {y:.0f}).")
-            page.mouse.move(x, y)
-            page.wait_for_timeout(300)
-            page.mouse.click(x, y)
-            return True
-        except Exception as e:
-            logging.warning(f"Coordinate-click of Turnstile failed: {e}")
-            return False
-
-    @staticmethod
-    def _fill_field(page, locator, value: str) -> None:
-        """
-        Sets an input's value robustly, immune to overlays and Xvfb hangs.
-
-        Tries Playwright fill() first (bounded timeout). If that's blocked (an
-        overlay intercepting actionability), falls back to setting the value via
-        JS and dispatching the 'input'/'change' events Angular listens for, so
-        the form model updates even without a real focus/click.
-        """
-        try:
-            locator.fill(value, timeout=4000)
-            return
-        except Exception as e:
-            logging.debug(f"fill() blocked ({e}); using JS value-set fallback.")
-        try:
-            locator.evaluate(
-                """(el, val) => {
-                    el.value = val;
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                }""",
-                value,
-            )
-        except Exception as e:
-            raise RetryableError(f"Could not fill a login field: {e}") from e
-
-    # ===== Login ============================================================
-
-    def login(self, page, email_id: str, password: str) -> None:
-        """
-        Fills the login form, signs in, and — once on the dashboard — clicks
-        Start New Booking and runs the slot check.
-        """
-        # Wait for the login form OR a block page — POLL (don't block 120s) so a
-        # 403201 / 429xxx page is caught within ~1.5s and we fail fast.
+    def _wait_for_login_form(self, page) -> None:
+        """Polls for the login form OR a block page (doesn't block 120s) so a
+        403201 / 429xxx page is caught within ~1.5s and we fail fast. Raises
+        LoginFormNotReadyError if the form never appears."""
         login_wait_ms = settings().timeouts.login_wait_ms
         waited, form_ready = 0, False
         while waited < login_wait_ms:
@@ -668,8 +409,8 @@ class VfsBot(ABC):
                     break
             except Exception:
                 pass
-            page.wait_for_timeout(1500)
-            waited += 1500
+            page.wait_for_timeout(750)
+            waited += 750
         if not form_ready:
             self._check_blocked(page)
             raise LoginFormNotReadyError(
@@ -678,22 +419,19 @@ class VfsBot(ABC):
             )
         logging.debug("Login form loaded")
 
-        # Dismiss the cookie banner (it overlays the form and blocks fields).
-        self.pre_login_steps(page)
+    def _pass_turnstile(self, page) -> None:
+        """
+        Checks the Cloudflare 'Verify you are human' challenge BEFORE touching
+        the credentials — no point filling a form we can't submit. We gate on
+        the TURNSTILE TOKEN, not the Sign In button: VFS keeps Sign In disabled
+        until the token exists AND the fields are filled, so waiting on the
+        button here would deadlock (fields are only filled after this returns).
 
-        # --- Turnstile FIRST -------------------------------------------------
-        # Check the Cloudflare 'Verify you are human' challenge BEFORE touching
-        # the credentials — no point filling a form we can't submit. The Sign In
-        # button is enabled only once Turnstile passes, so that's our signal.
-        #
-        # Inner retry: a stuck Turnstile is often unstuck by a page reload (it
-        # re-runs the challenge with more signals), which is far cheaper than
-        # relaunching the whole browser. Try the wait, and on failure reload and
-        # try again a couple of times before giving up to the supervisor.
-        # We gate on the TURNSTILE TOKEN, not the Sign In button: VFS keeps Sign
-        # In disabled until the token exists AND the fields are filled, so waiting
-        # on the button here would deadlock (we fill the fields only after). Once
-        # the token is populated we fill credentials, and Sign In enables itself.
+        Inner retry: a stuck Turnstile is often unstuck by a page reload (it
+        re-runs the challenge with more signals), which is far cheaper than
+        relaunching the whole browser. Raises SignInDisabledError if it never
+        passes after all reload attempts.
+        """
         passed = False
         refresh_attempts = settings().retry.turnstile_refresh_attempts
         for turn_attempt in range(1, refresh_attempts + 2):  # 1 + N reloads
@@ -714,26 +452,26 @@ class VfsBot(ABC):
                     f"MANUAL MODE: click the 'Verify you are human' checkbox in the "
                     f"Chrome window — waiting up to {manual_wait}s..."
                 )
-                if VfsBot._wait_for_turnstile_passed(page, timeout_ms=manual_wait * 1000):
+                if turnstile.wait_for_turnstile_passed(page, timeout_ms=manual_wait * 1000):
                     passed = True
                 break  # don't auto-refresh in manual mode
 
             # Give it ~10s to auto-solve first.
-            if VfsBot._wait_for_turnstile_passed(page, timeout_ms=10000):
+            if turnstile.wait_for_turnstile_passed(page, timeout_ms=10000):
                 passed = True
                 break
 
             # Didn't auto-solve — try clicking the checkbox by coordinates, then
             # wait a short while again for the token.
-            VfsBot._click_turnstile_by_coords(page)
-            if VfsBot._wait_for_turnstile_passed(page, timeout_ms=10000):
+            turnstile.click_turnstile_by_coords(page)
+            if turnstile.wait_for_turnstile_passed(page, timeout_ms=10000):
                 passed = True
                 break
 
             # Not passed — reload and re-run the challenge, unless out of tries.
             if turn_attempt <= refresh_attempts:
                 logging.debug("Turnstile not passed — refreshing the page to retry.")
-                VfsBot._take_final_screenshot(page, f"turnstile_fail_{turn_attempt}")
+                diagnostics.take_final_screenshot(page, f"turnstile_fail_{turn_attempt}")
                 try:
                     page.reload(timeout=60000, wait_until="domcontentloaded")
                 except Exception as e:
@@ -747,30 +485,35 @@ class VfsBot(ABC):
                 self.pre_login_steps(page)
 
         if not passed:
-            VfsBot._take_final_screenshot(page, "turnstile_failed_final")
+            diagnostics.take_final_screenshot(page, "turnstile_failed_final")
             raise SignInDisabledError(
                 "Cloudflare 'Verify you are human' did not pass after "
                 f"{refresh_attempts} refresh(es) — token never populated."
             )
 
-        # --- Turnstile passed: now fill credentials --------------------------
+    def _fill_credentials(self, page, email_id: str, password: str) -> None:
+        """Fills the email/password fields (Turnstile must already have passed)."""
         email_input = page.locator(self.selectors["username"]).first
         password_input = page.locator(self.selectors["password"]).first
 
-        logging.debug("Turnstile passed. Filling email field...")
-        VfsBot._fill_field(page, email_input, email_id)
+        fill_field(page, email_input, email_id)
         page.wait_for_timeout(500)
         logging.debug("Email entered; filling password field...")
 
-        VfsBot._fill_field(page, password_input, password)
+        fill_field(page, password_input, password)
         page.wait_for_timeout(800)
         logging.debug("Password entered; waiting for Sign In to enable...")
 
+    def _click_sign_in(self, page) -> float:
+        """Waits for Sign In to enable and clicks it (normal -> force -> JS
+        dispatch fallback ladder, since even a force-click can time out on a
+        slow EC2 box). Returns the time.time() recorded just before the click,
+        so the caller can filter out stale OTP emails from earlier attempts."""
         # Now that the token exists AND the fields are filled, Sign In should
         # enable. Wait for it (this is the correct point to wait on the button).
         sign_in = page.get_by_role("button", name="Sign In").first
         if not sign_in.is_enabled():
-            if not VfsBot._wait_for_signin_enabled(page, sign_in, timeout_ms=20000):
+            if not turnstile.wait_for_signin_enabled(page, sign_in, timeout_ms=20000):
                 raise SignInDisabledError(
                     "Sign In stayed disabled after Turnstile passed and credentials "
                     "were filled."
@@ -781,9 +524,6 @@ class VfsBot(ABC):
         # moment count, so a stale code from a previous run can never be used.
         otp_since = time.time()
 
-        # On the slow EC2 box even force-click can exceed its timeout, so try a
-        # normal click, then force, then a JS .click() which dispatches instantly
-        # and can't be blocked by actionability waits.
         clicked = False
         for how, kwargs in (("normal", {"timeout": 20000}),
                             ("force", {"force": True, "timeout": 20000})):
@@ -801,27 +541,51 @@ class VfsBot(ABC):
                 logging.debug("Clicked Sign In (JS dispatch).")
             except Exception as e:
                 raise RetryableError(f"Could not click Sign In: {e}") from e
-        VfsBot._take_final_screenshot(page, "after_signin")
+        return otp_since
 
-        # The Sign In API is the most common place VFS returns 403201 (IP block).
-        # Check both the network 403 and the page before waiting on the dashboard.
-        page.wait_for_timeout(2000)
-        self._check_blocked(page)
-        if VfsBot._email_not_registered(page):
+    @staticmethod
+    def _raise_known_login_errors(page) -> None:
+        """Raises EmailNotRegisteredError / InvalidCredentialsError if the
+        login page is showing either banner; no-op otherwise. Checked both
+        right after the Sign In click and again if the dashboard wait times out."""
+        if block_detection.is_email_not_registered(page):
             raise EmailNotRegisteredError(
                 "Login page: 'The entered email id is not registered with us' — "
                 "skipping this URL for this account."
             )
-        if VfsBot._invalid_credentials(page):
+        if block_detection.is_invalid_credentials(page):
             raise InvalidCredentialsError(
                 "Login page: email or password is incorrect — stopping this run "
                 "for this account (no retries)."
             )
 
+    def login(self, page, email_id: str, password: str) -> None:
+        """
+        Fills the login form, signs in, and — once on the dashboard — clicks
+        Start New Booking and runs the slot check.
+        """
+        self._wait_for_login_form(page)
+        # Dismiss the cookie banner (it overlays the form and blocks fields).
+        self.pre_login_steps(page)
+
+        # Turnstile must pass before the form can be submitted at all.
+        self._pass_turnstile(page)
+
+        logging.debug("Turnstile passed. Filling email field...")
+        self._fill_credentials(page, email_id, password)
+        otp_since = self._click_sign_in(page)
+        diagnostics.take_final_screenshot(page, "after_signin")
+
+        # The Sign In API is the most common place VFS returns 403201 (IP block).
+        # Check both the network 403 and the page before waiting on the dashboard.
+        page.wait_for_timeout(2000)
+        self._check_blocked(page)
+        self._raise_known_login_errors(page)
+
         # Routes flagged "otp": true in config/routes/<ROUTE>.json require an
         # emailed one-time password after Sign In before the dashboard loads.
         if self.schema.get("otp"):
-            self._verify_otp(page, email_id, password, otp_since)
+            otp_flow.verify_otp(page, self.selectors["otp"], email_id, password, otp_since)
 
         # After Sign In, Cloudflare often shows the 'Verify Captcha' dialog
         # (app-cloudflare-dialog with a Submit button) that BLOCKS the redirect
@@ -829,964 +593,21 @@ class VfsBot(ABC):
         # poll: dismiss the dialog if present AND check whether we've landed on
         # the dashboard, for up to ~90s, instead of a single blind wait_for_url.
         # We also keep checking for the 'not registered' banner during the wait.
-        if not VfsBot._await_dashboard_handling_captcha(
+        if not turnstile.await_dashboard_handling_captcha(
                 page, timeout_ms=settings().timeouts.dashboard_ms):
-            if VfsBot._email_not_registered(page):
-                raise EmailNotRegisteredError(
-                    "Login page: 'The entered email id is not registered with us' — "
-                    "skipping this URL for this account."
-                )
-            if VfsBot._invalid_credentials(page):
-                raise InvalidCredentialsError(
-                    "Login page: email or password is incorrect — stopping this "
-                    "run for this account (no retries)."
-                )
-            VfsBot._raise_if_blocked(page)
+            self._raise_known_login_errors(page)
+            block_detection.raise_if_blocked(page)
             # Not a known state — report what we ACTUALLY landed on, not a guess.
             raise DashboardNotReachedError(
-                f"Did not reach dashboard — landed on: {VfsBot._landing_status(page)} "
+                f"Did not reach dashboard — landed on: {block_detection.landing_status(page)} "
                 f"(URL: {page.url})."
             )
 
         logging.info(f"Reached dashboard: {page.url}")
-        page.wait_for_timeout(2000)
-        self._start_new_booking(page)
-        self._check_slots(page)
-
-    # ===== OTP verification =================================================
-
-    def _verify_otp(self, page, email_id: str, password: str,
-                    since_epoch: float) -> None:
-        """
-        Completes the OTP step on routes flagged "otp": true.
-
-        Waits for the OTP input to appear (skipping cleanly if the portal went
-        straight to the dashboard), fetches the code from the account's mailbox
-        (src/utils/otp_service.py — same email/password as the VFS login), types
-        it in and submits. Raises OtpVerificationError (retryable — a fresh
-        browser triggers a fresh OTP) on any failure.
-        """
-        from src.utils import otp_service
-
-        # Wait for the OTP field — or the dashboard, if VFS skipped the step
-        # (e.g. a recently-verified session). Captcha can pop here too.
-        otp_input = None
-        waited = 0
-        while waited < 60000:
-            try:
-                if "/dashboard" in (page.url or ""):
-                    logging.info("No OTP step — portal went straight to dashboard.")
-                    return
-            except Exception:
-                pass
-            # The OTP page can be replaced by an account-block page (429002 denied
-            # / 429202 locked / 429001 restricted). Classify it here — so it's
-            # handled correctly instead of masquerading as an OTP timeout — and
-            # bail immediately rather than waiting the full 60s.
-            VfsBot._raise_if_blocked(page)
-            try:
-                candidate = page.locator(self.selectors["otp"]).first
-                if candidate.count() > 0 and candidate.is_visible():
-                    otp_input = candidate
-                    break
-            except Exception:
-                pass
-            VfsBot._dismiss_captcha(page)
-            page.wait_for_timeout(2000)
-            waited += 2000
-        if otp_input is None:
-            # One last classification pass before the generic OTP-timeout error.
-            VfsBot._raise_if_blocked(page)
-            VfsBot._take_final_screenshot(page, "otp_field_missing")
-            raise OtpVerificationError(
-                "Route is flagged otp=true but no OTP input appeared within 60s "
-                f"(landed on: {VfsBot._landing_status(page)})."
-            )
-        logging.info("OTP step detected — fetching the code from email.")
-        VfsBot._take_screenshot(page, "otp_step")
-
-        # Fetch the email ONCE; we re-read its image on each submit so a VFS
-        # rejection can be recovered without waiting for a whole new OTP email.
-        try:
-            mail = otp_service.wait_for_otp_mail(email_id, password, since_epoch)
-        except Exception as e:
-            VfsBot._take_final_screenshot(page, "otp_fetch_failed")
-            raise OtpVerificationError(f"Could not obtain the OTP email: {e}") from e
-
-        otp_len = otp_service.otp_length()
-        read_attempts = settings().otp.read_attempts
-        submit_attempts = max(1, settings().otp.submit_attempts)
-        rejected = set()
-
-        for attempt in range(1, submit_attempts + 1):
-            # Read a valid code VFS hasn't already rejected. After a rejection the
-            # temperature is raised so the re-read can differ from the last one.
-            try:
-                code = otp_service.extract_code(
-                    mail, otp_len, read_attempts,
-                    min_temperature=0.0 if attempt == 1 else 0.4,
-                    exclude=rejected,
-                )
-            except Exception as e:
-                VfsBot._take_final_screenshot(page, "otp_read_failed")
-                raise OtpVerificationError(f"Could not read the OTP: {e}") from e
-
-            if attempt > 1:
-                logging.info(
-                    f"Re-fetched OTP from AI after VFS rejection "
-                    f"(submit {attempt}/{submit_attempts}): {code}"
-                )
-
-            # Re-locate the field (it may re-render after a rejection) and enter it.
-            try:
-                otp_input = page.locator(self.selectors["otp"]).first
-            except Exception:
-                pass
-            VfsBot._fill_field(page, otp_input, code)
-            page.wait_for_timeout(500)
-            logging.info(f"OTP {code} entered; submitting ({attempt}/{submit_attempts})...")
-
-            if not self._submit_otp(page):
-                VfsBot._take_final_screenshot(page, "otp_submit_missing")
-                raise OtpVerificationError(
-                    "OTP entered but no Verify/Submit button could be clicked."
-                )
-
-            # Did VFS reject it? Poll briefly for the 'valid OTP' banner.
-            if not VfsBot._otp_rejected_after_submit(page):
-                return  # accepted (or progressing to the dashboard) — done here
-
-            rejected.add(code)
-            logging.warning(
-                f"VFS REJECTED the OTP '{code}' — 'Please enter a valid one time "
-                f"password (OTP)'. RE-FETCHING a fresh reading from AI and retrying "
-                f"(submit {attempt}/{submit_attempts})."
-            )
-            VfsBot._take_screenshot(page, f"otp_rejected_{attempt}")
-
-        VfsBot._take_final_screenshot(page, "otp_rejected_final")
-        raise OtpVerificationError(
-            f"VFS rejected the OTP on all {submit_attempts} submit attempt(s) "
-            "('Please enter a valid one time password')."
+        # start_new_booking() below does its own settle-wait before clicking —
+        # no need to also wait here (that used to be a redundant back-to-back
+        # 2s+2s pause doing the same job).
+        slot_check.start_new_booking(page)
+        self.slot_results = slot_check.run_slot_check(
+            page, self.schema, self.source_country_code, self.destination_country_code
         )
-
-    # Text VFS shows when a submitted OTP is wrong.
-    OTP_REJECTED_TEXT = "valid one time password"
-
-    @staticmethod
-    def _submit_otp(page) -> bool:
-        """Click the OTP confirm button (label ladder + force/JS fallback).
-        Returns True if a click was issued, False if no button was found."""
-        for label in ("Verify", "Submit", "Confirm", "Sign In", "Continue"):
-            try:
-                btn = page.get_by_role("button", name=label).first
-                if btn.count() == 0 or not btn.is_visible():
-                    continue
-                if not btn.is_enabled():
-                    VfsBot._wait_for_signin_enabled(page, btn, timeout_ms=15000)
-                try:
-                    btn.click(timeout=10000)
-                except Exception:
-                    try:
-                        btn.click(force=True, timeout=10000)
-                    except Exception:
-                        btn.evaluate("el => el.click()")
-                logging.info(f"Submitted OTP via '{label}'.")
-                VfsBot._take_screenshot(page, "otp_submitted")
-                return True
-            except Exception:
-                continue
-        return False
-
-    @staticmethod
-    def _otp_rejected(page) -> bool:
-        """True if VFS's 'Please enter a valid one time password (OTP).' banner
-        is on the page."""
-        try:
-            return VfsBot.OTP_REJECTED_TEXT in (VfsBot._page_text(page) or "").lower()
-        except Exception:
-            return False
-
-    @staticmethod
-    def _otp_rejected_after_submit(page, timeout_ms: int = 12000) -> bool:
-        """Poll briefly after submitting: True if VFS shows the invalid-OTP banner
-        (=> re-fetch and retry); False if we progress toward the dashboard or
-        nothing rejects within the window (=> treat as accepted)."""
-        step_ms = 1000
-        waited = 0
-        while waited < timeout_ms:
-            try:
-                if "/dashboard" in (page.url or ""):
-                    return False  # moved on — accepted
-            except Exception:
-                pass
-            VfsBot._raise_if_blocked(page)   # an account block can surface here
-            if VfsBot._otp_rejected(page):
-                return True
-            VfsBot._dismiss_captcha(page)
-            page.wait_for_timeout(step_ms)
-            waited += step_ms
-        return False
-
-    # ===== Booking start & slot check =======================================
-
-    @staticmethod
-    def _start_new_booking(page) -> None:
-        """Clicks the 'Start New Booking' button on the VFS dashboard."""
-        try:
-            page.wait_for_timeout(2000)
-            # VFS renders two copies of this button (responsive: one for mobile,
-            # one for desktop) — one is CSS-hidden at any given viewport. Target
-            # the <button> (not its inner <span>) and keep only the visible copy,
-            # otherwise the click lands on the hidden element and times out.
-            booking_button = (
-                page.locator("button:has-text('Start New Booking')")
-                .filter(visible=True)
-                .first
-            )
-            booking_button.scroll_into_view_if_needed(timeout=10000)
-            booking_button.click(timeout=15000)
-            logging.debug("Clicked Start New Booking")
-            page.wait_for_timeout(3000)
-            VfsBot._take_screenshot(page, "06_start_new_booking")
-            logging.debug(f"Start New Booking opened. URL: {page.url}")
-        except Exception as e:
-            logging.warning(f"Start New Booking failed: {e}")
-            VfsBot._take_screenshot(page, "ERROR_start_new_booking")
-
-    # ------------------------------------------------------------------ #
-    # Slot check                                                         #
-    # ------------------------------------------------------------------ #
-
-    def _check_slots(self, page) -> None:
-        """
-        Slot-check flow (no booking): on the Appointment Details step, run through
-        each configured combination (centre / category / sub-category), read the
-        earliest-slot banner for each, then send all results in one Telegram
-        message. Combinations come from the route schema's `slot_check.combinations`.
-        """
-        all_combos = self.schema.get("slot_check", {}).get("combinations", [])
-        # JSON has no comments, so combinations are switched off with
-        # `"disabled": true` instead of being deleted from the route file.
-        combos = [c for c in all_combos if not c.get("disabled")]
-        if len(combos) < len(all_combos):
-            logging.info(
-                f"Skipping {len(all_combos) - len(combos)} disabled combination(s)."
-            )
-        if not combos:
-            logging.warning("Slot-check mode but no combinations configured.")
-            return
-
-        try:
-            page.wait_for_url("**/application-detail", timeout=30000)
-        except Exception as e:
-            raise SlotCheckError(
-                f"Did not reach the Appointment Details page; cannot check slots: {e}"
-            ) from e
-
-        VfsBot._wait_for_loader(page)
-        page.wait_for_timeout(1000)
-
-        results = []
-        prev = {}  # the centre/category/sub-category selected for the previous combo
-        for combo in combos:
-            label = combo.get("label") or " / ".join(
-                filter(None, [combo.get("centre"), combo.get("category"), combo.get("sub_category")])
-            )
-            logging.info(f"Checking slot for: {label}")
-
-            # The dropdowns cascade (centre -> category -> sub-category), so they
-            # are selected in order. Skip any level whose value is unchanged from
-            # the previous combination — but once a parent level changes it resets
-            # its children, so every level below a change must be re-selected too.
-            selections = [
-                ("centerCode", "centre", combo.get("centre")),
-                ("selectedSubvisaCategory", "category", combo.get("category")),
-                ("visaCategoryCode", "sub_category", combo.get("sub_category")),
-            ]
-            ok = True
-            fail_detail = None
-            cascade_changed = False
-            for control, key, value in selections:
-                if not value:
-                    continue
-                # Re-select if this level's value differs OR a parent changed
-                # (which reset this dependent dropdown).
-                if not cascade_changed and prev.get(key) == value:
-                    logging.debug(f"  (unchanged) {key} = '{value}' — skipping re-select")
-                    continue
-                cascade_changed = True
-                if not VfsBot._select_mat_dropdown(page, control, value):
-                    ok = False
-                    friendly = {"centre": "centre", "category": "category",
-                                "sub_category": "sub-category"}.get(key, key)
-                    fail_detail = f"could not select {friendly} '{value}'"
-                    break
-
-            prev = {
-                "centre": combo.get("centre"),
-                "category": combo.get("category"),
-                "sub_category": combo.get("sub_category"),
-            }
-
-            if not ok:
-                # 'ERROR:' prefix marks a real slot-search failure (as opposed to
-                # genuine 'no availability'), so the supervisor can flag the route
-                # as failed and name the combo + reason in the run summary.
-                message = f"ERROR: {fail_detail or 'could not select this combination'}"
-            else:
-                message = VfsBot._read_slot_message(
-                    page, timeout=settings().timeouts.slot_read_ms
-                ) or "No slot message shown (no availability?)."
-
-            logging.info(f"  -> {message}")
-            results.append((label, message))
-            VfsBot._take_screenshot(page, f"slot_{len(results)}")
-            page.wait_for_timeout(1000)
-
-        # Disabled combos are carried in the results with a 'DISABLED' marker so
-        # the run summary can show them; no date in the text keeps them out of
-        # the slot report and the slot count.
-        for combo in all_combos:
-            if combo.get("disabled"):
-                label = combo.get("label") or " / ".join(
-                    filter(None, [combo.get("centre"), combo.get("category"),
-                                  combo.get("sub_category")])
-                )
-                results.append((label, "DISABLED"))
-
-        # Expose the per-combo results for the supervisor's run summary, then send
-        # the (unchanged) per-route slot report to the success chat.
-        self.slot_results = results
-        self._send_slot_report(results)
-
-    @staticmethod
-    def _read_slot_message(page, timeout: int = 12000) -> str:
-        """
-        Returns the 'Earliest available slot ...' banner text on the Appointment
-        Details step, or "" if none is shown (e.g. no availability for the chosen
-        combination).
-        """
-        try:
-            VfsBot._wait_for_loader(page)
-            slot = page.get_by_text("Earliest available slot", exact=False).first
-            slot.wait_for(timeout=timeout)
-            return slot.inner_text().strip()
-        except Exception:
-            return ""
-
-    def _send_slot_report(self, results: list) -> None:
-        """Formats this route's slot results and sends them to Telegram.
-
-        The message layout lives in src/utils/telegram_message.py — edit it there.
-        It is route-aware, so each portal's message shows the correct destination.
-        """
-        from src.utils import telegram, telegram_message
-
-        url_key = f"{self.source_country_code}-{self.destination_country_code}"
-        login_url = get_config_value("vfs-url", url_key, "")
-        report = telegram_message.slot_report(
-            self.source_country_code,
-            self.destination_country_code,
-            results,
-            login_url,
-        )
-
-        # Only notify when there's an actual slot. slot_report() returns "" when
-        # no combination has availability, so we skip sending entirely.
-        if not report:
-            logging.info("No available slots for this route — no Telegram message sent.")
-            return
-
-        logging.info("Slot report:\n" + report)
-        if telegram.is_configured():
-            telegram.send_message(report)
-        else:
-            logging.warning(
-                "Telegram not configured — slot report logged only. "
-                "Set [telegram] bot_token and chat_id in config.ini to receive it."
-            )
-
-    # ------------------------------------------------------------------ #
-    # Shared UI helpers (loader / captcha / wait dialogs / dropdowns)    #
-    # ------------------------------------------------------------------ #
-
-    # ===== Loaders & captcha dialogs ========================================
-
-    @staticmethod
-    def _wait_for_loader(page, timeout: int = 30000) -> None:
-        """
-        Waits for VFS's ngx-ui-loader overlay to clear. This full-screen spinner
-        intercepts pointer events, so clicking while it is up times out. Returns
-        immediately if no loader is present.
-
-        Also clears any Cloudflare 'Verify Captcha' dialog and the VFS 'please
-        wait before continuing' reminder first — either can pop up at any step
-        and blocks the form until dismissed.
-        """
-        VfsBot._dismiss_captcha(page)
-        VfsBot._dismiss_wait_dialog(page)
-        try:
-            page.locator("ngx-ui-loader .ngx-overlay.loading-foreground").wait_for(
-                state="hidden", timeout=timeout
-            )
-        except Exception:
-            pass  # loader absent or already cleared
-
-    @staticmethod
-    def _dismiss_wait_dialog(page) -> None:
-        """
-        Dismisses VFS's intermittent reminder dialogs that block a step — e.g.
-        'Please wait for some time before saving and continuing'. These are
-        mat-dialogs whose only action is a 'Continue' (or 'OK') button; clicking
-        it lets the flow proceed. Silent no-op when none is present.
-        """
-        try:
-            dialog = page.locator("mat-dialog-container, .mat-mdc-dialog-container")
-            if dialog.count() == 0 or not dialog.first.is_visible():
-                return
-            text = (dialog.first.inner_text() or "").lower()
-        except Exception:
-            return
-
-        # Only handle the informational 'wait/reminder' dialogs here — leave the
-        # Cloudflare captcha dialog to its dedicated handler.
-        if "captcha" in text:
-            return
-        if not any(k in text for k in ("wait", "reminder", "received", "please")):
-            return
-
-        for label in ("Continue", "OK", "Ok", "Close"):
-            try:
-                btn = dialog.first.get_by_role("button", name=label).first
-                if btn.count() > 0 and btn.is_visible():
-                    btn.click(timeout=5000)
-                    logging.debug(f"Dismissed VFS reminder dialog via '{label}'.")
-                    page.wait_for_timeout(1500)
-                    return
-            except Exception:
-                continue
-
-    @staticmethod
-    def _dismiss_captcha(page) -> None:
-        """
-        Dismisses the Cloudflare 'Verify Captcha' dialog (`app-cloudflare-dialog`)
-        if it is showing. The Turnstile widget auto-solves, so we just need to
-        click its 'Submit' button. Returns immediately (and silently) when no
-        dialog is present.
-        """
-        try:
-            dialog = page.locator("app-cloudflare-dialog")
-            if dialog.count() == 0 or not dialog.first.is_visible():
-                return
-        except Exception:
-            return
-
-        VfsBot._do_dismiss_captcha(page)
-
-    @staticmethod
-    def _wait_with_captcha_check(page, total_ms: int, step_ms: int = 3000) -> None:
-        """
-        Sleeps for `total_ms`, checking for (and dismissing) the Cloudflare captcha
-        dialog every `step_ms`. Use for long idle waits where the dialog could pop
-        up while the bot is otherwise doing nothing.
-        """
-        elapsed = 0
-        while elapsed < total_ms:
-            page.wait_for_timeout(min(step_ms, total_ms - elapsed))
-            elapsed += step_ms
-            VfsBot._dismiss_captcha(page)
-
-    @staticmethod
-    def _do_dismiss_captcha(page) -> None:
-        """
-        Clears a confirmed-visible Cloudflare captcha dialog.
-
-        The Turnstile widget shows 'Verifying...' for a few seconds and only
-        populates its hidden `cf-turnstile-response` token once solved — clicking
-        Submit before then does nothing. So we wait for that token to appear,
-        then click Submit, and retry the whole cycle a few times if the dialog
-        is still up (it can require more than one round).
-        """
-        dialog = page.locator("app-cloudflare-dialog")
-        logging.info("Cloudflare 'Verify Captcha' dialog detected — handling it.")
-
-        for attempt in range(1, 4):  # up to 3 Submit cycles
-            VfsBot._wait_for_turnstile_token(page)
-            try:
-                submit = dialog.get_by_role("button", name="Submit").first
-                try:
-                    submit.click(timeout=10000)
-                except Exception:
-                    # Slow EC2 / overlay — force, then JS-dispatch as last resort.
-                    try:
-                        submit.click(force=True, timeout=10000)
-                    except Exception:
-                        submit.evaluate("el => el.click()")
-                logging.debug(f"Clicked captcha 'Submit' (attempt {attempt})")
-            except Exception as e:
-                logging.warning(f"Could not click captcha 'Submit': {e}")
-                VfsBot._take_screenshot(page, "ERROR_captcha")
-                return
-
-            # Did the dialog go away?
-            try:
-                dialog.first.wait_for(state="hidden", timeout=12000)
-                logging.debug("Captcha dialog cleared.")
-                VfsBot._take_screenshot(page, "captcha_handled")
-                return
-            except Exception:
-                # Still visible (e.g. token wasn't ready yet) — loop and retry.
-                if not VfsBot._captcha_visible(page):
-                    return  # raced away on its own
-                logging.debug(
-                    f"Captcha still visible after Submit (attempt {attempt}); retrying..."
-                )
-
-        logging.warning(
-            "Captcha dialog still visible after retries — it may need a manual solve."
-        )
-        VfsBot._take_screenshot(page, "ERROR_captcha_persist")
-
-    @staticmethod
-    def _await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
-        """
-        Waits for the dashboard URL while continuously dismissing the Cloudflare
-        'Verify Captcha' dialog, which can pop up at any time during the post-
-        Sign-In redirect and blocks it until its Submit is clicked.
-
-        Returns True as soon as the URL reaches /dashboard, else False on timeout.
-        """
-        step_ms = 2000
-        waited = 0
-        while waited < timeout_ms:
-            # Already there?
-            try:
-                if "/dashboard" in (page.url or ""):
-                    return True
-            except Exception:
-                pass
-            # Stop early if VFS served its 'Permission Issues (403203)' geo-block
-            # page — retrying won't help (same IP), so raise to abort immediately.
-            if VfsBot._is_geo_blocked(page):
-                VfsBot._take_final_screenshot(page, "geo_blocked")
-                raise GeoBlockedError(
-                    "VFS 'Permission Issues (403203)' — IP outside permitted "
-                    "location or rate-limited. Not retrying."
-                )
-            # Stop early on any account/route block page (429002 denied / 429202
-            # locked / 429001 restricted) — a block, not a slow dashboard.
-            VfsBot._raise_if_blocked(page)
-            # Stop early if this email isn't registered for this site — no point
-            # waiting; the caller skips this URL for this account.
-            if VfsBot._email_not_registered(page):
-                return False
-            # Stop early on a wrong-credentials banner too (no point waiting 90s).
-            if VfsBot._invalid_credentials(page):
-                return False
-            # Clear the captcha dialog if it's blocking the redirect.
-            VfsBot._dismiss_captcha(page)
-            page.wait_for_timeout(step_ms)
-            waited += step_ms
-            if waited % 20000 == 0:
-                logging.debug(f"Waiting for dashboard (handling captcha)... ({waited/1000:.0f}s)")
-        # Final check.
-        try:
-            return "/dashboard" in (page.url or "")
-        except Exception:
-            return False
-
-    # ===== Block / geo / account-state detection ============================
-
-    @staticmethod
-    def _is_geo_blocked(page) -> bool:
-        """
-        True if the current page is VFS's 'Permission Issues (403203)' block
-        (shown when the IP is outside the permitted location / rate-limited).
-
-        Detected by page content so it works regardless of URL — looks for the
-        403203 code or the 'Permission Issues' heading.
-        """
-        try:
-            body = (page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            ) or "").lower()
-        except Exception:
-            return False
-        return "403203" in body or "permission issues" in body
-
-    @staticmethod
-    def _page_text(page) -> str:
-        """
-        Best-effort ALL text of the current page for block-code detection: the
-        body innerText, the full serialized HTML (catches raw-JSON error pages
-        that Chrome shows in a JSON viewer / <pre>), and every sub-frame. Lowered.
-        """
-        parts = []
-        try:
-            parts.append(page.evaluate(
-                "() => document.body ? document.body.innerText : ''") or "")
-        except Exception:
-            pass
-        try:
-            parts.append(page.content() or "")   # full HTML source
-        except Exception:
-            pass
-        try:
-            for fr in page.frames:
-                try:
-                    parts.append(fr.evaluate(
-                        "() => document.body ? document.body.innerText : ''") or "")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return " ".join(parts).lower()
-
-    @staticmethod
-    def _ip_blocked(page) -> bool:
-        """
-        True if VFS returned code 403201 — an IP-based block (this IP made too
-        many requests / is flagged). VFS renders it as JSON like
-        {"code":"403201"}, so we scan the full page text (HTML + frames).
-        """
-        return "403201" in VfsBot._page_text(page)
-
-    @staticmethod
-    def _email_not_registered(page) -> bool:
-        """
-        True if the login page is showing the 'email id is not registered'
-        banner — meaning the current account isn't registered for this portal.
-
-        Detected by the banner text so it works regardless of exact markup.
-        """
-        try:
-            body = (page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            ) or "").lower()
-        except Exception:
-            return False
-        return "not registered with us" in body
-
-    @staticmethod
-    def _invalid_credentials(page) -> bool:
-        """
-        True if the login page is showing an incorrect email/password error —
-        meaning the account's credentials are wrong.
-
-        Detected by the banner/toast text so it works regardless of exact markup
-        (VFS shows variants like 'The email or password you have entered is
-        incorrect.'). The separate 'not registered' banner is excluded here — it
-        is a different, already-handled case (EmailNotRegisteredError).
-        """
-        try:
-            body = (page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            ) or "").lower()
-        except Exception:
-            return False
-        if "not registered with us" in body:
-            return False
-        return (
-            "email or password" in body
-            or "password you have entered is incorrect" in body
-            or "incorrect email or password" in body
-            or "invalid username or password" in body
-        )
-
-    @staticmethod
-    def _access_restricted(page) -> bool:
-        """
-        True if VFS is showing its 'Access Restricted' block page — the portal
-        has cut off this route for the current account/session. Detected by page
-        text so it works regardless of URL or exact markup.
-        """
-        try:
-            body = (page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            ) or "").lower()
-        except Exception:
-            return False
-        return "access restricted" in body
-
-    @staticmethod
-    def _access_denied(page) -> bool:
-        """
-        True if VFS is showing its 'Access Denied Due to Unauthorised Activity
-        (429002)' block page — the account is blocked (usually after repeated
-        wrong-credential attempts) and needs a manual fix. Detected by text.
-        """
-        try:
-            body = (page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            ) or "").lower()
-        except Exception:
-            return False
-        return "429002" in body or "access denied due to unauthorised activity" in body
-
-    @staticmethod
-    def _raise_if_blocked(page, cause: Exception = None) -> None:
-        """
-        If the page is a known VFS account/route block page, raise the SPECIFIC
-        error so it's classified (and the account handled) correctly:
-
-          429002 'Access Denied ... Unauthorised Activity' -> AccountBlockedError
-                                                               (manual fix needed)
-          429202 'Account Locked'                          -> AccountLockedError
-          429001 / 'Access Restricted'                     -> AccessRestrictedError
-
-        No-op if the page isn't a block page. `cause` (if given) is chained.
-        """
-        if VfsBot._ip_blocked(page):
-            VfsBot._take_final_screenshot(page, "ip_blocked_403201")
-            raise IpBlockedError("VFS 403201 — IP blocked (too many requests / "
-                                 "flagged IP). Rotate to a different IP.") from cause
-        if VfsBot._access_denied(page):
-            VfsBot._take_final_screenshot(page, "access_denied")
-            raise AccountBlockedError(VfsBot._landing_status(page)) from cause
-        if VfsBot._account_locked(page):
-            VfsBot._take_final_screenshot(page, "account_locked")
-            raise AccountLockedError(VfsBot._landing_status(page)) from cause
-        if VfsBot._access_restricted(page):
-            VfsBot._take_final_screenshot(page, "access_restricted")
-            raise AccessRestrictedError(VfsBot._landing_status(page)) from cause
-
-    @staticmethod
-    def _account_locked(page) -> bool:
-        """
-        True if VFS is showing its 'Account Locked (429202)' page — too many
-        requests in a short window, temporary cooldown. Detected by text so it
-        works regardless of exact markup.
-        """
-        try:
-            body = (page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            ) or "").lower()
-        except Exception:
-            return False
-        return "429202" in body or "account locked" in body
-
-    @staticmethod
-    def _landing_status(page) -> str:
-        """
-        Best-effort short description of what the page currently shows, for
-        reporting when we did NOT reach the dashboard — so the alert says what we
-        actually landed on instead of a generic 'no dashboard'.
-
-        Returns the most prominent heading + first meaningful line of text (e.g.
-        'Account Locked (429202) — It seems like you have made multiple requests
-        ...'), or the URL if nothing readable is found.
-        """
-        try:
-            info = page.evaluate(
-                """() => {
-                    const txt = (el) => (el && el.innerText ? el.innerText.trim() : '');
-                    const heading = txt(document.querySelector('h1'))
-                        || txt(document.querySelector('h2'))
-                        || txt(document.querySelector('.error-title, .title'));
-                    let msg = '';
-                    for (const el of document.querySelectorAll('p, li')) {
-                        const t = (el.innerText || '').trim();
-                        if (t.length > 20) { msg = t; break; }
-                    }
-                    return { heading, msg, url: location.href };
-                }"""
-            ) or {}
-        except Exception:
-            info = {}
-        parts = [p for p in ((info.get("heading") or "").strip(),
-                             (info.get("msg") or "").strip()) if p]
-        if parts:
-            text = " — ".join(parts)
-            return text if len(text) <= 300 else text[:299] + "…"
-        return f"unrecognised page at {info.get('url') or getattr(page, 'url', '')}"
-
-    @staticmethod
-    def _captcha_visible(page) -> bool:
-        """True if the Cloudflare captcha dialog is currently showing."""
-        try:
-            dialog = page.locator("app-cloudflare-dialog")
-            return dialog.count() > 0 and dialog.first.is_visible()
-        except Exception:
-            return False
-
-    @staticmethod
-    def _wait_for_turnstile_token(page, timeout_ms: int = 15000) -> None:
-        """
-        Waits until the Turnstile hidden input (`cf-turnstile-response`) holds a
-        non-empty token, meaning the challenge auto-solved. Falls back to a short
-        fixed wait if the input can't be read (it lives in a closed shadow root on
-        some pages, so its value isn't always queryable).
-        """
-        try:
-            page.wait_for_function(
-                """() => {
-                    const el = document.querySelector('input[name="cf-turnstile-response"]');
-                    return el && el.value && el.value.length > 0;
-                }""",
-                timeout=timeout_ms,
-            )
-            logging.debug("Turnstile token populated.")
-        except Exception:
-            # Token not observable (closed shadow DOM) — give it a moment anyway.
-            page.wait_for_timeout(3000)
-
-    # ===== UI helpers (Angular Material dropdowns) ==========================
-
-    @staticmethod
-    def _select_mat_dropdown(page, control_name: str, value: str,
-                             attempts: int = 3, option_timeout_ms: int = 20000) -> bool:
-        """
-        Selects an option in an Angular Material dropdown (`mat-select`).
-
-        Opens the dropdown identified by its `formcontrolname`, WAITS for the
-        options to actually load (they arrive async, often behind a spinner), then
-        clicks the option whose visible text contains `value` (case-insensitive
-        substring).
-
-        Robust to slow option loading: instead of a fixed 1s wait it polls up to
-        `option_timeout_ms` for THIS option to become visible, and retries the
-        whole open→select a few times. On any failure it presses Escape to close a
-        half-open overlay first — otherwise a stuck overlay would intercept clicks
-        and break the NEXT dropdown too.
-
-        Returns:
-            bool: True if the option was selected, False otherwise.
-        """
-        for attempt in range(1, attempts + 1):
-            try:
-                VfsBot._wait_for_loader(page)  # lists load behind a full-screen spinner
-                trigger = page.locator(
-                    f"mat-select[formcontrolname='{control_name}']"
-                ).first
-                trigger.scroll_into_view_if_needed(timeout=10000)
-                trigger.click(timeout=10000)
-
-                # The overlay opens, then its options load in async. Clear any
-                # spinner, then wait for THIS option to actually render before
-                # clicking it (the old fixed 1s wait was too short on slow loads).
-                page.wait_for_timeout(400)
-                VfsBot._wait_for_loader(page)
-                option = page.get_by_role("option", name=value, exact=False).first
-                option.wait_for(state="visible", timeout=option_timeout_ms)
-                option.scroll_into_view_if_needed(timeout=5000)
-                option.click(timeout=10000)
-
-                logging.debug(
-                    f"Selected '{value}' (dropdown: '{control_name}')"
-                    + (f" on attempt {attempt}" if attempt > 1 else "")
-                )
-                page.wait_for_timeout(1000)
-                VfsBot._wait_for_loader(page)  # let the dependent dropdown reload
-                return True
-            except Exception as e:
-                logging.warning(
-                    f"Attempt {attempt}/{attempts}: could not select '{value}' for "
-                    f"'{control_name}': {e}"
-                )
-                # Close any half-open overlay so it can't block the next dropdown.
-                try:
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(700)
-                except Exception:
-                    pass
-                if attempt < attempts:
-                    VfsBot._wait_for_loader(page)
-                    page.wait_for_timeout(1500)
-
-        VfsBot._take_screenshot(page, "ERROR_dropdown")
-        return False
-
-    # ------------------------------------------------------------------ #
-    # Browser activity logging                                           #
-    # ------------------------------------------------------------------ #
-
-    # ===== Diagnostics: activity logging & screenshots ======================
-
-    @staticmethod
-    def _attach_activity_logging(page) -> None:
-        """
-        Attaches verbose Playwright event listeners to `page` so that browser
-        activity — frame navigations, network requests/responses, console
-        messages and page/request errors — is logged at DEBUG level.
-
-        No-op unless browser-activity logging is enabled (BROWSER_ACTIVITY_LOG
-        env var or [logging] browser_activity in config). The network listeners
-        are intentionally chatty, so they log at DEBUG: set the log level to
-        DEBUG to actually see them.
-        """
-        if not _browser_activity_enabled():
-            return
-
-        log = logging.getLogger("browser")
-        log.info("Browser-activity logging enabled (navigations, network, console).")
-
-        def on_request(request):
-            log.debug(f">> {request.method} {request.url}")
-
-        def on_response(response):
-            log.debug(f"<< {response.status} {response.url}")
-
-        def on_request_failed(request):
-            failure = getattr(request, "failure", None)
-            log.warning(f"XX request failed: {request.method} {request.url} ({failure})")
-
-        def on_console(msg):
-            log.debug(f"[console:{msg.type}] {msg.text}")
-
-        def on_page_error(error):
-            log.warning(f"[page error] {error}")
-
-        def on_frame_navigated(frame):
-            # Only the main frame's navigations are interesting; iframes are noisy.
-            if frame == page.main_frame:
-                log.info(f"Navigated: {frame.url}")
-
-        page.on("request", on_request)
-        page.on("response", on_response)
-        page.on("requestfailed", on_request_failed)
-        page.on("console", on_console)
-        page.on("pageerror", on_page_error)
-        page.on("framenavigated", on_frame_navigated)
-
-    # ------------------------------------------------------------------ #
-    # Screenshots                                                        #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _take_screenshot(page, name: str):
-        """Per-step screenshot — a no-op unless browser.screenshots_enabled is set."""
-        if not settings().browser.screenshots_enabled:
-            return
-        VfsBot._write_screenshot(page, name)
-
-    @staticmethod
-    def _take_final_screenshot(page, name: str = "final"):
-        """Always writes one screenshot (used at the end of the run)."""
-        VfsBot._write_screenshot(page, name)
-
-    @staticmethod
-    def _write_screenshot(page, name: str, fixed_name: bool = False):
-        # fixed_name=True writes exactly <name>.png (overwritten each run) so you
-        # can always find e.g. Loginformloaded.png; otherwise it's timestamped.
-        if fixed_name:
-            path = os.path.join(SCREENSHOT_DIR, f"{name}.png")
-        else:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            path = os.path.join(SCREENSHOT_DIR, f"{timestamp}_{name}.png")
-        # Screenshots are diagnostic-only and MUST never hang the flow. Use a
-        # short bounded timeout and disable the font/animation/stability waits.
-        # If it can't capture quickly, log and move on — never block, never use a
-        # CDP fallback (that send() had no timeout and could hang forever, which
-        # stalled a whole run between 'Password entered' and Sign In).
-        try:
-            page.screenshot(
-                path=path,
-                full_page=False,
-                timeout=5000,
-                animations="disabled",
-                caret="initial",
-            )
-            logging.debug(f"Screenshot saved: {path}")
-        except Exception as e:
-            logging.warning(f"Skipped screenshot '{name}' (non-fatal): {e}")

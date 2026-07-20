@@ -6,6 +6,7 @@ through — without launching a browser — by faking Playwright's route object.
 Run: python -m unittest tests.test_bandwidth
 """
 
+import os
 import unittest
 
 from src.settings import Bandwidth
@@ -114,6 +115,37 @@ class TestPersistProfile(unittest.TestCase):
         c = self._chrome(persist=True, key=None)
         self.assertFalse(c._persist, "no account key -> never share one profile")
         self.assertTrue(c._owns_profile)
+
+
+class TestEgressMarker(unittest.TestCase):
+    """A persistent profile reused from a different egress IP must flag the change
+    (so the bot drops the IP-bound cf_clearance) — this is what makes 'warm on
+    local, run on proxy' safe."""
+
+    def _proc(self, profile_dir, proxy):
+        from src.utils.chrome_launcher import ChromeProcess
+
+        c = ChromeProcess(profile_dir=profile_dir)
+        c._persist = True          # force persist path for the test
+        c.proxy = proxy
+        c._mark_egress()
+        return c
+
+    def test_egress_change_detected(self):
+        import shutil
+        import tempfile
+
+        d = os.path.join(tempfile.gettempdir(), "vfs-egress-unittest")
+        shutil.rmtree(d, ignore_errors=True)
+        try:
+            self.assertFalse(self._proc(d, None).egress_changed,
+                             "first use has no prior egress -> no change")
+            self.assertTrue(self._proc(d, "http://u:p@1.2.3.4:8080").egress_changed,
+                            "local -> proxy is a change (drop cf_clearance)")
+            self.assertFalse(self._proc(d, "http://u:p@1.2.3.4:8080").egress_changed,
+                             "same proxy again -> no change")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
