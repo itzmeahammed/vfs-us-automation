@@ -30,3 +30,8 @@ analytics_report.txt
 # Local secret overrides (see VFS_BOT_CONFIG_PATH in the README)
 config/config.local.ini
 *.local.ini
+# Editor backups + temp writes (credentials backups contain real secrets) and
+# the standalone proxy tool's rotation state.
+*.bak-*
+*.ini.tmp
+.proxy_run.state

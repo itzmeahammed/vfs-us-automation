@@ -29,6 +29,7 @@ class OtpMail:
     image: Optional[bytes]  # first image attachment's bytes (None if none)
     image_mime: str         # its content type, e.g. 'image/png'
     received_epoch: float   # when the server received it (epoch seconds)
+    html_text: str = ""     # raw text/html body ('' if none) — used by text-OTP routes
 
 
 def fetch_latest_otp_mail(
@@ -110,6 +111,7 @@ def _parse(raw: bytes, received_epoch: float) -> OtpMail:
     msg = email.message_from_bytes(raw)
 
     body_text = ""
+    html_text = ""
     image = None
     image_mime = ""
     for part in msg.walk():
@@ -121,6 +123,13 @@ def _parse(raw: bytes, received_epoch: float) -> OtpMail:
                 body_text = payload.decode(charset, errors="replace")
             except Exception:
                 pass
+        elif ctype == "text/html" and not html_text:
+            try:
+                payload = part.get_payload(decode=True) or b""
+                charset = part.get_content_charset() or "utf-8"
+                html_text = payload.decode(charset, errors="replace")
+            except Exception:
+                pass
         elif ctype.startswith("image/") and image is None:
             try:
                 image = part.get_payload(decode=True)
@@ -130,9 +139,10 @@ def _parse(raw: bytes, received_epoch: float) -> OtpMail:
 
     logging.debug(
         f"OTP email parsed: body={len(body_text)} chars, "
+        f"html={len(html_text)} chars, "
         f"image={'yes (' + image_mime + ')' if image else 'no'}."
     )
     return OtpMail(
         body_text=body_text, image=image, image_mime=image_mime,
-        received_epoch=received_epoch,
+        received_epoch=received_epoch, html_text=html_text,
     )

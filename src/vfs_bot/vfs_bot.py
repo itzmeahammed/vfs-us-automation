@@ -311,6 +311,9 @@ class VfsBot(ABC):
         email_id, password = self._resolve_credential(url_key)
         self.active_email = email_id
 
+        # Tag this run's timestamped screenshots with the destination code, e.g.
+        # 20260721_090048_GRC_turnstile_fail_1.png.
+        diagnostics.set_route(self.destination_country_code)
         os.makedirs(diagnostics.SCREENSHOT_DIR, exist_ok=True)
 
         with sync_playwright() as p:
@@ -585,7 +588,10 @@ class VfsBot(ABC):
         # Routes flagged "otp": true in config/routes/<ROUTE>.json require an
         # emailed one-time password after Sign In before the dashboard loads.
         if self.schema.get("otp"):
-            otp_flow.verify_otp(page, self.selectors["otp"], email_id, password, otp_since)
+            # "otp_mode": "text" (e.g. Greece) reads the code straight from the
+            # email text — no AI; default "image" uses the OpenAI PNG reader.
+            otp_flow.verify_otp(page, self.selectors["otp"], email_id, password,
+                                otp_since, otp_mode=self.schema.get("otp_mode", "image"))
 
         # After Sign In, Cloudflare often shows the 'Verify Captcha' dialog
         # (app-cloudflare-dialog with a Submit button) that BLOCKS the redirect

@@ -85,7 +85,7 @@ def otp_rejected_after_submit(page, timeout_ms: int = 12000) -> bool:
 
 
 def verify_otp(page, otp_selector: str, email_id: str, password: str,
-                since_epoch: float) -> None:
+                since_epoch: float, otp_mode: str = "image") -> None:
     """
     Completes the OTP step on routes flagged "otp": true.
 
@@ -95,6 +95,12 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
     failure. `otp_selector` is the route's (possibly overridden) OTP field
     selector; `since_epoch` is the time.time() recorded just before Sign In,
     so a stale code from a previous run can never be used.
+
+    `otp_mode` selects how the code is read from the email:
+      * "image" (default) — OpenAI reads the code from the PNG attachment, with
+        per-submit re-reads to recover a misread (Italy, etc.).
+      * "text"            — the code is plain text in the email body; read it
+        directly with NO AI (Greece). See src/utils/greece_otp.py.
     """
     from src.utils import otp_service
 
@@ -144,6 +150,36 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
         raise OtpVerificationError(f"Could not obtain the OTP email: {e}") from e
 
     otp_len = otp_service.otp_length()
+
+    # Greece-style routes deliver the OTP as plain text in the email body. Read
+    # it directly (no AI, and no re-read loop — the text is deterministic) and
+    # submit once. A rejection is retryable: a fresh browser triggers a new OTP.
+    if (otp_mode or "").lower() == "text":
+        from src.utils import greece_otp
+        try:
+            code = greece_otp.extract_code(mail, otp_len)
+        except Exception as e:
+            diagnostics.take_final_screenshot(page, "otp_read_failed")
+            raise OtpVerificationError(f"Could not read the OTP: {e}") from e
+        try:
+            otp_input = page.locator(otp_selector).first
+        except Exception:
+            pass
+        fill_field(page, otp_input, code)
+        page.wait_for_timeout(500)
+        logging.info(f"OTP {code} entered (text mode); submitting...")
+        if not submit_otp(page):
+            diagnostics.take_final_screenshot(page, "otp_submit_missing")
+            raise OtpVerificationError(
+                "OTP entered but no Verify/Submit button could be clicked."
+            )
+        if otp_rejected_after_submit(page):
+            diagnostics.take_final_screenshot(page, "otp_rejected_final")
+            raise OtpVerificationError(
+                "VFS rejected the text OTP ('Please enter a valid one time password')."
+            )
+        return
+
     read_attempts = settings().otp.read_attempts
     submit_attempts = max(1, settings().otp.submit_attempts)
     rejected = set()

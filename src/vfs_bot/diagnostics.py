@@ -16,6 +16,17 @@ from src.utils.config_reader import get_config_value
 
 SCREENSHOT_DIR = "screenshots"
 
+# Destination country code for the run in progress (e.g. 'GRC', 'ITA'), inserted
+# into timestamped screenshot names so evidence is easy to attribute per route.
+# Set once at the start of VfsBot.run(); '' before then (name omits it).
+_ROUTE_CODE = ""
+
+
+def set_route(dest_code: str) -> None:
+    """Record the destination country code used in timestamped screenshot names."""
+    global _ROUTE_CODE
+    _ROUTE_CODE = (dest_code or "").strip().upper()
+
 
 def browser_activity_enabled() -> bool:
     """
@@ -86,7 +97,9 @@ def write_screenshot(page, name: str, fixed_name: bool = False) -> None:
         path = os.path.join(SCREENSHOT_DIR, f"{name}.png")
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(SCREENSHOT_DIR, f"{timestamp}_{name}.png")
+        # e.g. 20260721_090048_GRC_turnstile_fail_1.png (route code omitted if unset).
+        prefix = f"{timestamp}_{_ROUTE_CODE}_" if _ROUTE_CODE else f"{timestamp}_"
+        path = os.path.join(SCREENSHOT_DIR, f"{prefix}{name}.png")
     # Screenshots are diagnostic-only and MUST never hang the flow. Use a
     # short bounded timeout and disable the font/animation/stability waits.
     # If it can't capture quickly, log and move on — never block, never use a

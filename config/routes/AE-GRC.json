@@ -1,0 +1,17 @@
+{
+  "description": "UAE -> Greece. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
+  "mode": "slot-check",
+  "otp": true,
+  "otp_mode": "text",
+  "slot_check": {
+    "combinations": [
+      { "label": "Greece Visa Application Centre - Abu Dhabi",
+        "centre": "Greece Visa Application Centre - Abu Dhabi", "category": "Short Stay", "sub_category": "General" },
+      { "label": "Greece Visa Application center-Dubai",
+        "centre": "Greece Visa Application center-Dubai", "category": "Prime Time", "sub_category": "Primetime" },
+        { "label": "Italy Visa Application Center ,Dubai",
+        "centre": "Greece Visa Application center-Dubai", "category": "Short Stay", "sub_category": "General" }       
+    ]
+  }
+}
+
