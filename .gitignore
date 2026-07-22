@@ -8,6 +8,8 @@ env/
 
 # Runtime artifacts
 app.log
+# Per-day archive logs (logs/app-YYYY-MM-DD.log)
+logs/
 screenshots/
 # Windows Task Scheduler wrapper + test logs
 task_runner.log

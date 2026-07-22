@@ -110,6 +110,20 @@ class Forwarder:
         self._srv = None
         self._stop = threading.Event()
         self.port = None
+        # Billed-byte metering: every byte tunnelled through the proxy is charged.
+        self._bytes = 0
+        self._bytes_by_host = {}
+        self._bytes_lock = threading.Lock()
+
+    @property
+    def mb(self):
+        """Total MB tunnelled through the proxy (what you're billed for)."""
+        return self._bytes / (1024 * 1024)
+
+    def top_hosts(self, n=8):
+        with self._bytes_lock:
+            items = sorted(self._bytes_by_host.items(), key=lambda kv: kv[1], reverse=True)
+        return items[:n]
 
     def start(self):
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -148,6 +162,9 @@ class Forwarder:
             if len(parts) < 2:
                 return
             method, target = parts[0].upper(), parts[1]
+            # For CONNECT the target is 'host:port' in cleartext (payload is TLS),
+            # so we can attribute billed bytes per destination host.
+            host = target.split(b":", 1)[0].decode("ascii", "ignore") or None
             up = socket.create_connection((self.up_host, self.up_port), timeout=30)
             auth = self._auth.encode()
             if method == b"CONNECT":                    # HTTPS tunnel
@@ -165,14 +182,14 @@ class Forwarder:
                     resp += c
                 if b" 200 " in resp.split(b"\r\n", 1)[0]:
                     client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                    self._pipe(client, up)
+                    self._pipe(client, up, host=host)
                 else:
                     client.sendall(resp)                # forward upstream error (e.g. 407)
             else:                                       # plain HTTP: inject auth, forward
                 rest = head.split(b"\r\n", 1)[1]
                 up.sendall(first_line + b"\r\n"
                            + b"Proxy-Authorization: Basic " + auth + b"\r\n" + rest)
-                self._pipe(client, up)
+                self._pipe(client, up, host=host)
         except Exception:
             pass
         finally:
@@ -183,7 +200,7 @@ class Forwarder:
                 except OSError:
                     pass
 
-    def _pipe(self, a, b):
+    def _pipe(self, a, b, host=None):
         a.setblocking(False)
         b.setblocking(False)
         socks = [a, b]
@@ -203,6 +220,12 @@ class Forwarder:
                     return
                 if not data:
                     return
+                # Meter every byte tunnelled — this is what the proxy bills.
+                n = len(data)
+                with self._bytes_lock:
+                    self._bytes += n
+                    if host:
+                        self._bytes_by_host[host] = self._bytes_by_host.get(host, 0) + n
                 try:
                     (b if s is a else a).sendall(data)
                 except OSError:
@@ -281,6 +304,24 @@ def main():
         "--no-first-run",
         "--no-default-browser-check",
         "--new-window",
+        # Silence Chrome's OWN phone-home traffic — the Optimization Guide ML model
+        # (optimizationguide-pa.googleapis.com) and component/extension updates
+        # (clients2.googleusercontent.com), which otherwise get billed by the proxy.
+        # None of these affect page rendering. (Same flags the main bot uses.)
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-domain-reliability",
+        "--disable-sync",
+        "--disable-client-side-phishing-detection",
+        "--safebrowsing-disable-auto-update",
+        "--disable-features=OptimizationHints,OptimizationGuideModelDownloading,"
+        "OptimizationTargetPrediction,OptimizationHintsFetching,Translate,"
+        "MediaRouter,InterestFeedContentSuggestions,DownloadBubble,"
+        "PasswordLeakDetection,AutofillServerCommunication,"
+        "CalculateNativeWinOcclusion",
+        "--no-pings",
+        "--metrics-recording-only",
+        "--disable-breakpad",
         args.url,
     ])
     print(f"\nChrome launched (PID {proc.pid}) -> {args.url}")
@@ -297,6 +338,12 @@ def main():
     except Exception:
         proc.terminate()
     fwd.stop()
+
+    # Report the billed proxy traffic for this session (total + per-host).
+    print(f"\nProxy traffic this session: {fwd.mb:.1f} MB")
+    for host, nbytes in fwd.top_hosts():
+        print(f"    {nbytes / (1024 * 1024):6.1f} MB  {host}")
+
     import shutil
     shutil.rmtree(profile_dir, ignore_errors=True)
     print("Closed.")

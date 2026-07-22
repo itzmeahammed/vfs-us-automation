@@ -1,0 +1,16 @@
+{
+  "description": "UAE -> Germany. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category/sub-category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made. NOTE: the combinations below are PLACEHOLDERS mirroring the Hungary layout — verify the real centre/category/sub-category dropdown values on the German portal (and set \"otp\": true if it requires an emailed code) before uncommenting AE-DEU in config/vfs_urls.ini.",
+  "mode": "slot-check",
+  "slot_check": {
+    "combinations": [
+      { "label": "Germany Visa Application Centre- Abu Dhabi", "disabled": true,
+        "centre": "Germany Visa Application Centre- Abu Dhabi", "category": "Business Visa", "sub_category": "Business Purpose" },
+      { "label": "Germany Visa Application Centre- Abu Dhabi",
+        "centre": "Germany Visa Application Centre- Abu Dhabi", "category": "Short Term Visa", "sub_category": "Short Stay" },
+      { "label": "Germany Visa Application Centre, Dubai","disabled": true,
+        "centre": "Germany Visa Application Centre- Abu Dhabi", "category": "Business Visa", "sub_category": "Business Purpose" },
+      { "label": "Germany Visa Application Centre, Dubai",
+        "centre": "Germany Visa Application Centre- Abu Dhabi", "category": "Short Term Visa", "sub_category": "Short Stay" }
+    ]
+  }
+}

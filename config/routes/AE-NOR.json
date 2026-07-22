@@ -1,0 +1,16 @@
+{
+  "description": "UAE -> Norway. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
+  "mode": "slot-check",
+  "slot_check": {
+    "combinations": [
+      { "label": "Norway Visa Application Center - Abu Dhabi", "disabled": true,
+        "centre": "Norway Visa Application Center - Abu Dhabi", "category": "Short Stay", "sub_category": "Business" },
+      { "label": "Norway Visa Application Center - Abu Dhabi",
+        "centre": "Norway Visa Application Center - Abu Dhabi", "category": "Short Stay", "sub_category": "Tourist" },
+      { "label": "Norway Visa Application Center - Dubai", "disabled": true,
+        "centre": "Norway Visa Application Center - Dubai", "category": "Short Stay", "sub_category": "Business" },
+      { "label": "Norway Visa Application Center - Dubai",
+        "centre": "Norway Visa Application Center - Dubai", "category": "Short Stay", "sub_category": "Tourist" }
+    ]
+  }
+}

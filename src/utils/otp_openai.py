@@ -21,6 +21,10 @@ from src.utils.config_reader import get_config_value
 
 API_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4o-mini"
+# Kept SHORT on purpose: a slow/hung OpenAI request must fail fast so the caller's
+# in-session read_attempts loop can re-read the SAME email image — instead of a
+# long hang forcing a whole browser relaunch (fresh login + new OTP ~ 8-10 MB).
+DEFAULT_TIMEOUT_SECONDS = 18
 
 PROMPT = (
     "Locate the green ribbon banner labeled 'OTP' with a right-pointing arrow. "
@@ -93,7 +97,12 @@ def read_otp_image(image: bytes, mime: str = "image/png",
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        timeout_s = int(str(get_config_value(
+            "openai", "request_timeout_seconds", DEFAULT_TIMEOUT_SECONDS)).strip())
+    except (ValueError, TypeError):
+        timeout_s = DEFAULT_TIMEOUT_SECONDS
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         raise OpenAiError(f"OpenAI request failed: {e}") from e

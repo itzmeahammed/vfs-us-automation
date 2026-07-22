@@ -20,6 +20,8 @@ DESTINATION_FLAGS = {
     "CZE": "🇨🇿", "CZ": "🇨🇿",       # Czech Republic
     "ITA": "🇮🇹", "IT": "🇮🇹",       # Italy
     "FRA": "🇫🇷", "FR": "🇫🇷",       # France
+    "GRC": "🇬🇷", "GR": "🇬🇷",       # Greece
+    "DEU": "🇩🇪", "DE": "🇩🇪",       # Germany
 }
 
 # Destination code -> friendly country name, inserted into each label so the
@@ -34,6 +36,8 @@ DESTINATION_NAMES = {
     "CZE": "Czech Republic", "CZ": "Czech Republic",
     "ITA": "Italy", "IT": "Italy",
     "FRA": "France", "FR": "France",
+    "GRC": "Greece", "GR": "Greece",
+    "DEU": "Germany", "DE": "Germany",
 }
 
 
@@ -110,7 +114,11 @@ def slot_report(source_code: str, dest_code: str, results: list, login_url: str 
     for label, message in available:
         full_label = _label_with_country(label, dest_code)
         lines.append(f"{prefix}{full_label}:")
-        lines.append(f"  {message}")
+        # `message` may hold SEVERAL banner lines (one per applicant count) —
+        # indent each so multi-slot combos read cleanly.
+        for ln in message.splitlines():
+            if ln.strip():
+                lines.append(f"  {ln.strip()}")
         lines.append("")
     body = "\n".join(lines).strip()
 

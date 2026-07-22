@@ -20,6 +20,60 @@ Start-ScheduledTask -TaskName "VFS Slot Checker"
 .\run_task.ps1
 ```
 
+## Edit config & credentials (web UI)
+
+Local browser editors (bind to `127.0.0.1` only; each Save writes a timestamped
+`.bak-*` backup first). Leave the window running, edit in the browser, click Save.
+
+```powershell
+# Settings — edits config/config.local.ini (the real file):  http://127.0.0.1:8766
+& .venv\Scripts\python.exe config_editor.py
+```
+
+```powershell
+# Accounts — edits config/credentials.local.ini:             http://127.0.0.1:8765
+& .venv\Scripts\python.exe credentials_editor.py
+```
+
+Both open the page automatically; press `Ctrl+C` in the terminal to stop the server.
+
+The accounts editor has two panels: **Accounts** (edit `credentials.local.ini`) and
+**Countries / Routes** (toggle which countries run — edits `config/vfs_urls.ini`).
+
+## Add a new country (route)
+
+A route is `AE-<DEST>` (e.g. `AE-ESP` for Spain). End-to-end:
+
+1. **URL** — add/enable it in `config/vfs_urls.ini`. Easiest via the accounts
+   editor's **Countries / Routes** panel (Add country → code `AE-ESP`, paste the
+   login URL, tick **Run** → Save). Or edit the file directly:
+   `AE-ESP = https://visa.vfsglobal.com/are/en/esp/login` (a leading `;` pauses it).
+
+2. **Combinations** — create `config/routes/AE-ESP.json` (copy an existing one like
+   `AE-ITA.json`) and set the real **centre / category / sub-category** dropdown
+   values. Add `"otp": true` if the portal emails a code — and `"otp_mode": "text"`
+   if it's a plain-text code (like Greece), not an image.
+
+3. **Flag & name** — add the country to `DESTINATION_FLAGS` and `DESTINATION_NAMES`
+   in `src/utils/telegram_message.py` (e.g. `"ESP": "🇪🇸"` and `"ESP": "Spain"`), so
+   Telegram shows 🇪🇸 Spain instead of the raw code.
+
+4. **Assign accounts** — give at least one account this route in its `routes` list
+   (accounts editor **Accounts** panel, or `config/credentials.local.ini`).
+
+5. **Verify** — it then runs automatically on the next tick (no `setup_task.ps1`
+   needed; that's only for schedule-cadence changes):
+   ```powershell
+   # confirm it's now in the active route list:
+   & .venv\Scripts\python.exe -c "from src.utils.config_reader import initialize_config as i; i(); from src.supervisor import _all_routes; print(['-'.join(r) for r in _all_routes()])"
+
+   # test just this route once (headed, via proxy):
+   & .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ESP -v --proxy
+   ```
+
+To **pause** a country later, just untick **Run** in the Countries panel (or comment
+its line in `vfs_urls.ini`) — the JSON, accounts, and flag stay for when you re-enable it.
+
 ## Schedule status — next run, last run, last result
 
 ```powershell

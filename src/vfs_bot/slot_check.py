@@ -90,14 +90,32 @@ def select_mat_dropdown(page, control_name: str, value: str,
 def read_slot_message(page, timeout: int = 12000) -> str:
     """
     Returns the 'Earliest available slot ...' banner text on the Appointment
-    Details step, or "" if none is shown (e.g. no availability for the chosen
-    combination).
+    Details step, or "" if none is shown (no availability for the chosen combo).
+
+    VFS can show SEVERAL of these banners at once — one per applicant count,
+    e.g. 'Earliest available slot for 1 Applicants is : 05-08-2026' AND
+    '... for 2 Applicants is : 11-08-2026'. Each is its own role=alert div, so
+    ALL of them are collected and newline-joined (the old code read only .first
+    and silently dropped the rest).
     """
     try:
         turnstile.wait_for_loader(page)
-        slot = page.get_by_text("Earliest available slot", exact=False).first
-        slot.wait_for(timeout=timeout)
-        return slot.inner_text().strip()
+        # Same single wait as before (so no-availability timing is unchanged):
+        # wait for the FIRST banner; "" if none appears within the timeout.
+        page.get_by_text("Earliest available slot", exact=False).first.wait_for(
+            timeout=timeout)
+        # A slot exists — now grab EVERY banner (instant; no extra wait).
+        banners = page.get_by_role("alert").filter(has_text="Earliest available slot")
+        texts = []
+        for i in range(banners.count()):
+            t = banners.nth(i).inner_text().strip()
+            if t and t not in texts:
+                texts.append(t)
+        if texts:
+            return "\n".join(texts)
+        # Fallback for any markup without role=alert: the single first banner.
+        return page.get_by_text(
+            "Earliest available slot", exact=False).first.inner_text().strip()
     except Exception:
         return ""
 

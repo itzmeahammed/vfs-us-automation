@@ -4,19 +4,22 @@ Parses app.log + account_health.json + the account/route/proxy config into one
 consolidated view so you can see and manage everything at a glance:
 accounts, routes, health/cooldowns, IPs used, slot hits, and failure patterns.
 
-    python -m src.utils.analytics            # print the dashboard
+    python -m src.utils.analytics                      # live app.log
+    python -m src.utils.analytics --day 2026-07-21      # a per-day archive
+    python -m src.utils.analytics --day yesterday       # shortcut
     python -m src.utils.analytics --log other.log --write report.txt
 
 Read-only: it never changes state (use account_health for that).
 """
 
 import argparse
+import glob
 import os
 import re
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.utils.config_reader import initialize_config, get_config_section
 from src.utils import account_health, credentials, proxy_pool
@@ -238,9 +241,33 @@ def build_report(path: str) -> str:
     return "\n".join(out)
 
 
+LOG_DIR = "logs"
+
+
+def _day_log_path(day: str) -> str:
+    """Resolve a --day value ('YYYY-MM-DD', 'today', 'yesterday') to its archive
+    path logs/app-<date>.log."""
+    d = (day or "").strip().lower()
+    if d in ("today", "now"):
+        date = datetime.now()
+    elif d == "yesterday":
+        date = datetime.now() - timedelta(days=1)
+    else:
+        try:
+            date = datetime.strptime(d, "%Y-%m-%d")
+        except ValueError:
+            raise SystemExit(
+                f"--day must be YYYY-MM-DD, 'today', or 'yesterday' (got '{day}')."
+            )
+    return os.path.join(LOG_DIR, f"app-{date:%Y-%m-%d}.log")
+
+
 def main():
     ap = argparse.ArgumentParser(description="VFS slot-checker analytics dashboard.")
     ap.add_argument("--log", default=LOG_FILE, help="log file to parse (default app.log)")
+    ap.add_argument("--day", metavar="YYYY-MM-DD",
+                    help="analyze a per-day archive (logs/app-<day>.log); accepts a "
+                         "date, 'today', or 'yesterday'. Overrides --log.")
     ap.add_argument("--write", metavar="FILE", help="also write the report to FILE")
     args = ap.parse_args()
 
@@ -249,7 +276,21 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    report = build_report(args.log)
+
+    path = args.log
+    if args.day:
+        path = _day_log_path(args.day)
+        if not os.path.exists(path):
+            avail = sorted(glob.glob(os.path.join(LOG_DIR, "app-*.log")))
+            msg = f"No per-day log found: {path}"
+            if avail:
+                days = ", ".join(os.path.basename(p)[4:-4] for p in avail)
+                msg += f"\nAvailable days: {days}"
+            else:
+                msg += f"\n(no {LOG_DIR}/app-*.log files yet — run the bot first)"
+            raise SystemExit(msg)
+
+    report = build_report(path)
     print(report)
     if args.write:
         with open(args.write, "w", encoding="utf-8") as f:

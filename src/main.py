@@ -87,6 +87,16 @@ def initialize_logger():
     file_handler = logging.FileHandler("app.log", mode="a", encoding="utf-8")
     file_handler.setFormatter(detailed_fmt)
 
+    # Per-day archive log for later analysis: logs/app-YYYY-MM-DD.log. Every run
+    # of the day appends to that day's file (the date is fixed at startup, which
+    # is robust across the separate short-lived scheduled processes — no midnight
+    # rollover logic needed). app.log above stays the familiar live/current log.
+    from datetime import datetime
+    os.makedirs("logs", exist_ok=True)
+    daily_path = os.path.join("logs", f"app-{datetime.now():%Y-%m-%d}.log")
+    daily_handler = logging.FileHandler(daily_path, mode="a", encoding="utf-8")
+    daily_handler.setFormatter(detailed_fmt)
+
     # Reconfigure stdout to UTF-8 so non-ASCII (page console output, URLs with
     # unicode, etc.) can't crash the console handler on Windows (cp1252).
     try:
@@ -99,7 +109,7 @@ def initialize_logger():
     logging.basicConfig(
         level=level,
         format="[%(asctime)s] %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
-        handlers=[file_handler, stream_handler],
+        handlers=[file_handler, daily_handler, stream_handler],
     )
 
     # Silence chatty third-party loggers (asyncio event-loop internals,
