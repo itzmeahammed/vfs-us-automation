@@ -55,6 +55,8 @@ class Retry(_Section):
     backoff_seconds: int = 15             # pause between relaunch attempts
     max_ip_tries: int = 2                 # different IPs to try on a 403201 block
     turnstile_refresh_attempts: int = 2   # page reloads to unstick Turnstile
+    turnstile_signin_retries: int = 2     # same-IP reload+re-solve on a rejected
+                                          # (non-403201) login 403 before rotating IP
     cdp_port: int = 9222                  # Chrome remote-debugging port
 
 

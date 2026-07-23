@@ -38,6 +38,17 @@ class SignInDisabledError(RetryableError):
     was not passed, so login can't proceed."""
 
 
+class TurnstileRejectedError(SignInDisabledError):
+    """The login API returned a 403 that is NOT a 403201 IP block — almost
+    always the server rejecting a stale/failed Cloudflare Turnstile token.
+
+    It is the TOKEN that's bad, not the IP, so this must never be treated as an
+    IP block. The bot first refreshes and re-solves Turnstile on the SAME IP a
+    couple of times (see VfsBot.login); only if that keeps failing does it bubble
+    up. It subclasses SignInDisabledError so the supervisor's existing handling
+    then rotates to a different IP (logged only — no Telegram alert for it)."""
+
+
 class DashboardNotReachedError(RetryableError):
     """Sign In was clicked but the dashboard never loaded (bad creds, captcha,
     or a slow/blocked redirect)."""

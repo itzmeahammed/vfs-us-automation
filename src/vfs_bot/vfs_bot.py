@@ -36,6 +36,7 @@ from src.vfs_bot.errors import (  # noqa: F401
     RetryableError,
     SignInDisabledError,
     SlotCheckError,
+    TurnstileRejectedError,
 )
 
 # Default field selectors. A route can override any of these WITHOUT a code
@@ -104,9 +105,12 @@ class VfsBot(ABC):
         # skipping benched accounts). When set, the bot uses it instead of
         # selecting its own — keeps selection in ONE place.
         self._cred_override = None
-        # Set by the network watcher when VFS returns an HTTP 403 (code in the
-        # body if we could read it) — caught even if the page then closes.
-        self._block_code = None
+        # VFS 403 responses captured by the network watcher this run. The BODY is
+        # read later (post Sign-In, on the main thread) to tell a real 403201 IP
+        # block apart from a rejected Turnstile token — we no longer assume every
+        # 403 is an IP block. Reading the body inside the sync handler risks a
+        # deadlock, so the handler only stashes the Response ref here.
+        self._block_responses = []
         # How many resource requests the bandwidth filter aborted this run.
         self._blocked_requests = 0
         # Wire bytes the browser received this run (counted with OR without a
@@ -124,14 +128,14 @@ class VfsBot(ABC):
 
     def _attach_block_watcher(self, page) -> None:
         """
-        Watch network responses for an HTTP 403 (VFS's IP/access blocks —
-        403201 / 403203). Records the code on self._block_code so the flow can
-        fail FAST and rotate the IP, even if the page dies right after.
+        Watch network responses for an HTTP 403 from a VFS API/XHR call and STASH
+        the response (see _block_responses). A 403 alone does NOT mean an IP
+        block: the /user/login endpoint also 403s when it rejects a stale/failed
+        Turnstile token. We can't tell which from the status code, so the body is
+        classified later (post Sign-In, on the main thread) — not here, because
+        reading the body inside this sync handler risks a deadlock.
         """
         def _on_resp(resp):
-            # Do NOT read the body here (sync handler -> deadlock risk). Flag only
-            # a 403 from a VFS API/XHR call (that's the 403201 block) — not
-            # Cloudflare challenge documents or third-party assets.
             try:
                 if resp.status != 403:
                     return
@@ -143,9 +147,9 @@ class VfsBot(ABC):
                 except Exception:
                     rtype = ""
                 if rtype in ("xhr", "fetch", ""):
-                    self._block_code = "403"
-                    logging.warning(f"VFS HTTP 403 ({rtype or '?'}) from {resp.url} "
-                                    "— treating as IP block.")
+                    self._block_responses.append(resp)
+                    logging.debug(f"Captured VFS 403 ({rtype or '?'}) from {resp.url} "
+                                  "— classified (403201 vs Turnstile) after Sign In.")
             except Exception:
                 pass
         try:
@@ -153,14 +157,44 @@ class VfsBot(ABC):
         except Exception:
             pass
 
-    def _check_blocked(self, page) -> None:
-        """Raise the right block error from the DOM (specific code) or a seen 403
-        response (generic IP block). No-op if not blocked. Call inside wait loops
-        to fail fast."""
+    def _check_blocked(self, page, check_network: bool = False) -> None:
+        """Raise the right block error if the page is a known block state. No-op
+        otherwise. Call inside wait loops to fail fast.
+
+        DOM block pages (403201 / 403203 / 429xxx rendered as a page) are always
+        checked. `check_network` additionally classifies any captured VFS 403
+        response — used ONLY at the post Sign-In check, where the /user/login 403
+        appears (an XHR whose body never renders to the DOM)."""
         block_detection.raise_if_blocked(page)  # DOM: 403201 / 403203 / 429xxx (specific)
-        if self._block_code:
-            raise IpBlockedError(
-                "VFS HTTP 403 — IP blocked (too many requests / flagged IP). Rotate IP.")
+        if check_network:
+            self._classify_403_responses(page)
+
+    def _classify_403_responses(self, page) -> None:
+        """Read the body of each captured VFS 403 and raise the correct error:
+
+          * body contains '403201'  -> IpBlockedError  (a real IP block; the
+                                        supervisor rotates to a different IP)
+          * any other VFS 403       -> TurnstileRejectedError (a stale Turnstile
+                                        token — refresh & retry on the SAME IP)
+
+        If a body can't be read (page navigated / evicted) we do NOT assume an IP
+        block — the whole point is to stop mislabeling non-403201 403s as 403201."""
+        responses, self._block_responses = self._block_responses, []
+        if not responses:
+            return
+        for resp in responses:
+            try:
+                body = resp.text() or ""
+            except Exception:
+                body = ""
+            if "403201" in body:
+                diagnostics.take_final_screenshot(page, "ip_blocked_403201")
+                raise IpBlockedError(
+                    "VFS 403201 — IP blocked (confirmed in the login API response "
+                    "body). Rotate to a different IP.")
+        raise TurnstileRejectedError(
+            "VFS API returned 403 without a 403201 code — treating as a rejected "
+            "Turnstile token, not an IP block.")
 
     def _install_resource_blocking(self, context) -> None:
         """Abort billed-but-useless resource types (image/media/font by default)
@@ -223,8 +257,8 @@ class VfsBot(ABC):
         diagnostics.attach_activity_logging(page)
         # Watch for HTTP 403 (IP/access blocks) at the network level, so we
         # catch 403201 even when it's an XHR/JSON that never renders (or the
-        # page dies right after).
-        self._block_code = None
+        # page dies right after). Bodies are classified post Sign-In.
+        self._block_responses = []
         self._attach_block_watcher(page)
 
         # Bandwidth: abort unneeded resource types (image/media/font) so their
@@ -562,6 +596,34 @@ class VfsBot(ABC):
                 "for this account (no retries)."
             )
 
+    def _reload_login_form(self, page) -> None:
+        """Returns to a fresh login form on the SAME IP so Turnstile can be
+        re-solved after a rejected submission or a failed OTP-page Turnstile.
+
+        Navigates to the login URL (not a bare reload): from the OTP page a
+        reload would stay on / re-expire the OTP step, whereas going to the login
+        URL reliably lands back on the login form in BOTH cases. Clears any
+        captured 403s from the failed attempt and re-dismisses the cookie banner.
+        Raises LoginFormNotReadyError if the form never appears."""
+        self._block_responses = []
+        url_key = f"{self.source_country_code}-{self.destination_country_code}"
+        vfs_url = get_config_value("vfs-url", url_key)
+        try:
+            if vfs_url:
+                page.goto(vfs_url, timeout=settings().timeouts.page_load_ms,
+                          wait_until="domcontentloaded")
+            else:
+                page.reload(timeout=60000, wait_until="domcontentloaded")
+        except Exception as e:
+            logging.warning(f"Login reload failed: {e}")
+        try:
+            page.wait_for_selector(self.selectors["username"], timeout=120000)
+        except Exception as e:
+            raise LoginFormNotReadyError(
+                f"Login form did not reappear after reload: {e}"
+            ) from e
+        self.pre_login_steps(page)
+
     def login(self, page, email_id: str, password: str) -> None:
         """
         Fills the login form, signs in, and — once on the dashboard — clicks
@@ -571,43 +633,81 @@ class VfsBot(ABC):
         # Dismiss the cookie banner (it overlays the form and blocks fields).
         self.pre_login_steps(page)
 
-        # Turnstile must pass before the form can be submitted at all.
-        self._pass_turnstile(page)
+        # One same-IP retry loop covering the WHOLE Turnstile-gated path:
+        # Turnstile -> fill -> Sign In -> OTP -> dashboard. Cloudflare gates two
+        # separate points — the login page AND (on otp routes) the OTP page — and
+        # either can fail as a rejected/stale token:
+        #   * login page: the /user/login API 403s with a NON-403201 code, or
+        #   * OTP page:   its own Turnstile never passes (Sign In stays disabled).
+        # Both raise TurnstileRejectedError; we then reload to the login URL and
+        # re-run the whole flow (a fresh OTP included) on the SAME IP a couple of
+        # times before giving up. Rotating IPs for a token problem would be wrong,
+        # and it's far cheaper than the old path (submit a dead button, wait ~2min
+        # for a dashboard that never loads, then relaunch the whole browser).
+        # A REAL 403201 raises IpBlockedError and is NOT retried here (the
+        # supervisor rotates the IP for that one).
+        signin_retries = settings().retry.turnstile_signin_retries
+        for signin_try in range(1, signin_retries + 2):  # 1 attempt + N same-IP refreshes
+            try:
+                # Turnstile must pass before the form can be submitted at all.
+                self._pass_turnstile(page)
 
-        logging.debug("Turnstile passed. Filling email field...")
-        self._fill_credentials(page, email_id, password)
-        otp_since = self._click_sign_in(page)
-        diagnostics.take_final_screenshot(page, "after_signin")
+                logging.debug("Turnstile passed. Filling email field...")
+                self._fill_credentials(page, email_id, password)
+                # Only this submission's 403 should be classified, so drop any
+                # 403s captured earlier (page load / a previous rejected attempt).
+                self._block_responses = []
+                otp_since = self._click_sign_in(page)
+                diagnostics.take_final_screenshot(page, "after_signin")
 
-        # The Sign In API is the most common place VFS returns 403201 (IP block).
-        # Check both the network 403 and the page before waiting on the dashboard.
-        page.wait_for_timeout(2000)
-        self._check_blocked(page)
-        self._raise_known_login_errors(page)
+                # The Sign In API is where VFS returns either a 403201 IP block OR
+                # a rejected-Turnstile 403 — classify the captured body here.
+                page.wait_for_timeout(2000)
+                self._check_blocked(page, check_network=True)
+                self._raise_known_login_errors(page)
 
-        # Routes flagged "otp": true in config/routes/<ROUTE>.json require an
-        # emailed one-time password after Sign In before the dashboard loads.
-        if self.schema.get("otp"):
-            # "otp_mode": "text" (e.g. Greece) reads the code straight from the
-            # email text — no AI; default "image" uses the OpenAI PNG reader.
-            otp_flow.verify_otp(page, self.selectors["otp"], email_id, password,
-                                otp_since, otp_mode=self.schema.get("otp_mode", "image"))
+                # Routes flagged "otp": true need an emailed one-time password
+                # after Sign In. The OTP page has its OWN Turnstile — submit_otp
+                # raises TurnstileRejectedError if it never passes, which this
+                # loop catches (refresh + re-login) exactly like the login page.
+                if self.schema.get("otp"):
+                    # "otp_mode": "text" (Greece) reads the code from the email
+                    # text — no AI; default "image" uses the OpenAI PNG reader.
+                    otp_flow.verify_otp(
+                        page, self.selectors["otp"], email_id, password,
+                        otp_since, otp_mode=self.schema.get("otp_mode", "image"))
 
-        # After Sign In, Cloudflare often shows the 'Verify Captcha' dialog
-        # (app-cloudflare-dialog with a Submit button) that BLOCKS the redirect
-        # to the dashboard. It can appear at any moment during this wait, so we
-        # poll: dismiss the dialog if present AND check whether we've landed on
-        # the dashboard, for up to ~90s, instead of a single blind wait_for_url.
-        # We also keep checking for the 'not registered' banner during the wait.
-        if not turnstile.await_dashboard_handling_captcha(
-                page, timeout_ms=settings().timeouts.dashboard_ms):
-            self._raise_known_login_errors(page)
-            block_detection.raise_if_blocked(page)
-            # Not a known state — report what we ACTUALLY landed on, not a guess.
-            raise DashboardNotReachedError(
-                f"Did not reach dashboard — landed on: {block_detection.landing_status(page)} "
-                f"(URL: {page.url})."
-            )
+                # After Sign In, Cloudflare often shows the 'Verify Captcha' dialog
+                # (app-cloudflare-dialog) that BLOCKS the redirect to the
+                # dashboard. Poll: dismiss the dialog if present AND check whether
+                # we've landed on the dashboard, for up to ~90s, while also
+                # watching for the 'not registered' banner.
+                if not turnstile.await_dashboard_handling_captcha(
+                        page, timeout_ms=settings().timeouts.dashboard_ms):
+                    self._raise_known_login_errors(page)
+                    block_detection.raise_if_blocked(page)
+                    # Not a known state — report what we ACTUALLY landed on.
+                    raise DashboardNotReachedError(
+                        f"Did not reach dashboard — landed on: "
+                        f"{block_detection.landing_status(page)} (URL: {page.url})."
+                    )
+            except TurnstileRejectedError as e:
+                if signin_try <= signin_retries:
+                    logging.warning(
+                        f"Cloudflare Turnstile not passed ({e}); refreshing and "
+                        f"retrying login on the SAME IP "
+                        f"(retry {signin_try}/{signin_retries})."
+                    )
+                    self._reload_login_form(page)
+                    continue
+                # Same-IP refreshes exhausted: bubble up so the supervisor rotates
+                # to a different IP. Logged only — no Telegram alert for this.
+                logging.warning(
+                    f"Turnstile still failing after {signin_retries} same-IP "
+                    f"refresh(es) — rotating IP. {e}"
+                )
+                raise
+            break  # dashboard reached — proceed with the slot check
 
         logging.info(f"Reached dashboard: {page.url}")
         # start_new_booking() below does its own settle-wait before clicking —

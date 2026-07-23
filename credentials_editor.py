@@ -29,6 +29,7 @@ import os
 import re
 import shutil
 import socketserver
+import subprocess
 import webbrowser
 from datetime import datetime
 
@@ -36,6 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CRED_FILE = os.path.join(HERE, "config", "credentials.local.ini")
 URLS_FILE = os.path.join(HERE, "config", "vfs_urls.ini")
 PORT = 8765
+TASK_NAME = "VFS Slot Checker"   # the Windows scheduled task (see setup_task.ps1)
 
 _HEADER = [
     "; Multiple VFS accounts, rotated by clock hour.",
@@ -279,6 +281,77 @@ def save_routes(routes):
 
 
 # --------------------------------------------------------------------------- #
+# Scheduler control (Windows Task Scheduler) — status + start/stop/enable/etc.  #
+# --------------------------------------------------------------------------- #
+
+_SCHED_ACTIONS = {
+    "start": "Start-ScheduledTask",       # 'run now' (respects the overlap lock)
+    "stop": "Stop-ScheduledTask",         # kill an in-progress run
+    "enable": "Enable-ScheduledTask",     # resume the schedule
+    "disable": "Disable-ScheduledTask",   # pause the schedule
+}
+
+
+def _ps(cmd: str, timeout: int = 30):
+    """Run a PowerShell command; return (returncode, stdout, stderr)."""
+    try:
+        p = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def _powercfg_index(subgroup_setting: str):
+    """The 'Current AC Power Setting Index' (int) for a powercfg setting, or None."""
+    _, out, _ = _ps(f"powercfg /query SCHEME_CURRENT SUB_SLEEP {subgroup_setting}")
+    m = re.search(r"Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)", out)
+    return int(m.group(1), 16) if m else None
+
+
+def scheduler_status() -> dict:
+    """Task state + next/last run + sleep/wake diagnostics (best-effort)."""
+    ps = (
+        f"$ErrorActionPreference='SilentlyContinue';"
+        f"$t=Get-ScheduledTask -TaskName '{TASK_NAME}';"
+        f"if(-not $t){{Write-Output '{{\"exists\":false}}';exit}};"
+        f"$i=Get-ScheduledTaskInfo -TaskName '{TASK_NAME}';"
+        f"[ordered]@{{exists=$true;state=[string]$t.State;"
+        f"nextRun=$(if($i.NextRunTime){{$i.NextRunTime.ToString('yyyy-MM-dd HH:mm')}}else{{''}});"
+        f"lastRun=$(if($i.LastRunTime){{$i.LastRunTime.ToString('yyyy-MM-dd HH:mm')}}else{{''}});"
+        f"lastResult=[int]$i.LastTaskResult;missed=[int]$i.NumberOfMissedRuns}}"
+        f"|ConvertTo-Json -Compress"
+    )
+    _, out, err = _ps(ps)
+    try:
+        data = json.loads(out) if out else {"exists": False}
+    except ValueError:
+        data = {"exists": False, "error": (err or out or "query failed")[:200]}
+
+    # Sleep/wake diagnostics (why ticks get missed on a sleeping laptop).
+    secs = _powercfg_index("STANDBYIDLE")
+    data["sleepAcMinutes"] = None if secs is None else secs // 60
+    wake = _powercfg_index("RTCWAKE")
+    data["wakeTimers"] = {0: "Disabled", 1: "Enabled", 2: "Important only"}.get(
+        wake, None if wake is None else str(wake))
+    return data
+
+
+def scheduler_action(action: str):
+    """Run a start/stop/enable/disable action on the task. Returns (ok, message)."""
+    verb = _SCHED_ACTIONS.get(action)
+    if not verb:
+        return False, f"Unknown action: {action}"
+    rc, out, err = _ps(f"{verb} -TaskName '{TASK_NAME}'")
+    if rc == 0:
+        return True, f"{action.capitalize()} OK."
+    detail = (err or out or f"{action} failed").splitlines()
+    return False, (detail[0] if detail else f"{action} failed")[:200]
+
+
+# --------------------------------------------------------------------------- #
 # HTTP                                                                         #
 # --------------------------------------------------------------------------- #
 
@@ -303,6 +376,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             payload = {"routes": parse_routes(),
                        "file": os.path.relpath(URLS_FILE, HERE)}
             self._send(200, json.dumps(payload))
+        elif self.path == "/api/scheduler":
+            self._send(200, json.dumps(scheduler_status()))
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -317,6 +392,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ok, message = save_credentials(data.get("accounts", []))
         elif self.path == "/api/routes":
             ok, message = save_routes(data.get("routes", []))
+        elif self.path == "/api/scheduler":
+            ok, message = scheduler_action(data.get("action", ""))
         else:
             self._send(404, json.dumps({"error": "not found"}))
             return
@@ -372,9 +449,46 @@ PAGE = r"""<!doctype html>
   .disabled input, .disabled .routes { opacity: .45; }
   td.center { text-align: center; }
   code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
+  /* Scheduler header */
+  .statusbar { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+               padding: 14px 18px; margin-bottom: 18px; display: flex; flex-wrap: wrap;
+               align-items: center; gap: 10px 18px; }
+  @media (prefers-color-scheme: dark) { .statusbar { background: #1f232b; } }
+  .statusbar .facts { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; font-size: 13px; }
+  .badge { font-weight: 700; padding: 3px 10px; border-radius: 999px; font-size: 12px;
+           background: #6b7280; color: #fff; }
+  .badge.ready { background: #16a34a; } .badge.running { background: #2563eb; }
+  .badge.disabled { background: #9ca3af; } .badge.err { background: #dc2626; }
+  .diag { color: #888; font-size: 12px; }
+  .diag.warn { color: #b45309; font-weight: 600; }
+  .sbtns { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+  .sbtns button { font: inherit; cursor: pointer; border: 1px solid #cdd2d8; background: #fff;
+                  border-radius: 6px; padding: 6px 11px; }
+  .sbtns button:hover { background: #f0f0f0; }
+  .sbtns .run { background: #16a34a; color: #fff; border-color: #16a34a; font-weight: 600; }
+  .sbtns .run:hover { background: #15803d; }
+  .sbtns .stop { color: #c0392b; }
 </style></head>
 <body>
   <h1>VFS Editor</h1>
+
+  <div class="statusbar" id="sched">
+    <span class="badge" id="sstate">…</span>
+    <div class="facts">
+      <span>Next run: <b id="snext">–</b></span>
+      <span>Last: <b id="slast">–</b> <span id="sresult"></span></span>
+      <span>Missed: <b id="smissed">–</b></span>
+      <span class="diag" id="sdiag"></span>
+    </div>
+    <div class="sbtns">
+      <button class="run" onclick="schedAct('start')" title="Run the check now">▶ Run now</button>
+      <button class="stop" onclick="schedAct('stop')" title="Kill an in-progress run">■ Stop</button>
+      <button onclick="schedAct('enable')">Enable</button>
+      <button onclick="schedAct('disable')">Disable</button>
+      <button onclick="loadSched()" title="Refresh status">↻</button>
+      <span class="st" id="sstatus"></span>
+    </div>
+  </div>
 
   <details class="panel" open>
     <summary>Accounts <span class="sub">— <code id="cfile">config/credentials.local.ini</code> · order = rotation order</span></summary>
@@ -418,6 +532,46 @@ PAGE = r"""<!doctype html>
 <script>
 function esc(s){ return (s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 function setStatus(id,msg,cls){ const s=document.getElementById(id); s.textContent=msg; s.className='st '+(cls||''); }
+
+/* ---------- Scheduler control ---------- */
+async function loadSched() {
+  let d;
+  try { d = await (await fetch('/api/scheduler')).json(); }
+  catch(e){ setStatus('sstatus','status query failed','err'); return; }
+  const badge = document.getElementById('sstate');
+  if (!d.exists) {
+    badge.textContent = 'NOT REGISTERED'; badge.className = 'badge err';
+    document.getElementById('sdiag').textContent =
+      'Task not registered — run setup_task.ps1';
+    return;
+  }
+  const st = (d.state || '').toLowerCase();
+  badge.textContent = d.state || '?';
+  badge.className = 'badge ' + (st==='ready'?'ready':st==='running'?'running':st==='disabled'?'disabled':'');
+  document.getElementById('snext').textContent = d.nextRun || '–';
+  document.getElementById('slast').textContent = d.lastRun || '–';
+  const res = document.getElementById('sresult');
+  // 267009 (0x41301) = "task is currently running", not a failure.
+  const lr = d.lastResult;
+  res.textContent = (lr===0?'✅':(lr===267009?'⏳ running':(d.lastRun?'❌ '+lr:'')));
+  document.getElementById('smissed').textContent = (d.missed==null?'–':d.missed);
+  // Sleep/wake diagnostics — flag a laptop that sleeps during the run window.
+  const diag = document.getElementById('sdiag');
+  const parts = [];
+  if (d.sleepAcMinutes!=null) parts.push('Sleep(AC): ' + (d.sleepAcMinutes===0?'never':d.sleepAcMinutes+' min'));
+  if (d.wakeTimers) parts.push('Wake timers: ' + d.wakeTimers);
+  diag.textContent = parts.join(' · ');
+  diag.className = 'diag' + ((d.sleepAcMinutes && d.sleepAcMinutes>0 && d.sleepAcMinutes<60) ? ' warn' : '');
+  if (d.sleepAcMinutes && d.sleepAcMinutes>0 && d.sleepAcMinutes<60)
+    diag.textContent += ' — may miss ticks while asleep';
+}
+async function schedAct(action) {
+  setStatus('sstatus', action + '…', '');
+  const d = await (await fetch('/api/scheduler',{method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({action})})).json();
+  setStatus('sstatus', d.message, d.ok?'ok':'err');
+  loadSched();
+}
 
 /* ---------- Accounts ---------- */
 let ROUTES = [], accounts = [];
@@ -517,6 +671,7 @@ async function saveRoutes(){
   if(d.ok){ loadRoutes(); loadCreds(); }   /* refresh account route chips too */
 }
 
+loadSched();
 loadCreds();
 loadRoutes();
 </script>

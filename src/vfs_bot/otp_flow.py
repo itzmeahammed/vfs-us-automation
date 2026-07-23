@@ -15,7 +15,7 @@ import logging
 from src.settings import settings
 from src.vfs_bot import block_detection, diagnostics, turnstile
 from src.vfs_bot.dom_utils import fill_field
-from src.vfs_bot.errors import OtpVerificationError
+from src.vfs_bot.errors import OtpVerificationError, TurnstileRejectedError
 
 # Text VFS shows when a submitted OTP is wrong.
 OTP_REJECTED_TEXT = "valid one time password"
@@ -23,22 +23,37 @@ OTP_REJECTED_TEXT = "valid one time password"
 
 def submit_otp(page) -> bool:
     """Click the OTP confirm button (label ladder + force/JS fallback).
-    Returns True if a click was issued, False if no button was found."""
+    Returns True if a click was issued, False if no button was found.
+
+    Raises TurnstileRejectedError when the OTP page's OWN Cloudflare Turnstile
+    never passes (Sign In stays disabled). The caller then refreshes and
+    re-logs-in on the same IP — exactly like the login page — instead of
+    force-clicking a dead button and waiting ~2 min for a dashboard that never
+    loads (the old behaviour that produced a spurious DashboardNotReachedError)."""
     for label in ("Verify", "Submit", "Confirm", "Sign In", "Continue"):
         try:
             btn = page.get_by_role("button", name=label).first
             if btn.count() == 0 or not btn.is_visible():
                 continue
             if not btn.is_enabled():
-                # This step can show its OWN Cloudflare 'Verify you are human'
-                # checkbox (separate widget from the login page's), which VFS
-                # gates the button on. A flat wait alone was too often too
-                # short AND never clicked the checkbox — give it a real
-                # auto-solve window, then coordinate-click it same as the
-                # login page, then wait a lot longer for the token to land.
-                if not turnstile.wait_for_signin_enabled(page, btn, timeout_ms=10000):
+                # This step has its OWN Cloudflare Turnstile (a separate widget
+                # from the login page's), which VFS gates the button on. Gate on
+                # the TOKEN — same as the login page — not a blind force-click:
+                # an auto-solve window, then coordinate-click, then wait for the
+                # token, after which the button enables on its own.
+                if not turnstile.wait_for_turnstile_passed(page, timeout_ms=10000):
                     turnstile.click_turnstile_by_coords(page)
-                    turnstile.wait_for_signin_enabled(page, btn, timeout_ms=45000)
+                    turnstile.wait_for_turnstile_passed(page, timeout_ms=20000)
+                turnstile.wait_for_signin_enabled(page, btn, timeout_ms=10000)
+                if not btn.is_enabled():
+                    # The token never landed — the OTP-page Turnstile did not
+                    # pass. Bail fast so the caller can refresh + re-login,
+                    # instead of clicking a disabled button and hanging.
+                    diagnostics.take_final_screenshot(page, "otp_turnstile_failed")
+                    raise TurnstileRejectedError(
+                        "OTP-page Cloudflare Turnstile did not pass — Sign In "
+                        "stayed disabled after solving."
+                    )
             try:
                 btn.click(timeout=10000)
             except Exception:
@@ -49,6 +64,8 @@ def submit_otp(page) -> bool:
             logging.info(f"Submitted OTP via '{label}'.")
             diagnostics.take_screenshot(page, "otp_submitted")
             return True
+        except TurnstileRejectedError:
+            raise  # never swallowed by the label ladder — the caller retries login
         except Exception:
             continue
     return False

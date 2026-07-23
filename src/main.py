@@ -84,7 +84,10 @@ def initialize_logger():
         "[%(asctime)s] %(levelname)s [%(filename)s:%(lineno)d] %(message)s"
     )
 
-    file_handler = logging.FileHandler("app.log", mode="a", encoding="utf-8")
+    # app.log is the "current run" tail: TRUNCATED at each startup (mode="w") so
+    # it only ever holds the latest process's output. The full history is kept in
+    # the per-day archive below, so nothing is lost by resetting this one.
+    file_handler = logging.FileHandler("app.log", mode="w", encoding="utf-8")
     file_handler.setFormatter(detailed_fmt)
 
     # Per-day archive log for later analysis: logs/app-YYYY-MM-DD.log. Every run

@@ -19,6 +19,13 @@ Start-ScheduledTask -TaskName "VFS Slot Checker"
 # Or run the wrapper directly in this terminal (see it work live):
 .\run_task.ps1
 ```
+## Count total mb used in app.log
+
+```powershell
+(Select-String -Pattern "Total proxy traffic this run: ([\d.]+)" -Path ".\app.log") | ForEach-Object { [double]$_.Matches.Groups[1].Value } | Measure-Object -Sum | Select-Object -ExpandProperty Sum
+```
+
+
 
 ## Edit config & credentials (web UI)
 

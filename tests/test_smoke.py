@@ -46,7 +46,8 @@ class TestExceptionIdentity(unittest.TestCase):
         import src.supervisor as supervisor
 
         for name in ("LoginError", "IpBlockedError", "RetryableError",
-                     "AccessRestrictedError", "AccountBlockedError"):
+                     "AccessRestrictedError", "AccountBlockedError",
+                     "TurnstileRejectedError"):
             canonical = getattr(errors, name)
             self.assertIs(getattr(vfs_bot, name), canonical)
             if hasattr(supervisor, name):
