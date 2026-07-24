@@ -118,6 +118,17 @@ def is_invalid_credentials(page) -> bool:
     ))
 
 
+def is_session_expired(page) -> bool:
+    """
+    True if VFS is showing its 'Session Expired or Invalid' page instead of the
+    login form (often after cookies/cf_clearance were cleared on an egress-IP
+    change). The login form never appears on this page, so detecting it lets the
+    flow refresh / fail fast instead of waiting out the full login-form timeout.
+    """
+    return _body_contains(page, "session expired or invalid",
+                          "session has expired or become invalid")
+
+
 def is_access_restricted(page) -> bool:
     """
     True if VFS is showing its 'Access Restricted' block page — the portal

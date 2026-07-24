@@ -15,10 +15,33 @@ import logging
 from src.settings import settings
 from src.vfs_bot import block_detection, diagnostics, turnstile
 from src.vfs_bot.dom_utils import fill_field
-from src.vfs_bot.errors import OtpVerificationError, TurnstileRejectedError
+from src.vfs_bot.errors import (
+    EmailNotRegisteredError,
+    InvalidCredentialsError,
+    OtpVerificationError,
+    TurnstileRejectedError,
+)
 
 # Text VFS shows when a submitted OTP is wrong.
 OTP_REJECTED_TEXT = "valid one time password"
+
+
+def _raise_login_banner_errors(page) -> None:
+    """Raise if the LOGIN page is showing its 'email not registered' / 'invalid
+    credentials' banner. On an OTP route these can appear AFTER Sign In (in place
+    of the OTP field), so we must classify them here too — otherwise the OTP wait
+    times out and mislabels a not-registered account as a retryable OTP failure
+    (it should be a neutral skip / a hard stop). No-op on a normal OTP page."""
+    if block_detection.is_email_not_registered(page):
+        raise EmailNotRegisteredError(
+            "Login page: 'The entered email id is not registered with us' shown "
+            "after Sign In — skipping this URL for this account."
+        )
+    if block_detection.is_invalid_credentials(page):
+        raise InvalidCredentialsError(
+            "Login page: email or password is incorrect (shown after Sign In) — "
+            "stopping this run for this account (no retries)."
+        )
 
 
 def submit_otp(page) -> bool:
@@ -137,6 +160,10 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
         # handled correctly instead of masquerading as an OTP timeout — and
         # bail immediately rather than waiting the full 60s.
         block_detection.raise_if_blocked(page)
+        # ...or by the login page's own 'not registered' / 'wrong password'
+        # banner (Sign In bounced back instead of sending an OTP) — bail early
+        # with the RIGHT error (skip / stop) rather than an OTP-field timeout.
+        _raise_login_banner_errors(page)
         try:
             candidate = page.locator(otp_selector).first
             if candidate.count() > 0 and candidate.is_visible():
@@ -150,6 +177,7 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
     if otp_input is None:
         # One last classification pass before the generic OTP-timeout error.
         block_detection.raise_if_blocked(page)
+        _raise_login_banner_errors(page)
         diagnostics.take_final_screenshot(page, "otp_field_missing")
         raise OtpVerificationError(
             "Route is flagged otp=true but no OTP input appeared within 60s "

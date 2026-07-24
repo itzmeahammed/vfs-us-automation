@@ -112,6 +112,16 @@ def route_universe(accounts):
     return sorted(routes)
 
 
+# Dest-code -> country name, for the per-country account-count summary in the UI.
+# Mirrors src/utils/telegram_message.DESTINATION_NAMES (kept local so this editor
+# stays import-light and runnable standalone).
+COUNTRY_NAMES = {
+    "MT": "Malta", "MLT": "Malta", "LUX": "Luxembourg", "CHE": "Switzerland",
+    "DNK": "Denmark", "HUN": "Hungary", "CZE": "Czech Republic", "ITA": "Italy",
+    "FRA": "France", "GRC": "Greece", "DEU": "Germany", "NOR": "Norway",
+}
+
+
 # --------------------------------------------------------------------------- #
 # Write                                                                        #
 # --------------------------------------------------------------------------- #
@@ -370,6 +380,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/credentials":
             accounts = parse_credentials()
             payload = {"accounts": accounts, "routes": route_universe(accounts),
+                       "names": COUNTRY_NAMES,
                        "file": os.path.relpath(CRED_FILE, HERE)}
             self._send(200, json.dumps(payload))
         elif self.path == "/api/routes":
@@ -448,6 +459,13 @@ PAGE = r"""<!doctype html>
   .ok { color: #16a34a; } .err { color: #dc2626; }
   .disabled input, .disabled .routes { opacity: .45; }
   td.center { text-align: center; }
+  /* Accounts-per-country summary */
+  .sumwrap { margin-bottom: 20px; }
+  .sumtitle { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+  table.summary { width: auto; min-width: 320px; border: 1px solid #e2e4e8; border-radius: 8px; overflow: hidden; }
+  table.summary td, table.summary th { padding: 5px 14px; }
+  table.summary td.num { color: #333; font-weight: 600; }
+  @media (prefers-color-scheme: dark) { table.summary td.num { color: #e6e6e6; } table.summary { border-color: #333; } }
   code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
   /* Scheduler header */
   .statusbar { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
@@ -493,6 +511,13 @@ PAGE = r"""<!doctype html>
   <details class="panel" open>
     <summary>Accounts <span class="sub">— <code id="cfile">config/credentials.local.ini</code> · order = rotation order</span></summary>
     <div class="body">
+      <div class="sumwrap">
+        <div class="sumtitle">Accounts per country <span class="num">(enabled accounts eligible for each route; no routes = all)</span></div>
+        <table class="summary">
+          <thead><tr><th>Country</th><th style="width:80px">Code</th><th style="width:90px" class="num">Accounts</th></tr></thead>
+          <tbody id="srows"></tbody>
+        </table>
+      </div>
       <table>
         <thead><tr>
           <th style="width:34px">On</th><th style="width:30px">#</th>
@@ -574,11 +599,12 @@ async function schedAct(action) {
 }
 
 /* ---------- Accounts ---------- */
-let ROUTES = [], accounts = [];
+let ROUTES = [], accounts = [], NAMES = {};
 
 async function loadCreds() {
   const d = await (await fetch('/api/credentials')).json();
   ROUTES = d.routes || [];
+  NAMES = d.names || {};
   accounts = (d.accounts || []).map(a => ({
     enabled: a.enabled !== false, email: a.email || '',
     password: a.password || '', routes: a.routes || []
@@ -586,6 +612,22 @@ async function loadCreds() {
   document.getElementById('cfile').textContent = d.file || 'credentials.local.ini';
   renderCreds();
   setStatus('cstatus', 'Loaded ' + accounts.length + ' account(s).', 'ok');
+}
+
+/* Per-country count: enabled accounts (with an email) eligible for each route —
+   an account with NO routes is eligible for ALL of them. Recomputed live. */
+function renderSummary() {
+  const tb = document.getElementById('srows'); if (!tb) return;
+  const counts = {}; ROUTES.forEach(rc => counts[rc] = 0);
+  accounts.forEach(a => {
+    if (!a.enabled || !(a.email || '').trim()) return;
+    ROUTES.forEach(rc => { if (a.routes.length === 0 || a.routes.includes(rc)) counts[rc]++; });
+  });
+  tb.innerHTML = ROUTES.map(rc => {
+    const code = rc.replace(/^AE-/, '');
+    return `<tr><td>${esc(NAMES[code] || code)}</td>`
+         + `<td class="num">${code}</td><td class="num">${counts[rc]}</td></tr>`;
+  }).join('') || '<tr><td colspan="3" class="num">no routes defined</td></tr>';
 }
 
 function renderCreds() {
@@ -614,10 +656,11 @@ function renderCreds() {
       </td>`;
     tb.appendChild(tr);
   });
+  renderSummary();
 }
-function setAcct(i,k,v){ accounts[i][k]=v; if(k==='enabled') renderCreds(); }
+function setAcct(i,k,v){ accounts[i][k]=v; if(k==='enabled') renderCreds(); else renderSummary(); }
 function toggleRoute(i,rc,on){ const s=new Set(accounts[i].routes);
-  on?s.add(rc):s.delete(rc); accounts[i].routes=ROUTES.filter(r=>s.has(r)); }
+  on?s.add(rc):s.delete(rc); accounts[i].routes=ROUTES.filter(r=>s.has(r)); renderSummary(); }
 function addAcct(){ accounts.push({enabled:true,email:'',password:'',routes:[]}); renderCreds(); }
 function delAcct(i){ accounts.splice(i,1); renderCreds(); }
 function moveAcct(i,d){ const j=i+d; if(j<0||j>=accounts.length)return;

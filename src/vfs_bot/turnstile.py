@@ -17,6 +17,7 @@ functions rather than methods.
 
 import logging
 
+from src.settings import settings
 from src.vfs_bot import block_detection, diagnostics
 from src.vfs_bot.errors import GeoBlockedError
 
@@ -164,21 +165,27 @@ def captcha_visible(page) -> bool:
         return False
 
 
-def dismiss_captcha(page) -> None:
+def dismiss_captcha(page) -> bool:
     """
     Dismisses the Cloudflare 'Verify Captcha' dialog (`app-cloudflare-dialog`)
     if it is showing. The Turnstile widget auto-solves, so we just need to
     click its 'Submit' button. Returns immediately (and silently) when no
     dialog is present.
+
+    Returns True if a dialog was present and handled, False if there was none —
+    so a caller polling in a loop can COUNT how many times it had to solve the
+    dialog and give up on a Cloudflare re-challenge loop (see
+    await_dashboard_handling_captcha).
     """
     try:
         dialog = page.locator("app-cloudflare-dialog")
         if dialog.count() == 0 or not dialog.first.is_visible():
-            return
+            return False
     except Exception:
-        return
+        return False
 
     _do_dismiss_captcha(page)
+    return True
 
 
 def _do_dismiss_captcha(page) -> None:
@@ -318,6 +325,8 @@ def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
     """
     step_ms = 1000
     waited = 0
+    captcha_cycles = 0
+    max_cycles = settings().retry.dashboard_captcha_cycles
     while waited < timeout_ms:
         # Already there?
         try:
@@ -343,8 +352,22 @@ def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
         # Stop early on a wrong-credentials banner too (no point waiting 90s).
         if block_detection.is_invalid_credentials(page):
             return False
-        # Clear the captcha dialog if it's blocking the redirect.
-        dismiss_captcha(page)
+        # Clear the captcha dialog if it's blocking the redirect. If Cloudflare
+        # keeps RE-PRESENTING it after each solve (a re-challenge loop), stop:
+        # every re-solve re-downloads the challenge (megabytes) and never
+        # redirects. Bail after a few cycles so the supervisor relaunches fresh
+        # (a different IP usually breaks the loop) instead of grinding the full
+        # timeout.
+        if dismiss_captcha(page):
+            captcha_cycles += 1
+            if captcha_cycles >= max_cycles:
+                logging.warning(
+                    f"Cloudflare captcha re-challenge loop — the 'Verify Captcha' "
+                    f"dialog re-appeared after {captcha_cycles} solve cycle(s) and "
+                    f"the dashboard never loaded; abandoning this attempt."
+                )
+                diagnostics.take_final_screenshot(page, "captcha_loop")
+                return False
         page.wait_for_timeout(step_ms)
         waited += step_ms
         if waited % 20000 == 0:

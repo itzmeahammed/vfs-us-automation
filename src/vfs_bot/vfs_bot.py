@@ -431,14 +431,54 @@ class VfsBot(ABC):
     # Login                                                              #
     # ------------------------------------------------------------------ #
 
-    def _wait_for_login_form(self, page) -> None:
-        """Polls for the login form OR a block page (doesn't block 120s) so a
-        403201 / 429xxx page is caught within ~1.5s and we fail fast. Raises
-        LoginFormNotReadyError if the form never appears."""
-        login_wait_ms = settings().timeouts.login_wait_ms
-        waited, form_ready = 0, False
+    def _refresh_login_url(self, page) -> None:
+        """Navigate fresh to the login URL WITHOUT the long form-wait (unlike
+        _reload_login_form). Used to clear a 'Session Expired or Invalid' page so
+        the caller can re-poll for the form on its own budget — waiting 120s for
+        the username field here would reintroduce the very hang we're avoiding."""
+        self._block_responses = []
+        url_key = f"{self.source_country_code}-{self.destination_country_code}"
+        vfs_url = get_config_value("vfs-url", url_key)
+        try:
+            if vfs_url:
+                page.goto(vfs_url, timeout=settings().timeouts.page_load_ms,
+                          wait_until="domcontentloaded")
+            else:
+                page.reload(timeout=60000, wait_until="domcontentloaded")
+        except Exception as e:
+            logging.warning(f"Session refresh navigation failed: {e}")
+
+    def _wait_for_login_form(self, page, timeout_ms: int = None) -> None:
+        """Polls for the login form OR a block page (doesn't block the full
+        timeout) so a 403201 / 429xxx / 'Session Expired' page is caught within
+        ~1.5s and we fail fast. Raises LoginFormNotReadyError if the form never
+        appears. `timeout_ms` overrides the ceiling — callers re-waiting after a
+        reload pass the shorter relogin_wait_ms so a stuck reload bails sooner."""
+        login_wait_ms = timeout_ms or settings().timeouts.login_wait_ms
+        session_refreshes = settings().retry.session_refresh_attempts
+        waited, form_ready, refreshed = 0, False, 0
         while waited < login_wait_ms:
             self._check_blocked(page)  # raises IpBlocked/Geo/etc if a block appeared
+            # VFS 'Session Expired or Invalid' page: the login form will NEVER
+            # appear here (usually after cookies/cf_clearance were cleared on an
+            # egress-IP change), so don't burn the full 120s. Its own advice is
+            # 'refresh the page' — try a bounded number of fresh navigations to
+            # the login URL, then fail fast (retryable) so the supervisor moves on.
+            if block_detection.is_session_expired(page):
+                if refreshed < session_refreshes:
+                    refreshed += 1
+                    logging.warning(
+                        f"VFS 'Session Expired or Invalid' page — refreshing the "
+                        f"login URL ({refreshed}/{session_refreshes})."
+                    )
+                    self._refresh_login_url(page)
+                    page.wait_for_timeout(750)
+                    continue
+                diagnostics.take_final_screenshot(page, "session_expired")
+                raise LoginFormNotReadyError(
+                    "VFS 'Session Expired or Invalid' page persisted after "
+                    f"{session_refreshes} refresh(es) — failing fast."
+                )
             try:
                 el = page.locator(self.selectors["username"]).first
                 if el.count() > 0 and el.is_visible():
@@ -451,8 +491,8 @@ class VfsBot(ABC):
         if not form_ready:
             self._check_blocked(page)
             raise LoginFormNotReadyError(
-                "Login form never appeared within 120s (Cloudflare spinner / 403 / "
-                "slow load)."
+                f"Login form never appeared within {login_wait_ms // 1000}s "
+                "(Cloudflare spinner / 403 / slow load)."
             )
         logging.debug("Login form loaded")
 
@@ -513,12 +553,11 @@ class VfsBot(ABC):
                     page.reload(timeout=60000, wait_until="domcontentloaded")
                 except Exception as e:
                     logging.warning(f"Reload failed: {e}")
-                try:
-                    page.wait_for_selector(self.selectors["username"], timeout=120000)
-                except Exception as e:
-                    raise LoginFormNotReadyError(
-                        f"Login form did not reappear after reload: {e}"
-                    ) from e
+                # Fast-fail poll (block / 'Session Expired' aware) on the shorter
+                # relogin budget — NOT a raw 120s wait_for_selector that would hang
+                # if the reloaded page never shows the form.
+                self._wait_for_login_form(
+                    page, timeout_ms=settings().timeouts.relogin_wait_ms)
                 self.pre_login_steps(page)
 
         if not passed:
@@ -616,12 +655,11 @@ class VfsBot(ABC):
                 page.reload(timeout=60000, wait_until="domcontentloaded")
         except Exception as e:
             logging.warning(f"Login reload failed: {e}")
-        try:
-            page.wait_for_selector(self.selectors["username"], timeout=120000)
-        except Exception as e:
-            raise LoginFormNotReadyError(
-                f"Login form did not reappear after reload: {e}"
-            ) from e
+        # Fast-fail poll on the shorter relogin budget instead of a raw 120s
+        # wait_for_selector: a reloaded page that's blocked / 'Session Expired' /
+        # a stuck Cloudflare challenge bails in ~1s (or at most relogin_wait_ms)
+        # rather than hanging the full 120s (the 2-min stall seen in the field).
+        self._wait_for_login_form(page, timeout_ms=settings().timeouts.relogin_wait_ms)
         self.pre_login_steps(page)
 
     def login(self, page, email_id: str, password: str) -> None:

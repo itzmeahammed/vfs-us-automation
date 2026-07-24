@@ -297,6 +297,18 @@ not commit real proxy credentials into this file.**
 & .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA -v --proxy-url socks5://USER:PASS@HOST:PORT
 ```
 
+### Single ITA run, minimum MB, one specific IP
+
+Runs ONLY Italy through one pinned IP. Note the proxy string must be
+`user:pass@host:port` (the proxylist `user:pass:host:port` form won't parse here).
+For minimum data, ensure `mute_chrome = true` in `config/config.local.ini` (kills
+Chrome's `clients2.googleusercontent.com` / optimizationguide / safebrowsing
+phone-home traffic). Drop `-v` for quieter logs.
+
+```powershell
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc ITA --proxy-url "http://e65bbcf31555e1cf:V9bP2K5uhIXHSfkc@res.proxy-seller.com:10014"
+```
+
 ## Preview full rotation (route · account · time · IP)
 
 Every route's per-hour account schedule, its login URL, and the **pinned exit

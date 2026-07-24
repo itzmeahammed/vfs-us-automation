@@ -42,6 +42,10 @@ class Timeouts(_Section):
 
     page_load_ms: int = 60000       # page.goto on the login URL
     login_wait_ms: int = 120000     # wait for the login form (poll loop) to appear
+    relogin_wait_ms: int = 45000    # wait for the form to REappear after a reload
+                                    # (Turnstile/session refresh) — shorter than the
+                                    # cold login_wait_ms: a reload that hasn't
+                                    # rendered the form in ~45s is stuck, so bail
     dashboard_ms: int = 90000       # await dashboard while handling captcha
     slot_read_ms: int = 12000       # read the 'Earliest available slot' banner
 
@@ -57,6 +61,10 @@ class Retry(_Section):
     turnstile_refresh_attempts: int = 2   # page reloads to unstick Turnstile
     turnstile_signin_retries: int = 2     # same-IP reload+re-solve on a rejected
                                           # (non-403201) login 403 before rotating IP
+    session_refresh_attempts: int = 1     # login-URL refreshes on a 'Session Expired
+                                          # or Invalid' page before failing fast
+    dashboard_captcha_cycles: int = 3     # times to re-solve the post-Sign-In captcha
+                                          # dialog before declaring a re-challenge loop
     cdp_port: int = 9222                  # Chrome remote-debugging port
 
 
@@ -113,11 +121,14 @@ class Bandwidth(_Section):
     KEPT — CSS drives the Turnstile checkbox position)."""
 
     log_usage: bool = True            # passive: log "Proxy traffic this route: X MB"
-    # NOTE: mute_chrome and resource blocking default OFF — blocking image/media/
-    # font breaks the Cloudflare Turnstile solve (shifts the coordinate-clicked
-    # checkbox + trips CF's bot heuristics). Opt in via config only after you've
-    # re-verified Turnstile still passes.
-    mute_chrome: bool = False         # disable Chrome's background/phone-home traffic
+    # mute_chrome defaults ON: it only silences Chrome's OWN background phone-home
+    # (Optimization Guide model ~35 MB/launch, component/safebrowsing updates,
+    # sync, telemetry) — NONE of which touch page rendering or the Turnstile
+    # widget, and which otherwise dominate the proxy bill. Turn OFF only to debug.
+    mute_chrome: bool = True           # disable Chrome's background/phone-home traffic
+    # block_resource_types defaults EMPTY (OFF): blocking image/media/font DOES
+    # risk the Cloudflare Turnstile solve (shifts the coordinate-clicked checkbox
+    # + trips CF heuristics), so opt in via config only after re-verifying it.
     block_resource_types: str = ""    # Playwright resource types to abort (comma list)
     # Persist a PER-ACCOUNT browser profile across runs so static JS/CSS/fonts (and
     # that account's cf_clearance) are served from disk cache instead of re-fetched

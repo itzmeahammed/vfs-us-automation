@@ -52,6 +52,17 @@ class TestIndividualPredicates(unittest.TestCase):
     def test_geo_blocked_false_on_normal_page(self):
         self.assertFalse(block_detection.is_geo_blocked(_FakePage("Welcome back")))
 
+    def test_session_expired_by_heading(self):
+        page = _FakePage("Session Expired or Invalid — sign in again")
+        self.assertTrue(block_detection.is_session_expired(page))
+
+    def test_session_expired_by_sentence(self):
+        page = _FakePage("It looks like your session has expired or become invalid.")
+        self.assertTrue(block_detection.is_session_expired(page))
+
+    def test_session_expired_false_on_login(self):
+        self.assertFalse(block_detection.is_session_expired(_FakePage("Sign In")))
+
     def test_email_not_registered(self):
         page = _FakePage("The entered email id is Not Registered With Us.")
         self.assertTrue(block_detection.is_email_not_registered(page))
