@@ -29,7 +29,9 @@ import time
 
 from src.main import initialize_logger
 from src.settings import settings
-from src.utils import account_health, credentials, proxy_pool, telegram, telegram_message
+from src.utils import (
+    account_health, connectivity, credentials, proxy_pool, telegram, telegram_message,
+)
 from src.utils.chrome_launcher import ChromeProcess
 from src.utils.config_reader import (
     get_config_section,
@@ -418,6 +420,18 @@ def run_all_routes() -> bool:
 
     outcomes = []
     for idx, (source, dest) in enumerate(routes, start=1):
+        # Re-check connectivity before each route: if the link drops mid-run,
+        # stop here instead of letting every remaining route fail with
+        # connection-refused (striking accounts, flooding the log). Cheap when
+        # online (returns on the first probe). The startup gate in main() covers
+        # "offline from the start"; this covers "went offline during the run".
+        if not connectivity.internet_available():
+            logging.error(
+                f"Internet connectivity lost — stopping after "
+                f"{idx - 1}/{len(routes)} route(s); remaining skipped "
+                "(no accounts struck). Next scheduled run retries."
+            )
+            break
         logging.info(f"########## Route {idx}/{len(routes)}: {source}-{dest} ##########")
         try:
             # A fresh Chrome is opened and closed for this route inside run();
@@ -547,6 +561,15 @@ def main() -> None:
     elif args.proxy or args.proxy_url:
         os.environ["VFS_PROXY"] = "on"
     initialize_logger()
+
+    # Connectivity gate: if this machine is offline, stop NOW — before touching
+    # any route. Otherwise every route fails with connection-refused, strikes its
+    # account, and floods the log with proxy/Telegram errors, all for a problem
+    # that isn't ours. Exit 3 = "skipped: no connectivity" (distinct from 1 =
+    # ran with failures); the next scheduled run retries when the link is back.
+    from src.utils import connectivity
+    if not connectivity.require_internet_or_log():
+        sys.exit(3)
 
     if args.source_country_code and args.destination_country_code:
         outcome = run(
