@@ -735,6 +735,35 @@ class VfsBot(ABC):
                 # The Sign In API is where VFS returns either a 403201 IP block OR
                 # a rejected-Turnstile 403 — classify the captured body here.
                 page.wait_for_timeout(2000)
+
+                # Sometimes Cloudflare answers Sign In with a 403 AND pops the
+                # interactive 'Verify Captcha' dialog (app-cloudflare-dialog) to
+                # re-challenge. If we classify that 403 first we'd raise
+                # TurnstileRejectedError, reload the login page, and THROW THE
+                # DIALOG AWAY unsolved (then rotate IP). So when the dialog is up,
+                # try to actually SOLVE it once — wait for its Turnstile token and
+                # click Submit. If it clears, the login 403 is moot, so drop it.
+                if turnstile.captcha_visible(page):
+                    logging.info(
+                        "Post-Sign-In 'Verify Captcha' popup present — attempting "
+                        "to solve it (Turnstile token + Submit) before treating the "
+                        "login 403 as a rejected token."
+                    )
+                    if turnstile.solve_captcha_dialog(page):
+                        logging.info(
+                            "Post-Sign-In 'Verify Captcha' popup SOLVED — dropping "
+                            "the captured login 403 and continuing to the dashboard."
+                        )
+                        # The dialog cleared, so the earlier /user/login 403 no
+                        # longer means a rejected token — clear it so the check
+                        # below doesn't raise on a now-stale 403.
+                        self._block_responses = []
+                    else:
+                        logging.warning(
+                            "Post-Sign-In 'Verify Captcha' popup NOT solved — "
+                            "falling back to the login-403 handling (refresh/rotate)."
+                        )
+
                 self._check_blocked(page, check_network=True)
                 self._raise_known_login_errors(page)
 

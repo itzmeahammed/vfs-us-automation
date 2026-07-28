@@ -110,5 +110,43 @@ class TestDashboardVerification(unittest.TestCase):
         self.assertFalse(turnstile.dashboard_content_ready(page))
 
 
+class TestSolveCaptchaDialog(unittest.TestCase):
+    """solve_captcha_dialog reports whether the dialog was actually CLEARED
+    (unlike dismiss_captcha, which reports only whether one was present)."""
+
+    class _Dialog:
+        def __init__(self, present):
+            self._present = present
+
+        def count(self):
+            return 1 if self._present else 0
+
+        class _First:
+            def is_visible(self):
+                return True
+
+        @property
+        def first(self):
+            return self._First()
+
+    class _Page:
+        def __init__(self, present):
+            self._present = present
+
+        def locator(self, _sel):
+            return TestSolveCaptchaDialog._Dialog(self._present)
+
+    def test_no_dialog_returns_false(self):
+        self.assertFalse(turnstile.solve_captcha_dialog(self._Page(present=False)))
+
+    def test_present_dialog_reports_cleared_result(self):
+        page = self._Page(present=True)
+        with mock.patch.object(turnstile, "_do_dismiss_captcha", return_value=True) as dd:
+            self.assertTrue(turnstile.solve_captcha_dialog(page))
+            dd.assert_called_once()
+        with mock.patch.object(turnstile, "_do_dismiss_captcha", return_value=False):
+            self.assertFalse(turnstile.solve_captcha_dialog(page))
+
+
 if __name__ == "__main__":
     unittest.main()

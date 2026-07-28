@@ -27,7 +27,9 @@ class TestDefaultsMatchOldConstants(unittest.TestCase):
         t = Timeouts()
         # Old inline values in vfs_bot.py.
         self.assertEqual(t.page_load_ms, 60000)      # page.goto(..., timeout=60000)
-        self.assertEqual(t.login_wait_ms, 120000)    # login-form poll loop < 120000
+        # login_wait_ms was shortened from 120000 to 15000 so a stuck/blank login
+        # load fails fast and the supervisor retries fresh instead of hanging ~2min.
+        self.assertEqual(t.login_wait_ms, 15000)     # login-form poll loop ceiling
         self.assertEqual(t.dashboard_ms, 90000)      # _await_dashboard timeout_ms=90000
         self.assertEqual(t.slot_read_ms, 12000)      # _read_slot_message timeout=12000
 

@@ -38,7 +38,9 @@ import configparser
 import logging
 import os
 
-from src.utils.config_reader import get_config_section, get_config_value
+from src.utils.config_reader import (
+    commented_section_keys, get_config_section, get_config_value,
+)
 
 # The hour (local time) of the first scheduled run of the day. cred1 maps here.
 START_HOUR = 6
@@ -237,17 +239,30 @@ def warn_unknown_routes() -> None:
     Logs a warning for every `routes` entry that names a route missing from
     [vfs-url] — catching typos (e.g. 'AE-CH') that would otherwise silently
     shrink a route's pool. Call once at startup.
+
+    A route that EXISTS in [vfs-url] but is commented out (deliberately disabled,
+    e.g. '; AE-FRA = ...') is NOT a typo — warning about it would spam the log
+    every run while a route is paused. Those are logged at DEBUG instead, so only
+    genuine typos surface as warnings.
     """
     known = {k.upper() for k in (get_config_section("vfs-url") or {})}
     if not known:
         return
+    disabled = commented_section_keys("vfs-url")
     for email, _pwd, routes in _load_pool():
         for r in routes:
-            if r not in known:
-                logging.warning(
-                    f"Credential {_mask(email)} lists unknown route '{r}' "
-                    f"(not in [vfs-url]) — probably a typo in {CREDENTIALS_FILE}."
+            if r in known:
+                continue
+            if r in disabled:
+                logging.debug(
+                    f"Credential {_mask(email)} lists disabled route '{r}' "
+                    "(commented out in [vfs-url]) — skipped until re-enabled."
                 )
+                continue
+            logging.warning(
+                f"Credential {_mask(email)} lists unknown route '{r}' "
+                f"(not in [vfs-url]) — probably a typo in {CREDENTIALS_FILE}."
+            )
 
 
 def rotation_schedule(route: str = None) -> list:

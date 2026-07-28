@@ -1,8 +1,12 @@
 import os
+import re
 from configparser import ConfigParser
-from typing import Dict
+from typing import Dict, Set
 
 _config: ConfigParser = None
+# The directory the config was loaded from, remembered so helpers that need the
+# RAW files (e.g. commented_section_keys) can re-scan them.
+_config_dir: str = "config"
 
 
 def initialize_config(config_dir="config"):
@@ -13,7 +17,8 @@ def initialize_config(config_dir="config"):
     Args:
         config_dir: The directory containing configuration files (default: "config").
     """
-    global _config
+    global _config, _config_dir
+    _config_dir = config_dir
     if not _config:
         _config = ConfigParser()
         names = [
@@ -48,6 +53,45 @@ def get_config_section(section: str, default: Dict = None) -> Dict:
         return dict(_config[section])
     else:
         return default or {}
+
+
+_SECTION_HEADER_RE = re.compile(r"^\s*\[(?P<name>[^\]]+)\]\s*$")
+_COMMENTED_KEY_RE = re.compile(r"^\s*[;#]\s*(?P<key>[A-Za-z0-9._-]+)\s*[=:]")
+
+
+def commented_section_keys(section: str) -> Set[str]:
+    """Return the keys that are COMMENTED OUT under [section], across every .ini
+    file in the config dir (keys upper-cased).
+
+    ConfigParser silently drops comment lines, so a deliberately-disabled entry
+    like '; AE-FRA = ...' is invisible to get_config_section. This recovers those
+    keys from the raw files so callers can tell 'intentionally disabled' from
+    'absent / typo'. Best-effort: returns an empty set on any read error.
+    """
+    keys: Set[str] = set()
+    target = section.strip().lower()
+    try:
+        names = [e.name for e in os.scandir(_config_dir)
+                 if e.is_file() and e.name.endswith(".ini")]
+    except OSError:
+        return keys
+    for name in names:
+        current = None
+        try:
+            with open(os.path.join(_config_dir, name), encoding="utf-8") as f:
+                for line in f:
+                    header = _SECTION_HEADER_RE.match(line)
+                    if header:
+                        current = header.group("name").strip().lower()
+                        continue
+                    if current != target:
+                        continue
+                    ck = _COMMENTED_KEY_RE.match(line)
+                    if ck:
+                        keys.add(ck.group("key").upper())
+        except OSError:
+            continue
+    return keys
 
 
 def get_config_value(section: str, key: str, default: str = None) -> str:

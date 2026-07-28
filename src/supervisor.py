@@ -47,6 +47,7 @@ from src.vfs_bot.vfs_bot import (
     GeoBlockedError,
     InvalidCredentialsError,
     IpBlockedError,
+    OtpVerificationError,
     RetryableError,
     SignInDisabledError,
 )
@@ -349,6 +350,22 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             logging.error(f"Unsupported route {source}-{dest}: {e}")
             _alert_failure(source, dest, str(e), attempts=attempt, account=account)
             return _outcome(source, dest, "FAILED", attempt, error=str(e),
+                            account=account, proxy=proxy_label)
+        except OtpVerificationError as e:
+            # A real OTP failure (field never appeared / email never arrived /
+            # code rejected on every submit) — NOT a Turnstile problem on the OTP
+            # form (that's TurnstileRejectedError, caught above and handled with a
+            # same-IP refresh). A second attempt just burns another OTP email +
+            # browser and almost always fails the same way, so fail THIS route now
+            # WITHOUT an attempt 2.
+            logging.error(f"{route}: OTP verification failed [{account}] — not "
+                          f"retrying (no attempt 2). {e}")
+            benched = account_health.record_failure(email, f"OtpVerificationError: {e}")
+            note = (f"\nAccount {account} benched {account_health.soft_cooldown_hours()}h "
+                    "(too many consecutive failures).") if benched else ""
+            _alert_failure(source, dest, f"OTP verification failed: {e}{note}",
+                           attempts=attempt, account=account)
+            return _outcome(source, dest, "FAILED", attempt, error=f"OTP failed: {e}",
                             account=account, proxy=proxy_label)
         except RetryableError as e:
             last_error = f"{type(e).__name__}: {e}"

@@ -41,7 +41,10 @@ class Timeouts(_Section):
     """Page-level waits (milliseconds). Defaults = the old inline values."""
 
     page_load_ms: int = 60000       # page.goto on the login URL
-    login_wait_ms: int = 120000     # wait for the login form (poll loop) to appear
+    login_wait_ms: int = 15000      # wait for the login form (poll loop) to appear —
+                                    # short so a stuck/blank load fails fast and the
+                                    # supervisor retries fresh (block/'Session
+                                    # Expired' pages are caught in ~1.5s regardless)
     relogin_wait_ms: int = 45000    # wait for the form to REappear after a reload
                                     # (Turnstile/session refresh) — shorter than the
                                     # cold login_wait_ms: a reload that hasn't

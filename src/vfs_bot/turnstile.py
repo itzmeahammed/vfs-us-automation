@@ -188,9 +188,31 @@ def dismiss_captcha(page) -> bool:
     return True
 
 
-def _do_dismiss_captcha(page) -> None:
+def solve_captcha_dialog(page) -> bool:
+    """Solve the 'Verify Captcha' dialog (`app-cloudflare-dialog`) if it's up:
+    wait for its Turnstile token and click Submit, retrying a few rounds.
+
+    Unlike dismiss_captcha (which reports only whether a dialog was PRESENT, so
+    the dashboard loop can count re-challenge cycles), this reports whether the
+    dialog was actually CLEARED. Returns True only if a dialog was present and
+    it went away; False if there was no dialog or it couldn't be solved. Use it
+    where the caller needs to know if solving succeeded (e.g. the post-Sign-In
+    403 path).
     """
-    Clears a confirmed-visible Cloudflare captcha dialog.
+    try:
+        dialog = page.locator("app-cloudflare-dialog")
+        if dialog.count() == 0 or not dialog.first.is_visible():
+            return False
+    except Exception:
+        return False
+    return _do_dismiss_captcha(page)
+
+
+def _do_dismiss_captcha(page) -> bool:
+    """
+    Clears a confirmed-visible Cloudflare captcha dialog. Returns True if the
+    dialog was cleared, False if it couldn't be (Submit unclickable / still up
+    after all retries).
 
     The Turnstile widget shows 'Verifying...' for a few seconds and only
     populates its hidden `cf-turnstile-response` token once solved — clicking
@@ -217,7 +239,7 @@ def _do_dismiss_captcha(page) -> None:
         except Exception as e:
             logging.warning(f"Could not click captcha 'Submit': {e}")
             diagnostics.take_screenshot(page, "ERROR_captcha")
-            return
+            return False
 
         # Did the dialog go away?
         try:
@@ -227,11 +249,11 @@ def _do_dismiss_captcha(page) -> None:
                 f"attempt {attempt})."
             )
             diagnostics.take_screenshot(page, "captcha_handled")
-            return
+            return True
         except Exception:
             # Still visible (e.g. token wasn't ready yet) — loop and retry.
             if not captcha_visible(page):
-                return  # raced away on its own
+                return True  # raced away on its own
             logging.debug(
                 f"Captcha still visible after Submit (attempt {attempt}); retrying..."
             )
@@ -241,6 +263,7 @@ def _do_dismiss_captcha(page) -> None:
         "Submit retries; it may need a manual solve."
     )
     diagnostics.take_screenshot(page, "ERROR_captcha_persist")
+    return False
 
 
 def wait_with_captcha_check(page, total_ms: int, step_ms: int = 3000) -> None:
