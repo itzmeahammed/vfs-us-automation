@@ -154,6 +154,7 @@ class VfsBot(ABC):
                 pass
         try:
             page.on("response", _on_resp)
+            self._listeners.append((page, "response", _on_resp))
         except Exception:
             pass
 
@@ -247,6 +248,7 @@ class VfsBot(ABC):
 
         try:
             context.on("requestfinished", _count)
+            self._listeners.append((context, "requestfinished", _count))
         except Exception as e:
             logging.debug(f"Could not install traffic meter (continuing): {e}")
 
@@ -254,6 +256,9 @@ class VfsBot(ABC):
         """Wires up everything that observes (but never drives) the flow:
         activity logging, the 403 block watcher, and the two bandwidth-saving
         installs. Called once per run, right after the page/context exist."""
+        # (target, event, handler) triples so we can DETACH them before Chrome is
+        # torn down — see _detach_listeners for why that matters.
+        self._listeners = []
         diagnostics.attach_activity_logging(page)
         # Watch for HTTP 403 (IP/access blocks) at the network level, so we
         # catch 403201 even when it's an XHR/JSON that never renders (or the
@@ -269,6 +274,25 @@ class VfsBot(ABC):
         # Bandwidth: count wire bytes the browser receives — works WITH or
         # WITHOUT a proxy, so local-IP and proxy runs compare on one metric.
         self._install_traffic_meter(context)
+
+    def _detach_listeners(self) -> None:
+        """Remove every page/context event listener we attached, best-effort.
+
+        MUST run while the browser is still alive (before the supervisor kills
+        Chrome). The traffic meter's `requestfinished` handler calls
+        `request.sizes()` — a SYNC round-trip to the browser. If a late
+        `requestfinished` event fires while Chrome is being torn down, that
+        round-trip has nothing to talk to and Playwright's event loop logs the
+        stray callback as `Exception in callback SyncBase._sync.<locals>.<lambda>`
+        (the base_events.py error seen in the field). Detaching first means no
+        such handler is left to fire during teardown.
+        """
+        for target, event, handler in getattr(self, "_listeners", []):
+            try:
+                target.remove_listener(event, handler)
+            except Exception:
+                pass
+        self._listeners = []
 
     # ------------------------------------------------------------------ #
     # run() setup steps                                                  #
@@ -404,6 +428,11 @@ class VfsBot(ABC):
                         f"{self._net_bytes / (1024 * 1024):.1f} MB "
                         f"(all requests, proxy or local IP)."
                     )
+                # Detach network listeners NOW, while Chrome is still alive, so no
+                # late requestfinished/response handler fires during the
+                # supervisor's Chrome teardown (that's the SyncBase._sync lambda
+                # error). Bandwidth is already summed above, so nothing is lost.
+                self._detach_listeners()
 
             # Single final screenshot capturing the successful end state.
             diagnostics.take_final_screenshot(page, "final")
@@ -561,11 +590,16 @@ class VfsBot(ABC):
                 self.pre_login_steps(page)
 
         if not passed:
+            logging.warning(
+                "Cloudflare Turnstile NOT solved — token never populated after "
+                f"{refresh_attempts} refresh(es)."
+            )
             diagnostics.take_final_screenshot(page, "turnstile_failed_final")
             raise SignInDisabledError(
                 "Cloudflare 'Verify you are human' did not pass after "
                 f"{refresh_attempts} refresh(es) — token never populated."
             )
+        logging.info("Cloudflare Turnstile SOLVED (token populated) — login form unlocked.")
 
     def _fill_credentials(self, page, email_id: str, password: str) -> None:
         """Fills the email/password fields (Turnstile must already have passed)."""
@@ -747,7 +781,18 @@ class VfsBot(ABC):
                 raise
             break  # dashboard reached — proceed with the slot check
 
-        logging.info(f"Reached dashboard: {page.url}")
+        # await_dashboard_handling_captcha() only returns True once the URL is
+        # /dashboard AND the page rendered, but re-assert it here as a hard gate
+        # so a regression can never let a blank Cloudflare shell through to the
+        # slot check. Capture a NAMED dashboard screenshot as proof, then proceed.
+        if not turnstile.dashboard_content_ready(page):
+            diagnostics.take_final_screenshot(page, "dashboard_not_ready")
+            raise DashboardNotReachedError(
+                f"Dashboard verification failed after Sign In — URL: {page.url}, "
+                f"status: {block_detection.landing_status(page)}."
+            )
+        logging.info(f"Reached dashboard (verified: URL + content): {page.url}")
+        diagnostics.take_final_screenshot(page, "dashboard")
         # start_new_booking() below does its own settle-wait before clicking —
         # no need to also wait here (that used to be a redundant back-to-back
         # 2s+2s pause doing the same job).

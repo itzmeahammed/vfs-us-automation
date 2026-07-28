@@ -242,9 +242,28 @@ def run_slot_check(page, schema: dict, source_country_code: str,
     turnstile.wait_for_loader(page)
     page.wait_for_timeout(500)
 
+    # Reaching the /application-detail URL is not proof the FORM rendered:
+    # Cloudflare can park us on the URL with a blank body, in which case every
+    # dropdown below times out three times over (the wasteful, misleading runs
+    # seen in the field). Gate on the first mat-select actually appearing — if
+    # it never does, fail fast as retryable so the supervisor relaunches a fresh
+    # browser instead of grinding per-combo timeouts and reporting a fake result.
+    try:
+        page.locator("mat-select").first.wait_for(state="visible", timeout=20000)
+    except Exception as e:
+        diagnostics.take_final_screenshot(page, "appointment_form_not_loaded")
+        raise SlotCheckError(
+            "Reached the Appointment Details URL but its form controls never "
+            f"rendered (Cloudflare shell / slow load) — retrying fresh: {e}"
+        ) from e
+
     from src.vfs_bot import waitlist  # local: keeps waitlist evolvable independently
 
     results = []
+    # (combo, message) for each ENABLED combo, in order — the slot report is built
+    # from these so it can show centre/category/sub-category from the STRUCTURED
+    # fields (results carries only the flat label, which drops the category).
+    report_entries = []
     prev = {}  # the centre/category/sub-category selected for the previous combo
     for combo in combos:
         label = combo_label(combo)
@@ -273,6 +292,7 @@ def run_slot_check(page, schema: dict, source_country_code: str,
 
         logging.info(f"  -> {message}")
         results.append((label, message))
+        report_entries.append((combo, message))
         diagnostics.take_screenshot(page, f"slot_{len(results)}")
         page.wait_for_timeout(400)
 
@@ -283,8 +303,10 @@ def run_slot_check(page, schema: dict, source_country_code: str,
         if combo.get("disabled"):
             results.append((combo_label(combo), "DISABLED"))
 
-    # Send the (unchanged) per-route slot report to the success chat.
-    send_slot_report(source_country_code, destination_country_code, results)
+    # Send the per-route slot report to the success chat. It's built from the
+    # structured (combo, message) entries so it can show the category and
+    # sub-category, not just the centre.
+    send_slot_report(source_country_code, destination_country_code, report_entries)
 
     # Separately notify (success chat) about any waitlist-only combinations —
     # the slot report above intentionally ignores them (they carry no date).
@@ -298,18 +320,20 @@ def run_slot_check(page, schema: dict, source_country_code: str,
 
 
 def send_slot_report(source_country_code: str, destination_country_code: str,
-                      results: list) -> None:
+                     entries: list) -> None:
     """Formats a route's slot results and sends them to Telegram.
 
-    The message layout lives in src/utils/telegram_message.py — edit it there.
-    It is route-aware, so each portal's message shows the correct destination.
+    `entries` is a list of (combo_dict, message) — the structured combo lets the
+    message show centre / category / sub-category. The layout lives in
+    src/utils/telegram_message.py — edit it there. It is route-aware, so each
+    portal's message shows the correct destination.
     """
     from src.utils import telegram, telegram_message
 
     url_key = f"{source_country_code}-{destination_country_code}"
     login_url = get_config_value("vfs-url", url_key, "")
     report = telegram_message.slot_report(
-        source_country_code, destination_country_code, results, login_url,
+        source_country_code, destination_country_code, entries, login_url,
     )
 
     # Only notify when there's an actual slot. slot_report() returns "" when

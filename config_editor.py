@@ -14,8 +14,8 @@ Stdlib only, binds to 127.0.0.1 ONLY. Run it, edit, Save:
 It edits config/config.local.ini — the REAL working file (gitignored, holds
 secrets + live values). config.ini is only the committed reference template.
 
-Each Save writes a timestamped backup (config.local.ini.bak-<time>) first, then
-atomically rewrites the file.
+Each Save writes a single rolling backup (config.local.ini.bak, overwritten each
+save — no pile-up of timestamped files) first, then atomically rewrites the file.
 """
 
 import http.server
@@ -24,13 +24,26 @@ import os
 import shutil
 import socketserver
 import webbrowser
-from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The REAL working config (gitignored, holds secrets + live values). config.ini
 # is only the committed reference template, so the editor targets the real file.
 CONFIG_FILE = os.path.join(HERE, "config", "config.local.ini")
 PORT = 8766
+
+
+def _rolling_backup(path):
+    """Copy `path` to a SINGLE rolling '<path>.bak', overwritten on every save.
+
+    One backup per file (the previous version) instead of a fresh timestamped
+    file each save — so backups never pile up. Returns the backup path, or None
+    if there was nothing to back up. Raises OSError on copy failure.
+    """
+    if not os.path.isfile(path):
+        return None
+    backup = f"{path}.bak"
+    shutil.copy2(path, backup)
+    return backup
 
 
 # --------------------------------------------------------------------------- #
@@ -111,10 +124,8 @@ def save_config(updates):
     if changed == 0:
         return True, "No changes to save."
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup = f"{CONFIG_FILE}.bak-{stamp}"
     try:
-        shutil.copy2(CONFIG_FILE, backup)
+        backup = _rolling_backup(CONFIG_FILE)
     except OSError as e:
         return False, f"Could not create backup: {e}"
 
@@ -126,7 +137,10 @@ def save_config(updates):
     except OSError as e:
         return False, f"Write failed: {e}"
 
-    return True, f"Saved {changed} change(s). Backup: {os.path.basename(backup)}"
+    msg = f"Saved {changed} change(s)."
+    if backup:
+        msg += f" Backup: {os.path.basename(backup)}"
+    return True, msg
 
 
 # --------------------------------------------------------------------------- #

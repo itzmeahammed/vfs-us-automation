@@ -85,7 +85,29 @@ def _has_slot(message: str) -> bool:
     return bool(_DATE_RE.search(message or ""))
 
 
-def slot_report(source_code: str, dest_code: str, results: list, login_url: str = "") -> str:
+def _report_label(combo: dict, dest_code: str) -> str:
+    """Header for a slot line, built from the combo's STRUCTURED fields so it
+    shows the centre, the country, then the category and sub-category:
+
+      'Abu Dhabi - France - Short Stay - Business'
+      'Temporary Enrolment Location - Damac Hills - France - Short Stay (any purpose)'
+
+    Reads centre / category / sub_category directly (never by splitting a joined
+    label) — the centre itself can contain ' - ' (e.g. the Damac Hills location),
+    which the old string-splitting mangled into 'Temporary ... - France - Damac
+    Hills'. Empty fields are simply omitted.
+    """
+    country = _country(dest_code)
+    centre = (combo.get("centre") or combo.get("label") or "").strip()
+    parts = [f"{centre} - {country}" if centre else country]
+    for key in ("category", "sub_category"):
+        val = (combo.get(key) or "").strip()
+        if val:
+            parts.append(val)
+    return " - ".join(parts)
+
+
+def slot_report(source_code: str, dest_code: str, entries: list, login_url: str = "") -> str:
     """
     Builds the slot-report message for ONE route — ONLY for combinations that
     actually have a slot.
@@ -96,7 +118,9 @@ def slot_report(source_code: str, dest_code: str, results: list, login_url: str 
 
     Args:
         source_code / dest_code: e.g. 'AE' / 'DNK'.
-        results: list of (label, message) tuples — one per combination checked.
+        entries: list of (combo_dict, message) tuples — one per combination
+            checked. The combo dict (centre/category/sub_category) is what lets
+            the header show the category + sub-category, not just the centre.
         login_url: the portal's login URL, shown as a clickable link.
 
     Returns:
@@ -106,14 +130,13 @@ def slot_report(source_code: str, dest_code: str, results: list, login_url: str 
     prefix = f"{flag} " if flag else ""
 
     # Keep only combinations that actually have a slot date.
-    available = [(label, message) for label, message in results if _has_slot(message)]
+    available = [(combo, message) for combo, message in entries if _has_slot(message)]
     if not available:
         return ""  # nothing available -> caller sends no message
 
     lines = []
-    for label, message in available:
-        full_label = _label_with_country(label, dest_code)
-        lines.append(f"{prefix}{full_label}:")
+    for combo, message in available:
+        lines.append(f"{prefix}{_report_label(combo, dest_code)}:")
         # `message` may hold SEVERAL banner lines (one per applicant count) —
         # indent each so multi-slot combos read cleanly.
         for ln in message.splitlines():

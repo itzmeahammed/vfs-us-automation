@@ -242,10 +242,25 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
         try:
             slots = run_once_with_fresh_browser(source, dest, email, password, proxy,
                                                 keep_open=keep_open)
-            logging.info(f"Success on attempt {attempt}.")
-            account_health.record_success(email)  # healthy → clear any strikes
-            return _outcome(source, dest, "OK", attempt, slot_results=slots,
-                            account=account, proxy=proxy_label)
+            # The flow completed without raising, but "completed" is NOT the same
+            # as "succeeded": _outcome() promotes a run whose slot search hit
+            # errors (couldn't select a combo, etc.) to FAILED. Build the outcome
+            # first, then report HONESTLY — don't log 'Success' for a run that
+            # actually failed its slot check.
+            outcome = _outcome(source, dest, "OK", attempt, slot_results=slots,
+                               account=account, proxy=proxy_label)
+            # Reaching the dashboard and running the check means the account/IP
+            # are healthy, so clear strikes either way.
+            account_health.record_success(email)
+            if outcome["status"] == "OK":
+                logging.info(f"Success on attempt {attempt}.")
+            else:
+                logging.warning(
+                    f"Attempt {attempt} completed but the slot check had errors "
+                    f"({outcome.get('error')}) — reporting as {outcome['status']}, "
+                    "not success."
+                )
+            return outcome
         except (IpBlockedError, SignInDisabledError) as e:
             # Both mean "this IP isn't working here": a hard 403201 block, or
             # Cloudflare/Turnstile that wouldn't pass. Rotate to a DIFFERENT IP

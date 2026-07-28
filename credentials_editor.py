@@ -15,7 +15,8 @@ Run it, then edit in the browser and click Save:
 
 Each Save:
   * validates every enabled account (email + password required, routes known),
-  * writes a timestamped backup first (credentials.local.ini.bak-<time>),
+  * writes a single rolling backup first (credentials.local.ini.bak, overwritten
+    each save — no pile-up of timestamped files),
   * rewrites the file, renumbering cred1..N in the on-screen order (the bot
     rotates by ORDER, not by the number — labels are cosmetic).
 
@@ -31,11 +32,24 @@ import shutil
 import socketserver
 import subprocess
 import webbrowser
-from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CRED_FILE = os.path.join(HERE, "config", "credentials.local.ini")
 URLS_FILE = os.path.join(HERE, "config", "vfs_urls.ini")
+
+
+def _rolling_backup(path):
+    """Copy `path` to a SINGLE rolling '<path>.bak', overwritten on every save.
+
+    One backup per file (the previous version) instead of a fresh timestamped
+    file each save — so backups never pile up. Returns the backup path, or None
+    if there was nothing to back up. Raises OSError on copy failure.
+    """
+    if not os.path.isfile(path):
+        return None
+    backup = f"{path}.bak"
+    shutil.copy2(path, backup)
+    return backup
 PORT = 8765
 TASK_NAME = "VFS Slot Checker"   # the Windows scheduled task (see setup_task.ps1)
 
@@ -168,14 +182,10 @@ def save_credentials(accounts):
     if errors:
         return False, " ".join(errors)
 
-    backup = None
-    if os.path.isfile(CRED_FILE):
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup = f"{CRED_FILE}.bak-{stamp}"
-        try:
-            shutil.copy2(CRED_FILE, backup)
-        except OSError as e:
-            return False, f"Could not create backup: {e}"
+    try:
+        backup = _rolling_backup(CRED_FILE)
+    except OSError as e:
+        return False, f"Could not create backup: {e}"
 
     text = render_ini(accounts)
     tmp = CRED_FILE + ".tmp"
@@ -265,14 +275,10 @@ def save_routes(routes):
     if errors:
         return False, " ".join(errors)
 
-    backup = None
-    if os.path.isfile(URLS_FILE):
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup = f"{URLS_FILE}.bak-{stamp}"
-        try:
-            shutil.copy2(URLS_FILE, backup)
-        except OSError as e:
-            return False, f"Could not create backup: {e}"
+    try:
+        backup = _rolling_backup(URLS_FILE)
+    except OSError as e:
+        return False, f"Could not create backup: {e}"
 
     text = render_routes_ini(routes)
     tmp = URLS_FILE + ".tmp"

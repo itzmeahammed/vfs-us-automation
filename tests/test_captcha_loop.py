@@ -60,5 +60,55 @@ class TestCaptchaLoopCap(unittest.TestCase):
         self.assertFalse(result)
 
 
+class _DashPage:
+    """Minimal page whose URL is the dashboard but whose content presence and
+    captcha-dialog visibility are configurable, to exercise dashboard_content_ready."""
+
+    def __init__(self, url, has_button, captcha_up=False):
+        self.url = url
+        self._has_button = has_button
+        self._captcha_up = captcha_up
+
+    def locator(self, selector):
+        page = self
+
+        class _Loc:
+            def count(_self):
+                return 1 if page._has_button else 0
+
+        return _Loc()
+
+
+class TestDashboardVerification(unittest.TestCase):
+    def test_url_alone_is_not_reached(self):
+        # The bug: Cloudflare parks us on /dashboard with a blank body. URL-only
+        # used to report 'reached'; content readiness must reject it.
+        page = _DashPage("https://visa.vfsglobal.com/are/en/fra/dashboard",
+                         has_button=False)
+        with mock.patch.object(turnstile, "captcha_visible", return_value=False):
+            self.assertTrue(turnstile.dashboard_url_reached(page))
+            self.assertFalse(turnstile.dashboard_content_ready(page))
+
+    def test_url_plus_rendered_button_is_reached(self):
+        page = _DashPage("https://visa.vfsglobal.com/are/en/fra/dashboard",
+                         has_button=True)
+        with mock.patch.object(turnstile, "captcha_visible", return_value=False):
+            self.assertTrue(turnstile.dashboard_content_ready(page))
+
+    def test_captcha_still_up_is_not_reached(self):
+        # Button present but the 'Verify Captcha' dialog is still showing — the
+        # redirect hasn't truly settled, so this is NOT the dashboard yet.
+        page = _DashPage("https://visa.vfsglobal.com/are/en/fra/dashboard",
+                         has_button=True, captcha_up=True)
+        with mock.patch.object(turnstile, "captcha_visible", return_value=True):
+            self.assertFalse(turnstile.dashboard_content_ready(page))
+
+    def test_non_dashboard_url_is_not_reached(self):
+        page = _DashPage("https://visa.vfsglobal.com/are/en/fra/login",
+                         has_button=True)
+        self.assertFalse(turnstile.dashboard_url_reached(page))
+        self.assertFalse(turnstile.dashboard_content_ready(page))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -33,7 +33,9 @@ analytics_report.txt
 config/config.local.ini
 *.local.ini
 # Editor backups + temp writes (credentials backups contain real secrets) and
-# the standalone proxy tool's rotation state.
+# the standalone proxy tool's rotation state. Both the single rolling '<file>.bak'
+# and the old timestamped '<file>.bak-<time>' backups are covered.
+*.bak
 *.bak-*
 *.ini.tmp
 .proxy_run.state

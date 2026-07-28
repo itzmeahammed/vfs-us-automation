@@ -222,7 +222,10 @@ def _do_dismiss_captcha(page) -> None:
         # Did the dialog go away?
         try:
             dialog.first.wait_for(state="hidden", timeout=12000)
-            logging.debug("Captcha dialog cleared.")
+            logging.info(
+                f"Cloudflare 'Verify Captcha' dialog SOLVED (cleared on Submit "
+                f"attempt {attempt})."
+            )
             diagnostics.take_screenshot(page, "captcha_handled")
             return
         except Exception:
@@ -234,7 +237,8 @@ def _do_dismiss_captcha(page) -> None:
             )
 
     logging.warning(
-        "Captcha dialog still visible after retries — it may need a manual solve."
+        "Cloudflare 'Verify Captcha' dialog NOT solved — still visible after all "
+        "Submit retries; it may need a manual solve."
     )
     diagnostics.take_screenshot(page, "ERROR_captcha_persist")
 
@@ -315,23 +319,76 @@ def wait_for_loader(page, timeout: int = 30000) -> None:
 # ===== Post Sign-In redirect =================================================
 
 
+def dashboard_url_reached(page) -> bool:
+    """True when the browser URL is actually the VFS dashboard.
+
+    The check is deliberately strict — it matches '/dashboard' as a path
+    segment, not merely anywhere in the string — so a stray query/fragment
+    can't fake it. This is the *authoritative* gate: we only treat the
+    dashboard as reached once the URL says so.
+    """
+    try:
+        url = (page.url or "").lower()
+    except Exception:
+        return False
+    return "/dashboard" in url
+
+
+def dashboard_content_ready(page) -> bool:
+    """True once the dashboard has actually RENDERED its interactive content,
+    not just navigated to the /dashboard URL.
+
+    Cloudflare frequently leaves us parked on the dashboard URL with a blank /
+    still-loading body (a Turnstile challenge quietly running underneath). In
+    that state the old URL-only check reported 'reached', the flow marched on,
+    and every downstream dropdown timed out. We require, in addition to the URL:
+      * NO 'Verify Captcha' dialog still up (the redirect hasn't truly settled),
+      * the dashboard's own 'Start New Booking' button present in the DOM
+        (the one thing the very next step clicks — if it isn't there, the
+        dashboard hasn't rendered).
+    """
+    if not dashboard_url_reached(page):
+        return False
+    try:
+        # A captcha dialog still showing means we're mid-challenge, not done.
+        if captcha_visible(page):
+            return False
+        # The dashboard's primary action. Presence in the DOM (not necessarily
+        # on-screen — a loader overlay may still cover it) is enough to prove
+        # the dashboard app rendered rather than a blank Cloudflare shell.
+        return page.locator("button:has-text('Start New Booking')").count() > 0
+    except Exception:
+        return False
+
+
 def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
     """
-    Waits for the dashboard URL while continuously dismissing the Cloudflare
+    Waits for the dashboard while continuously dismissing the Cloudflare
     'Verify Captcha' dialog, which can pop up at any time during the post-
     Sign-In redirect and blocks it until its Submit is clicked.
 
-    Returns True as soon as the URL reaches /dashboard, else False on timeout.
+    Returns True only once the dashboard is BOTH at the /dashboard URL AND has
+    rendered its content (see dashboard_content_ready) — not on the URL alone,
+    which Cloudflare can reach with a blank body. Returns False on timeout.
     """
     step_ms = 1000
     waited = 0
     captcha_cycles = 0
+    url_logged = False
     max_cycles = settings().retry.dashboard_captcha_cycles
     while waited < timeout_ms:
-        # Already there?
+        # Already there — URL AND content both ready?
         try:
-            if "/dashboard" in (page.url or ""):
-                return True
+            if dashboard_url_reached(page):
+                if not url_logged:
+                    logging.info(
+                        f"Dashboard URL reached ({page.url}) — verifying the page "
+                        "actually rendered before proceeding."
+                    )
+                    url_logged = True
+                if dashboard_content_ready(page):
+                    logging.info("Dashboard content rendered — verified reached.")
+                    return True
         except Exception:
             pass
         # Stop early if VFS served its 'Permission Issues (403203)' geo-block
@@ -372,8 +429,10 @@ def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
         waited += step_ms
         if waited % 20000 == 0:
             logging.debug(f"Waiting for dashboard (handling captcha)... ({waited/1000:.0f}s)")
-    # Final check.
-    try:
-        return "/dashboard" in (page.url or "")
-    except Exception:
-        return False
+    # Final check — same strict gate: URL alone is not enough.
+    if dashboard_url_reached(page) and not dashboard_content_ready(page):
+        logging.warning(
+            "Timed out on the /dashboard URL but its content never rendered "
+            "(Cloudflare shell / blank body) — treating as NOT reached."
+        )
+    return dashboard_content_ready(page)
