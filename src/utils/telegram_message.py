@@ -22,6 +22,7 @@ DESTINATION_FLAGS = {
     "FRA": "🇫🇷", "FR": "🇫🇷",       # France
     "GRC": "🇬🇷", "GR": "🇬🇷",       # Greece
     "DEU": "🇩🇪", "DE": "🇩🇪",       # Germany
+    "NOR": "🇳🇴", "NO": "🇳🇴",       # Norway
 }
 
 # Destination code -> friendly country name, inserted into each label so the
@@ -38,6 +39,7 @@ DESTINATION_NAMES = {
     "FRA": "France", "FR": "France",
     "GRC": "Greece", "GR": "Greece",
     "DEU": "Germany", "DE": "Germany",
+    "NOR": "Norway", "NO": "Norway",
 }
 
 
