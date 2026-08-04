@@ -668,6 +668,15 @@ class VfsBot(ABC):
                 "Login page: email or password is incorrect — stopping this run "
                 "for this account (no retries)."
             )
+        # 'Session Expired or Invalid' (/page-not-found) right after Sign In: the
+        # dashboard will NEVER load from here, so fail fast (retryable) instead of
+        # waiting out the ~90s dashboard poll. A fresh browser next attempt can
+        # re-establish the session (stale cookies / cf_clearance after an IP change).
+        if block_detection.is_session_expired(page):
+            raise DashboardNotReachedError(
+                f"Did not reach dashboard — landed on: "
+                f"{block_detection.landing_status(page)} (URL: {page.url})."
+            )
 
     def _reload_login_form(self, page) -> None:
         """Returns to a fresh login form on the SAME IP so Turnstile can be

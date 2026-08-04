@@ -142,17 +142,29 @@ def build_report(path: str) -> str:
     snap = account_health.snapshot()
     now = time.time()
     disabled = [e for e, r in snap.items() if r.get("disabled")]
-    cooling = [(e, r) for e, r in snap.items()
-               if not r.get("disabled") and r.get("cooldown_until", 0) > now]
+    # Cooldowns are per-route now: one line per (account, route) still cooling,
+    # plus any legacy account-wide cooldown. Each is (label, until_ts, reason).
+    cooling = []
+    for e, r in snap.items():
+        if r.get("disabled"):
+            continue
+        if r.get("cooldown_until", 0) > now:            # legacy global cooldown
+            cooling.append((f"{credentials.mask(e)} [all]", r["cooldown_until"],
+                            r.get("last_reason", "")))
+        for rt, rr in r.get("routes", {}).items():
+            if rr.get("cooldown_until", 0) > now:
+                cooling.append((f"{credentials.mask(e)} [{rt}]", rr["cooldown_until"],
+                                rr.get("last_reason", "")))
     if disabled:
         out.append("  [DISABLED — needs manual clear]:")
         for e in disabled:
-            out.append(f"     {credentials.mask(e)}  ({snap[e].get('last_reason')})")
+            reason = snap[e].get("disabled_reason") or snap[e].get("last_reason", "")
+            out.append(f"     {credentials.mask(e)}  ({reason})")
     if cooling:
         out.append("  [COOLDOWN]:")
-        for e, r in sorted(cooling, key=lambda x: x[1]["cooldown_until"]):
-            until = datetime.fromtimestamp(r["cooldown_until"]).strftime("%m-%d %H:%M")
-            out.append(f"     {credentials.mask(e):24} until {until}  ({r.get('last_reason')})")
+        for label, until_ts, reason in sorted(cooling, key=lambda x: x[1]):
+            until = datetime.fromtimestamp(until_ts).strftime("%m-%d %H:%M")
+            out.append(f"     {label:32} until {until}  ({reason})")
     if not disabled and not cooling:
         out.append("  all accounts healthy.")
 

@@ -196,6 +196,23 @@ def combo_label(combo: dict) -> str:
     )
 
 
+def result_label(combo: dict) -> str:
+    """Label stored in a route's results (feeds the run summary, the waitlist
+    notice and the combo-error lines).
+
+    Unlike `combo_label`, this always joins centre / category / sub-category with
+    ' - ' and IGNORES the route file's explicit "label" — that label is usually
+    just the centre (e.g. 'Netherlands Visa Application Center-Abu Dhabi'), which
+    drops the category/sub-category. Those reports recover the visa type by
+    splitting on ' - ', so the structured fields must be present here or the
+    summary shows the centre name instead of the visa type. Falls back to
+    `combo_label` only when no structured fields exist."""
+    parts = [(combo.get(k) or "").strip()
+             for k in ("centre", "category", "sub_category")]
+    parts = [p for p in parts if p]
+    return " - ".join(parts) if parts else combo_label(combo)
+
+
 def _select_combo(page, combo: dict, prev: dict) -> tuple:
     """Selects one combination's dropdowns. Returns (ok, fail_detail)."""
     for control, key, value in cascade_steps(combo, prev):
@@ -291,7 +308,7 @@ def run_slot_check(page, schema: dict, source_country_code: str,
                            else "No slot message shown (no availability?).")
 
         logging.info(f"  -> {message}")
-        results.append((label, message))
+        results.append((result_label(combo), message))
         report_entries.append((combo, message))
         diagnostics.take_screenshot(page, f"slot_{len(results)}")
         page.wait_for_timeout(400)
@@ -301,7 +318,7 @@ def run_slot_check(page, schema: dict, source_country_code: str,
     # the slot report and the slot count.
     for combo in all_combos:
         if combo.get("disabled"):
-            results.append((combo_label(combo), "DISABLED"))
+            results.append((result_label(combo), "DISABLED"))
 
     # Send the per-route slot report to the success chat. It's built from the
     # structured (combo, message) entries so it can show the category and

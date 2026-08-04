@@ -252,7 +252,7 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
                                account=account, proxy=proxy_label)
             # Reaching the dashboard and running the check means the account/IP
             # are healthy, so clear strikes either way.
-            account_health.record_success(email)
+            account_health.record_success(email, route)
             if outcome["status"] == "OK":
                 logging.info(f"Success on attempt {attempt}.")
             else:
@@ -325,7 +325,7 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             # it (and the block clears on its own). Other routes rotate onward.
             hrs = account_health.hard_cooldown_hours()
             logging.error(f"Access restricted for {source}-{dest} [{account}]: {e}")
-            account_health.bench(email, hrs, "restricted-429001")
+            account_health.bench(email, route, hrs, "restricted-429001")
             _alert_failure(
                 source, dest,
                 f"Access restricted (429001): {e}\nAccount {account} benched {hrs}h.",
@@ -337,7 +337,7 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             # 429202: bench this account for the hard cooldown (~its reset window).
             hrs = account_health.hard_cooldown_hours()
             logging.error(f"Account locked for {source}-{dest} [{account}]: {e}")
-            account_health.bench(email, hrs, "locked-429202")
+            account_health.bench(email, route, hrs, "locked-429202")
             _alert_failure(
                 source, dest,
                 f"Account locked (429202): {e}\nAccount {account} benched {hrs}h.",
@@ -360,7 +360,7 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             # WITHOUT an attempt 2.
             logging.error(f"{route}: OTP verification failed [{account}] — not "
                           f"retrying (no attempt 2). {e}")
-            benched = account_health.record_failure(email, f"OtpVerificationError: {e}")
+            benched = account_health.record_failure(email, route, f"OtpVerificationError: {e}")
             note = (f"\nAccount {account} benched {account_health.soft_cooldown_hours()}h "
                     "(too many consecutive failures).") if benched else ""
             _alert_failure(source, dest, f"OTP verification failed: {e}{note}",
@@ -393,7 +393,7 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
     # All attempts stuck/failed: count a strike; the breaker benches the account
     # after enough consecutive strikes so we stop hammering it into a block.
     logging.error(f"All {max_attempts} attempts failed. Last error: {last_error}")
-    benched = account_health.record_failure(email, last_error or "stuck")
+    benched = account_health.record_failure(email, route, last_error or "stuck")
     note = (f"\nAccount {account} benched {account_health.soft_cooldown_hours()}h "
             "(too many consecutive failures).") if benched else ""
     _alert_failure(source, dest, (last_error or "unknown error") + note,

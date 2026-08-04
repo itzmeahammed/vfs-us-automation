@@ -168,12 +168,13 @@ by selection) to protect them from a VFS ban. Two kinds:
 # See every benched/disabled account, why, and until when:
 & .venv\Scripts\python.exe -m src.utils.account_health
 
-# Manually bench an account (e.g. you know VFS restricted it). Hours optional
-# (defaults to hard_cooldown_hours):
-& .venv\Scripts\python.exe -m src.utils.account_health bench <email@travnook.com> 24
+# Manually bench an account ON ONE ROUTE (e.g. you know VFS restricted it there).
+# Cooldowns are per-route now; hours optional (defaults to hard_cooldown_hours):
+& .venv\Scripts\python.exe -m src.utils.account_health bench <email@travnook.com> AE-NOR 24
 
-# After fixing an account (e.g. corrected its password), flag it healthy:
+# After fixing an account, flag it healthy — all routes, or just one:
 & .venv\Scripts\python.exe -m src.utils.account_health clear <email@travnook.com>
+& .venv\Scripts\python.exe -m src.utils.account_health clear <email@travnook.com> AE-NOR
 
 # Clear ALL health records (re-enable everything):
 & .venv\Scripts\python.exe -m src.utils.account_health clear-all

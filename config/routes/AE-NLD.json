@@ -1,0 +1,20 @@
+{
+  "description": "UAE -> Netherlands. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
+  "mode": "slot-check",
+  "slot_check": {
+    "combinations": [
+      { "label": "Netherlands Visa Application Center-Abu Dhabi", "disabled": true,
+        "centre": "Netherlands Visa Application Center-Abu Dhabi", "category": "Business Visa", "sub_category": "Business Purpose" },
+      { "label": "Netherlands Visa Application Center-Abu Dhabi",
+        "centre": "Netherlands Visa Application Center-Abu Dhabi", "category": "Schengen Visa", "sub_category": "Schengen Short Stay" },
+      { "label": "Netherlands Visa Application Center-Abu Dhabi",
+        "centre": "Netherlands Visa Application Center-Abu Dhabi", "category": "Tourist Visa", "sub_category": "Tourist Purpose" },
+      
+      { "label": "Netherlands Visa application center- Dubai", "disabled": true,
+        "centre": "Netherlands Visa application center- Dubai", "category": "Business Visa", "sub_category": "Business Purpose" },
+      { "label": "Netherlands Visa application center- Dubai",
+        "centre": "Netherlands Visa application center- Dubai", "category": "Tourist Visa", "sub_category": "Tourist Purpose" }
+    ]
+  }
+}
+

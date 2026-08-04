@@ -432,6 +432,17 @@ def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
         # Stop early on a wrong-credentials banner too (no point waiting 90s).
         if block_detection.is_invalid_credentials(page):
             return False
+        # Stop early on VFS's 'Session Expired or Invalid' (/page-not-found) page.
+        # The dashboard will NEVER load from here (stale cookies / cf_clearance,
+        # often after an egress-IP change), so bail on the first poll instead of
+        # grinding the full ~90s timeout. The caller raises DashboardNotReachedError
+        # (retryable) — a fresh browser on the next attempt can re-establish it.
+        if block_detection.is_session_expired(page):
+            logging.warning(
+                "VFS 'Session Expired or Invalid' page after Sign In — the "
+                "dashboard cannot load from here; failing fast (no 90s wait)."
+            )
+            return False
         # Clear the captcha dialog if it's blocking the redirect. If Cloudflare
         # keeps RE-PRESENTING it after each solve (a re-challenge loop), stop:
         # every re-solve re-downloads the challenge (megabytes) and never

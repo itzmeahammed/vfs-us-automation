@@ -122,7 +122,7 @@ def _available(pool: list, route: str) -> list:
     through — a struggling/blocked account is skipped until its cooldown clears.
     """
     from src.utils import account_health  # lazy import to avoid a cycle
-    return [c for c in _eligible(pool, route) if not account_health.is_benched(c[0])]
+    return [c for c in _eligible(pool, route) if not account_health.is_benched(c[0], route)]
 
 
 def password_for(email: str) -> str:
@@ -211,7 +211,7 @@ def get_credential(route: str = None, dt=None) -> tuple:
     email = get_config_value("vfs-credential", "email")
     pwd = get_config_value("vfs-credential", "password")
     from src.utils import account_health
-    if email and account_health.is_benched(email):
+    if email and account_health.is_benched(email, route):
         logging.warning(f"Single account {_mask(email)} is in cooldown — skipping this run.")
         return None, None
     logging.info(f"Using single [vfs-credential] account: {_mask(email or '')}")

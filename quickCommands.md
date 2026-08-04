@@ -118,11 +118,14 @@ Shows every account's state: ok / cooldown until <time> / DISABLED.
 ## Account health — clear one account (flag healthy)
 
 ```powershell
+# All routes:
 & .venv\Scripts\python.exe -m src.utils.account_health clear osama@travnook.com
+# Just one route:
+& .venv\Scripts\python.exe -m src.utils.account_health clear osama@travnook.com AE-NOR
 ```
 
-Removes an account's cooldown/disable so it's eligible again. Use this after
-fixing a 429002-DISABLED account.
+Removes an account's cooldown (a specific route, or all) / disable so it's
+eligible again. Use the all-routes form after fixing a 429002-DISABLED account.
 
 ---
 
@@ -139,7 +142,8 @@ Wipes every health record (all accounts back to healthy). Use with care.
 ## Account health — manually bench an account
 
 ```powershell
-& .venv\Scripts\python.exe -m src.utils.account_health bench osama@travnook.com 12
+# Bench on ONE route (cooldowns are per-route); hours optional:
+& .venv\Scripts\python.exe -m src.utils.account_health bench osama@travnook.com AE-NOR 12
 ```
 
 Benches the account for N hours (omit the number to use `hard_cooldown_hours`).
