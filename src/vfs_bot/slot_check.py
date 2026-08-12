@@ -23,25 +23,73 @@ from src.vfs_bot.errors import SlotCheckError
 # ===== Angular Material dropdown selection ==================================
 
 
+def _visible_option_texts(page, limit: int = 40) -> list:
+    """The visible text of the options currently in an open mat-select panel.
+
+    Used only for diagnostics: when the target option can't be selected, logging
+    what WAS on offer turns a bare 'Timeout' into an actionable message (e.g. the
+    route JSON says 'Centre - Dubai' but the portal lists 'Centre, Dubai')."""
+    texts = []
+    try:
+        opts = page.get_by_role("option")
+        for i in range(min(opts.count(), limit)):
+            try:
+                t = opts.nth(i).inner_text().strip()
+            except Exception:
+                t = ""
+            if t:
+                texts.append(t)
+    except Exception:
+        pass
+    return texts
+
+
+def _click_option(page, value: str, option_timeout_ms: int) -> None:
+    """Find and click the option matching `value`; raises if it can't.
+
+    Match by accessible name (substring) first, then fall back to a text-content
+    substring for options whose a11y name differs. The click itself escalates
+    normal -> force -> JS dispatch so a lingering overlay/animation intercepting
+    the pointer can't fail an otherwise-correct selection (the field's usual
+    'Timeout 10000ms' on click)."""
+    option = page.get_by_role("option", name=value, exact=False).first
+    try:
+        option.wait_for(state="visible", timeout=min(option_timeout_ms, 6000))
+    except Exception:
+        # a11y-name match failed — try a raw text-substring match instead.
+        option = page.locator("mat-option").filter(has_text=value).first
+        option.wait_for(state="visible", timeout=6000)
+    option.scroll_into_view_if_needed(timeout=5000)
+    try:
+        option.click(timeout=8000)
+    except Exception:
+        try:
+            option.click(timeout=5000, force=True)   # ignore pointer interception
+        except Exception:
+            option.evaluate("el => el.click()")      # last resort: dispatch in-DOM
+
+
 def select_mat_dropdown(page, control_name: str, value: str,
                          attempts: int = 3, option_timeout_ms: int = 20000) -> bool:
     """
     Selects an option in an Angular Material dropdown (`mat-select`).
 
-    Opens the dropdown identified by its `formcontrolname`, WAITS for the
-    options to actually load (they arrive async, often behind a spinner), then
-    clicks the option whose visible text contains `value` (case-insensitive
-    substring).
+    Opens the dropdown identified by its `formcontrolname`, WAITS for the panel to
+    actually POPULATE (options arrive async, often behind a spinner and only after
+    the parent dropdown's API call), then clicks the option whose text contains
+    `value` (case-insensitive substring), escalating the click if an overlay
+    intercepts it.
 
-    Robust to slow option loading: instead of a fixed 1s wait it polls up to
-    `option_timeout_ms` for THIS option to become visible, and retries the
-    whole open→select a few times. On any failure it presses Escape to close a
-    half-open overlay first — otherwise a stuck overlay would intercept clicks
-    and break the NEXT dropdown too.
+    The whole open→select is retried a few times; on any failure it presses Escape
+    to close a half-open overlay first (a stuck overlay would intercept clicks and
+    break the NEXT dropdown too). If every attempt fails, the options that WERE on
+    offer are logged so a config/text mismatch is diagnosable instead of a bare
+    timeout.
 
     Returns:
         bool: True if the option was selected, False otherwise.
     """
+    last_options = []
     for attempt in range(1, attempts + 1):
         try:
             turnstile.wait_for_loader(page)  # lists load behind a full-screen spinner
@@ -51,15 +99,20 @@ def select_mat_dropdown(page, control_name: str, value: str,
             trigger.scroll_into_view_if_needed(timeout=10000)
             trigger.click(timeout=10000)
 
-            # The overlay opens, then its options load in async. Clear any
-            # spinner, then wait for THIS option to actually render before
-            # clicking it (the old fixed 1s wait was too short on slow loads).
+            # The overlay opens, then its options load async. Clear any spinner,
+            # then wait for the panel to POPULATE (any option visible) before
+            # hunting for the target — racing the still-empty panel is the usual
+            # cause of the per-option 'Timeout' seen in the field.
             page.wait_for_timeout(200)
             turnstile.wait_for_loader(page)
-            option = page.get_by_role("option", name=value, exact=False).first
-            option.wait_for(state="visible", timeout=option_timeout_ms)
-            option.scroll_into_view_if_needed(timeout=5000)
-            option.click(timeout=10000)
+            try:
+                page.get_by_role("option").first.wait_for(
+                    state="visible", timeout=option_timeout_ms)
+            except Exception as e:
+                raise RuntimeError(
+                    "option list never populated (panel stayed empty)") from e
+
+            _click_option(page, value, option_timeout_ms)
 
             logging.debug(
                 f"Selected '{value}' (dropdown: '{control_name}')"
@@ -69,6 +122,12 @@ def select_mat_dropdown(page, control_name: str, value: str,
             turnstile.wait_for_loader(page)  # let the dependent dropdown reload
             return True
         except Exception as e:
+            # Capture what was on offer (before Escape closes the panel) so a
+            # mismatch between the route JSON and the portal's real labels shows
+            # up in the log instead of a bare timeout.
+            snapshot = _visible_option_texts(page)
+            if snapshot:
+                last_options = snapshot
             logging.warning(
                 f"Attempt {attempt}/{attempts}: could not select '{value}' for "
                 f"'{control_name}': {e}"
@@ -83,6 +142,12 @@ def select_mat_dropdown(page, control_name: str, value: str,
                 turnstile.wait_for_loader(page)
                 page.wait_for_timeout(1500)
 
+    if last_options:
+        logging.warning(
+            f"Could not select '{value}' for '{control_name}'. Options actually "
+            f"offered were: {last_options}. Check the route JSON value is a "
+            "substring of one of these (case-insensitive)."
+        )
     diagnostics.take_screenshot(page, "ERROR_dropdown")
     return False
 

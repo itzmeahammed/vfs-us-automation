@@ -61,6 +61,39 @@ def _max_attempts() -> int:
     return max(1, settings().account_safety.max_attempts)
 
 
+# Failure modes that are the INFRASTRUCTURE's fault (proxy exit / network /
+# Cloudflare / CDP / geo), NOT the account's. These must never count as an
+# account strike — otherwise a network blip or a flaky IP benches a perfectly
+# good account for hours. Only genuine auth/OTP/access errors (handled in their
+# own except-branches: InvalidCredentials, AccountBlocked, AccessRestricted,
+# AccountLocked, OtpVerification) strike an account.
+_INFRA_EXC_NAMES = (
+    "CdpConnectError", "LoginFormNotReadyError", "SignInDisabledError",
+    "TurnstileRejectedError", "GeoBlockedError", "IpBlockedError",
+    "ConnectionResetError", "ConnectionRefusedError", "ConnectionAbortedError",
+    "ConnectionError", "TimeoutError",
+)
+_INFRA_MARKERS = (
+    "winerror 10054", "winerror 10053", "winerror 10060", "winerror 10061",
+    "winerror 10065", "connection reset", "connection aborted",
+    "connection refused", "actively refused", "remotedisconnected",
+    "connectionreset", "connectionabort", "broken pipe", "chrome exited early",
+    "cdp endpoint never came up", "err_proxy", "err_tunnel", "err_empty_response",
+    "err_connection", "err_timed_out", "err_address_unreachable", "net::err",
+    "proxy", "forwarder", "geo-block", "403203",
+)
+
+
+def _is_infra_error(exc) -> bool:
+    """True if `exc` is a network/proxy/Cloudflare/CDP failure (infra), not the
+    account's fault — so the caller can fail the run WITHOUT striking the account."""
+    name = type(exc).__name__ if isinstance(exc, BaseException) else ""
+    if name in _INFRA_EXC_NAMES:
+        return True
+    text = f"{name}: {exc}".lower()
+    return any(m in text for m in _INFRA_MARKERS)
+
+
 def _vfs_url(source: str, dest: str) -> str:
     return get_config_value("vfs-url", f"{source.upper()}-{dest.upper()}")
 
@@ -237,6 +270,7 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
     max_attempts = 1 if keep_open else _max_attempts()
     MAX_IP_TRIES = 1 if keep_open else settings().retry.max_ip_tries
     last_error = None
+    last_error_infra = False  # was the last failure infra/network (no account strike)?
     ip_blocked = False
     for attempt in range(1, max_attempts + 1):
         logging.info(f"=== Attempt {attempt}/{max_attempts} (ip {proxy_label}) ===")
@@ -268,6 +302,9 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             # instead of hammering (and re-downloading) the same one, and do NOT
             # penalise the account — it's the IP, not the user.
             is_block = isinstance(e, IpBlockedError)
+            # Both are IP/infra, never the account's fault — so if this ends up
+            # being the run's final failure, it must not strike the account.
+            last_error_infra = True
             last_error = (f"IP blocked (403201) on {proxy_label}" if is_block
                           else f"Cloudflare/Turnstile not passed on {proxy_label}")
             newp = None
@@ -369,9 +406,11 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
                             account=account, proxy=proxy_label)
         except RetryableError as e:
             last_error = f"{type(e).__name__}: {e}"
+            last_error_infra = _is_infra_error(e)
             logging.warning(f"Attempt {attempt} failed (retryable): {last_error}")
         except Exception as e:
             last_error = f"{type(e).__name__}: {e}"
+            last_error_infra = _is_infra_error(e)
             logging.exception(f"Attempt {attempt} failed (unexpected): {last_error}")
 
         if attempt < max_attempts:
@@ -390,8 +429,26 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
         return _outcome(source, dest, "FAILED", n, error=msg,
                         account=account, proxy=proxy_label)
 
-    # All attempts stuck/failed: count a strike; the breaker benches the account
-    # after enough consecutive strikes so we stop hammering it into a block.
+    # Infra/network failure (proxy exit died, Cloudflare/Turnstile, CDP, geo):
+    # NOT the account's fault, so fail the run WITHOUT striking the account — a
+    # transient blip must not bench a good account for hours.
+    if last_error_infra:
+        logging.error(
+            f"All {max_attempts} attempts failed (infrastructure/network — account "
+            f"NOT struck). Last error: {last_error}"
+        )
+        _alert_failure(
+            source, dest,
+            (last_error or "unknown error")
+            + "\n(Infrastructure/network issue — account NOT penalised.)",
+            attempts=max_attempts, account=account,
+        )
+        return _outcome(source, dest, "FAILED", max_attempts,
+                        error=(last_error or "unknown error"), account=account,
+                        proxy=proxy_label)
+
+    # Genuinely account-attributable stuck run: count a strike; the breaker
+    # benches the account after enough consecutive strikes so we stop hammering it.
     logging.error(f"All {max_attempts} attempts failed. Last error: {last_error}")
     benched = account_health.record_failure(email, route, last_error or "stuck")
     note = (f"\nAccount {account} benched {account_health.soft_cooldown_hours()}h "

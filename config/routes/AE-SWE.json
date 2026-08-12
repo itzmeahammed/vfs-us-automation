@@ -1,0 +1,16 @@
+{
+  "description": "UAE -> Sweden. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
+  "mode": "slot-check",
+  "slot_check": {
+    "combinations": [
+      { "label": "Sweden Visa Application Centre, Abu Dhabi", "disabled": true,
+        "centre": "Sweden Visa Application Centre, Abu Dhabi", "category": "Short Stay", "sub_category": "Business" },
+      { "label": "Sweden Visa Application Centre, Abu Dhabi",
+        "centre": "Sweden Visa Application Centre, Abu Dhabi", "category": "Short Stay", "sub_category": "ShortStay" },
+        { "label": "Sweden Visa Application Centre, Abu Dhabi",
+        "centre": "Sweden Visa Application Centre, Abu Dhabi", "category": "Short Stay", "sub_category": "Tourist" },
+      { "label": "Sweden Visa Application Centre, Dubai",
+        "centre": "Sweden Visa Application Centre, Dubai", "category": "Short Stay", "sub_category": "ShortStay" }
+    ]
+  }
+}
