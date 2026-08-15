@@ -111,17 +111,26 @@ def wait_for_signin_enabled(page, sign_in, timeout_ms: int = 60000) -> bool:
     return False
 
 
-def click_turnstile_by_coords(page) -> bool:
-    """
-    Attempts to click the Turnstile 'Verify you are human' checkbox by
-    coordinates. The challenge iframe is cross-origin-isolated so its
-    checkbox can't be targeted as an element — but a real mouse click at the
-    widget's on-screen position can still land it.
+def _turnstile_widget_box(page, scope: str = ""):
+    """On-screen box {x,y,w,h} of the VISIBLE Turnstile widget, or None.
 
-    We anchor on the `cf-turnstile-response` token input (always present),
-    find the nearest sized ancestor (the visible widget), and click near its
-    left edge, vertically centred (where the checkbox renders).
-    """
+    Tries, in order: the Cloudflare challenge iframe (its element box IS the
+    real widget, readable even though its content is cross-origin), then the
+    `.cf-turnstile` container, then — as a legacy fallback — the hidden
+    `cf-turnstile-response` input's nearest sized ancestor. `scope` restricts the
+    search to a container (e.g. 'app-cloudflare-dialog ' for the captcha dialog)."""
+    for sel in (f"{scope}iframe[src*='challenges.cloudflare.com']",
+                f"{scope}.cf-turnstile"):
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0 and loc.is_visible():
+                bb = loc.bounding_box()
+                if bb and bb["width"] > 20 and bb["height"] > 20:
+                    return {"x": bb["x"], "y": bb["y"],
+                            "w": bb["width"], "h": bb["height"]}
+        except Exception:
+            continue
+    # Legacy fallback: walk up from the hidden response input to a sized ancestor.
     try:
         box = page.evaluate(
             """() => {
@@ -138,18 +147,66 @@ def click_turnstile_by_coords(page) -> bool:
                 return null;
             }"""
         )
-        if not box:
-            logging.debug("Turnstile widget box not found; can't coord-click.")
-            return False
-        x = box["x"] + 30      # checkbox is near the left edge
-        y = box["y"] + box["h"] / 2
-        logging.debug(f"Clicking Turnstile checkbox by coordinates ({x:.0f}, {y:.0f}).")
+        if box:
+            return box
+    except Exception:
+        pass
+    return None
+
+
+def click_turnstile_by_coords(page, scope: str = "") -> bool:
+    """
+    Click the Turnstile 'Verify you are human' checkbox by coordinates. The
+    challenge iframe is cross-origin-isolated so its checkbox can't be targeted
+    as an element — but a real mouse click at the widget's on-screen position
+    lands it. We locate the visible widget (iframe > .cf-turnstile > hidden-input
+    ancestor) and click near its left edge, vertically centred (the checkbox).
+
+    `scope` restricts the search to a container so the login widget and the
+    post-Sign-In dialog widget aren't confused (e.g. 'app-cloudflare-dialog ').
+
+    Logs at INFO — this only runs when the challenge did NOT auto-pass, so the
+    file records exactly when the bot fell back to clicking the checkbox.
+    """
+    box = _turnstile_widget_box(page, scope)
+    if not box:
+        logging.debug("Turnstile widget box not found; can't coord-click.")
+        return False
+    x = box["x"] + 30      # checkbox is near the left edge
+    y = box["y"] + box["h"] / 2
+    where = "captcha dialog" if scope else "login page"
+    logging.info(
+        f"Turnstile did not auto-pass ({where}) — clicking the 'Verify you are "
+        f"human' checkbox by coordinates ({x:.0f}, {y:.0f})."
+    )
+    try:
         page.mouse.move(x, y)
         page.wait_for_timeout(300)
         page.mouse.click(x, y)
         return True
     except Exception as e:
         logging.warning(f"Coordinate-click of Turnstile failed: {e}")
+        return False
+
+
+def _dialog_turnstile_solved(page, timeout_ms: int = 6000) -> bool:
+    """True once the captcha DIALOG's own Turnstile token is populated.
+
+    Scoped to `app-cloudflare-dialog` so a solved LOGIN-page token isn't mistaken
+    for the dialog's (they share the input name). If the dialog is already gone,
+    there's nothing to wait on — treated as solved."""
+    try:
+        page.wait_for_function(
+            """() => {
+                const d = document.querySelector('app-cloudflare-dialog');
+                if (!d) return true;
+                const el = d.querySelector('input[name="cf-turnstile-response"]');
+                return !!(el && el.value && el.value.length > 0);
+            }""",
+            timeout=timeout_ms,
+        )
+        return True
+    except Exception:
         return False
 
 
@@ -224,7 +281,18 @@ def _do_dismiss_captcha(page) -> bool:
     logging.info("Cloudflare 'Verify Captcha' dialog detected — handling it.")
 
     for attempt in range(1, 4):  # up to 3 Submit cycles
-        wait_for_turnstile_token(page)
+        # Wait briefly for the dialog's Turnstile to auto-solve; if it doesn't,
+        # click its checkbox — a 'managed' challenge won't populate its token (so
+        # Submit does nothing) until it's actually clicked. Scoped to the dialog
+        # so we target ITS widget, not the already-solved login-page one.
+        if not _dialog_turnstile_solved(page, timeout_ms=6000):
+            if click_turnstile_by_coords(page, scope="app-cloudflare-dialog "):
+                solved = _dialog_turnstile_solved(page, timeout_ms=8000)
+                logging.info(
+                    "Captcha dialog: Turnstile "
+                    + ("passed after checkbox click." if solved
+                       else "still not passed after checkbox click — submitting anyway.")
+                )
         try:
             submit = dialog.get_by_role("button", name="Submit").first
             try:

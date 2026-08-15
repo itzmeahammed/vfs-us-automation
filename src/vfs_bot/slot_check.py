@@ -23,6 +23,20 @@ from src.vfs_bot.errors import SlotCheckError
 # ===== Angular Material dropdown selection ==================================
 
 
+def _loader_stuck(page) -> bool:
+    """True if VFS's full-screen ngx-ui-loader spinner is currently up.
+
+    When a backend request hangs, this grey overlay stays visible and intercepts
+    every click (the whole page is dead until it clears). Detecting it lets the
+    caller stop grinding long click-timeouts and instead reload to recover."""
+    try:
+        return page.locator(
+            "ngx-ui-loader .ngx-overlay.loading-foreground"
+        ).is_visible()
+    except Exception:
+        return False
+
+
 def _visible_option_texts(page, limit: int = 40) -> list:
     """The visible text of the options currently in an open mat-select panel.
 
@@ -93,11 +107,20 @@ def select_mat_dropdown(page, control_name: str, value: str,
     for attempt in range(1, attempts + 1):
         try:
             turnstile.wait_for_loader(page)  # lists load behind a full-screen spinner
+            # If the spinner is STILL up after the wait, a backend request is hung.
+            # Don't burn a full option_timeout_ms waiting for options a stalled
+            # backend won't deliver — bail quickly so the caller can reload & recover.
+            stuck = _loader_stuck(page)
             trigger = page.locator(
                 f"mat-select[formcontrolname='{control_name}']"
             ).first
             trigger.scroll_into_view_if_needed(timeout=10000)
-            trigger.click(timeout=10000)
+            # Open the panel; if the loading overlay intercepts the normal click,
+            # force it (a spurious/stale overlay shouldn't block an enabled control).
+            try:
+                trigger.click(timeout=10000)
+            except Exception:
+                trigger.click(timeout=5000, force=True)
 
             # The overlay opens, then its options load async. Clear any spinner,
             # then wait for the panel to POPULATE (any option visible) before
@@ -105,9 +128,10 @@ def select_mat_dropdown(page, control_name: str, value: str,
             # cause of the per-option 'Timeout' seen in the field.
             page.wait_for_timeout(200)
             turnstile.wait_for_loader(page)
+            opt_wait = 5000 if stuck else option_timeout_ms
             try:
                 page.get_by_role("option").first.wait_for(
-                    state="visible", timeout=option_timeout_ms)
+                    state="visible", timeout=opt_wait)
             except Exception as e:
                 raise RuntimeError(
                     "option list never populated (panel stayed empty)") from e
@@ -138,6 +162,15 @@ def select_mat_dropdown(page, control_name: str, value: str,
                 page.wait_for_timeout(700)
             except Exception:
                 pass
+            # A genuinely stuck VFS spinner won't clear by retrying here — every
+            # attempt would just re-time-out (~minutes wasted). Stop now; the
+            # caller (run_slot_check) reloads the page once to recover the run.
+            if _loader_stuck(page):
+                logging.warning(
+                    f"VFS loading spinner stuck while selecting '{value}' for "
+                    f"'{control_name}' — page stalled, not retrying this dropdown."
+                )
+                break
             if attempt < attempts:
                 turnstile.wait_for_loader(page)
                 page.wait_for_timeout(1500)

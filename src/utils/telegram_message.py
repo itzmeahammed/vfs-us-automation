@@ -148,9 +148,6 @@ def slot_report(source_code: str, dest_code: str, entries: list, login_url: str 
                 lines.append(f"  {ln.strip()}")
         lines.append("")
     body = "\n".join(lines).strip()
-
-    if login_url:
-        body += f"\n\nLink to visa center site ({login_url})"
     return body
 
 
@@ -218,6 +215,10 @@ def run_summary(outcomes: list, account: str, timestamp: str) -> str:
                 head += "OK · 📝 waitlist"
             else:
                 head += "OK · no slots"
+            # The route succeeded, but flag any combo(s) that errored during the
+            # search (e.g. VFS spinner stalled) — reported, not a route failure.
+            if combo_errors:
+                head += f" · ⚠️ {len(combo_errors)} combo error(s)"
         elif status == "FAILED" and combo_errors:
             # Completed, but one or more combinations errored during slot search.
             head += f"FAILED · ⚠️ {len(combo_errors)} combo error(s)"
@@ -315,6 +316,4 @@ def failure_alert(source_code: str, dest_code: str, error: str, attempts: int,
     if email:
         msg += f"\nAccount: {email}"
     msg += f"\n\nLast error:\n{error}"
-    if login_url:
-        msg += f"\n\nLink to visa center site ({login_url})"
     return msg

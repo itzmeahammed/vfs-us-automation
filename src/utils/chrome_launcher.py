@@ -175,6 +175,10 @@ class ChromeProcess:
         self.proxy = proxy  # full URL; user:pass runs through a local forwarder
         self._proc = None
         self._forwarder = None  # local auth-injecting forwarder, if the proxy needs it
+        # Per-route proxy-traffic report lines, collected at close() and emitted by
+        # the caller AFTER the route's outcome is logged (so bandwidth accounting
+        # never appears above the pass/fail line it belongs to).
+        self.traffic_lines = []
         # Set by _mark_egress(): True when a persistent profile is reused from a
         # DIFFERENT egress IP than last time (so its IP-bound cf_clearance must go).
         self.egress_changed = False
@@ -408,11 +412,14 @@ class ChromeProcess:
             try:
                 from src.settings import settings
                 if settings().bandwidth.log_usage and fwd_mb:
-                    logging.info(f"Proxy traffic this route: {fwd_mb:.1f} MB")
+                    # Collect (don't log yet) — the caller emits these AFTER the
+                    # route's pass/fail line so traffic never sits above it.
+                    self.traffic_lines.append(f"Proxy traffic this route: {fwd_mb:.1f} MB")
                     # Where the bytes went — reveals Chrome background (google/
                     # gstatic/safebrowsing) vs Cloudflare vs VFS.
                     for host, nbytes in hosts:
-                        logging.info(f"    {nbytes / (1024 * 1024):6.1f} MB  {host}")
+                        self.traffic_lines.append(
+                            f"    {nbytes / (1024 * 1024):6.1f} MB  {host}")
             except Exception:
                 pass
         if not self._proc:

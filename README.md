@@ -10,6 +10,10 @@ UAE → Switzerland) and sends a separate Telegram message per portal. It is bui
 to run **unattended every hour on an EC2 server**, recovering from failures on
 its own.
 
+> 📘 **[ARCHITECTURE.md](ARCHITECTURE.md) — the master reference.** Full end-to-end
+> behaviour: scheduling, account/IP selection, the three Cloudflare gates, every
+> outcome and how it's classified, the circuit breaker, and the full config reference.
+
 ---
 
 ## What it does

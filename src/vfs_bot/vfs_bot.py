@@ -420,10 +420,12 @@ class VfsBot(ABC):
                 diagnostics.take_final_screenshot(page, "final")
                 raise RetryableError(f"Unexpected flow error: {e}") from e
             finally:
-                # Report browser data usage on success AND failure (matches the
+                # Record browser data usage on success AND failure (matches the
                 # proxy forwarder's per-route line; this one also works on local IP).
+                # Stashed on the bot (not logged here) so the supervisor can emit it
+                # AFTER the route's pass/fail line instead of above it.
                 if settings().bandwidth.log_usage and self._net_bytes:
-                    logging.info(
+                    self.traffic_summary = (
                         f"Browser traffic this route: "
                         f"{self._net_bytes / (1024 * 1024):.1f} MB "
                         f"(all requests, proxy or local IP)."
@@ -567,12 +569,19 @@ class VfsBot(ABC):
                 passed = True
                 break
 
-            # Didn't auto-solve — try clicking the checkbox by coordinates, then
-            # wait a short while again for the token.
-            turnstile.click_turnstile_by_coords(page)
+            # Didn't auto-solve — click the checkbox by coordinates (this logs the
+            # fallback at INFO), then wait a short while again for the token.
+            clicked = turnstile.click_turnstile_by_coords(page)
             if turnstile.wait_for_turnstile_passed(page, timeout_ms=10000):
+                if clicked:
+                    logging.info("Cloudflare Turnstile passed after checkbox click.")
                 passed = True
                 break
+            if clicked:
+                logging.info(
+                    "Turnstile still not passed after checkbox click — "
+                    "reloading to re-run the challenge."
+                )
 
             # Not passed — reload and re-run the challenge, unless out of tries.
             if turn_attempt <= refresh_attempts:

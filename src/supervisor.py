@@ -100,7 +100,8 @@ def _vfs_url(source: str, dest: str) -> str:
 
 def run_once_with_fresh_browser(source: str, dest: str,
                                 email: str = None, password: str = None,
-                                proxy: str = None, keep_open: bool = False) -> list:
+                                proxy: str = None, keep_open: bool = False,
+                                traffic_sink: list = None) -> list:
     """
     One attempt: launch a fresh Chrome, run the flow, always kill Chrome after.
 
@@ -110,6 +111,10 @@ def run_once_with_fresh_browser(source: str, dest: str,
     slot_results on success; raises on failure — the caller decides whether to
     retry.
 
+    `traffic_sink` (optional): a list the teardown appends this attempt's
+    bandwidth lines to (browser + proxy). The CALLER logs them AFTER the attempt's
+    pass/fail line, so accounting never appears above the outcome it belongs to.
+
     keep_open (manual debugging only) leaves the browser open at the end and
     blocks until you press Enter, so you can inspect the final page.
     """
@@ -118,6 +123,7 @@ def run_once_with_fresh_browser(source: str, dest: str,
     # account reuses only its own warm cache + its own IP's cf_clearance.
     chrome = ChromeProcess(port=settings().retry.cdp_port, url=url, proxy=proxy,
                            profile_key=email)
+    bot = None
     try:
         chrome.start()
         # Point the bot at the Chrome we just launched.
@@ -144,6 +150,12 @@ def run_once_with_fresh_browser(source: str, dest: str,
                 pass
         # Guaranteed cleanup — this is the anti-zombie guarantee.
         chrome.close()
+        # Hand the bandwidth lines to the caller to log after the outcome.
+        if traffic_sink is not None:
+            summary = getattr(bot, "traffic_summary", None)
+            if summary:
+                traffic_sink.append(summary)
+            traffic_sink.extend(getattr(chrome, "traffic_lines", []))
 
 
 def _combo_errors(slot_results: list) -> list:
@@ -197,10 +209,13 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
             else:
                 slot_types.append([visa_type, 1])
 
-    if status == "OK" and combo_errors:
-        status = "FAILED"
-        if not error:
-            error = f"{len(combo_errors)} combo(s) failed slot search"
+    # A per-combination slot-search error does NOT fail the route. Reaching the
+    # appointment page and checking what it could IS the run's job; one flaky
+    # combo (e.g. VFS's spinner stalling on a centre switch) is reported on its
+    # own line and in that combo's Telegram message, but the route stays OK. Only
+    # a real flow failure (login/Cloudflare/dashboard/block) marks it FAILED.
+    if status == "OK" and combo_errors and not error:
+        error = f"{len(combo_errors)} combo(s) errored (route still OK)"
 
     return {
         "source": source, "dest": dest, "status": status, "attempts": attempts,
@@ -274,27 +289,27 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
     ip_blocked = False
     for attempt in range(1, max_attempts + 1):
         logging.info(f"=== Attempt {attempt}/{max_attempts} (ip {proxy_label}) ===")
+        traffic_sink = []  # bandwidth lines, logged AFTER this attempt's outcome
         try:
             slots = run_once_with_fresh_browser(source, dest, email, password, proxy,
-                                                keep_open=keep_open)
-            # The flow completed without raising, but "completed" is NOT the same
-            # as "succeeded": _outcome() promotes a run whose slot search hit
-            # errors (couldn't select a combo, etc.) to FAILED. Build the outcome
-            # first, then report HONESTLY — don't log 'Success' for a run that
-            # actually failed its slot check.
+                                                keep_open=keep_open,
+                                                traffic_sink=traffic_sink)
+            # The flow completed — reaching the appointment page and checking the
+            # combos IS success. A combo that errored (e.g. VFS's spinner stalled)
+            # is reported per-combo but does NOT fail the route.
             outcome = _outcome(source, dest, "OK", attempt, slot_results=slots,
                                account=account, proxy=proxy_label)
             # Reaching the dashboard and running the check means the account/IP
-            # are healthy, so clear strikes either way.
+            # are healthy, so clear strikes.
             account_health.record_success(email, route)
-            if outcome["status"] == "OK":
-                logging.info(f"Success on attempt {attempt}.")
-            else:
+            combo_errs = outcome.get("combo_errors") or []
+            if combo_errs:
                 logging.warning(
-                    f"Attempt {attempt} completed but the slot check had errors "
-                    f"({outcome.get('error')}) — reporting as {outcome['status']}, "
-                    "not success."
+                    f"Success on attempt {attempt} — but {len(combo_errs)} combo(s) "
+                    "errored (reported per-combo; route still OK)."
                 )
+            else:
+                logging.info(f"Success on attempt {attempt}.")
             return outcome
         except (IpBlockedError, SignInDisabledError) as e:
             # Both mean "this IP isn't working here": a hard 403201 block, or
@@ -412,6 +427,12 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             last_error = f"{type(e).__name__}: {e}"
             last_error_infra = _is_infra_error(e)
             logging.exception(f"Attempt {attempt} failed (unexpected): {last_error}")
+        finally:
+            # Emit this attempt's bandwidth accounting LAST — after the success
+            # or failure line above — so it never sits atop the outcome it belongs
+            # to (runs on return/continue/break/fall-through alike).
+            for _line in traffic_sink:
+                logging.info(_line)
 
         if attempt < max_attempts:
             backoff = settings().retry.backoff_seconds
@@ -532,7 +553,12 @@ def run_all_routes() -> bool:
             logging.exception(f"Route {source}-{dest} crashed unexpectedly: {e}")
             outcome = _outcome(source, dest, "FAILED", _max_attempts(), error=str(e))
         outcomes.append(outcome)
-        logging.info(f"Route {source}-{dest} {outcome['status']}.")
+        # Log the route's final status at a level that matches it: a genuine
+        # failure (FAILED/GEO/BLOCKED/LOCKED/RESTRICTED) is an ERROR, not INFO,
+        # so it stands out in the log. OK/SKIPPED/PAUSED stay INFO.
+        (logging.info if outcome.get("ok") else logging.error)(
+            f"Route {source}-{dest} {outcome['status']}."
+        )
 
     all_ok = all(o["ok"] for o in outcomes)
     logging.info(f"All routes done. Overall {'OK' if all_ok else 'with failures'}.")

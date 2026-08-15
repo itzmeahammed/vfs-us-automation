@@ -7,8 +7,8 @@
         "centre": "Sweden Visa Application Centre, Abu Dhabi", "category": "Short Stay", "sub_category": "Business" },
       { "label": "Sweden Visa Application Centre, Abu Dhabi",
         "centre": "Sweden Visa Application Centre, Abu Dhabi", "category": "Short Stay", "sub_category": "ShortStay" },
-        { "label": "Sweden Visa Application Centre, Abu Dhabi",
-        "centre": "Sweden Visa Application Centre, Abu Dhabi", "category": "Short Stay", "sub_category": "Tourist" },
+      { "label": "Sweden Visa Application Centre, Dubai", "disabled": true,
+        "centre": "Sweden Visa Application Centre, Dubai", "category": "Short Stay", "sub_category": "Business" },
       { "label": "Sweden Visa Application Centre, Dubai",
         "centre": "Sweden Visa Application Centre, Dubai", "category": "Short Stay", "sub_category": "ShortStay" }
     ]
