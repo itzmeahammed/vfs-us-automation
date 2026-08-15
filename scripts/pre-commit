@@ -19,13 +19,54 @@ placeholder='^(your-|your\.|example|changeme|xxx|<.*>|.*example\.com).*$'
 
 # Credential fields to police: any assignment of one of these keys to a
 # non-empty, non-placeholder value is treated as a real secret.
-key_regex='^\+[[:space:]]*(password|card_number|card_cvn|bot_token)[[:space:]]*=[[:space:]]*(.+)$'
+key_regex='^\+[[:space:]]*(password|account_password|card_number|card_cvn|bot_token)[[:space:]]*=[[:space:]]*(.+)$'
 
 # Exclude this hook file itself from the scan.
 staged=$(git diff --cached --name-only --diff-filter=ACM -- . ':(exclude)scripts/pre-commit')
 [ -z "$staged" ] && exit 0
 
-added=$(git diff --cached -U0 -- $staged | grep -E '^\+' || true)
+# --------------------------------------------------------------------------- #
+# Identity documents                                                           #
+# --------------------------------------------------------------------------- #
+# Passport bio pages are worse than a leaked password: a scan carries the photo,
+# the MRZ and the signature, and a commit is effectively unrecoverable — it
+# survives in the object store and on every clone even after a later deletion.
+#
+# Documents are meant to live OUTSIDE this repo entirely (see
+# DOCUMENT_STORAGE_TASKS.md); .gitignore covers the obvious paths. This is the
+# backstop for the case .gitignore cannot help with: a file added from a
+# location the rules do not cover, or one already tracked.
+#
+# Screenshots are included because the waitlist flow photographs FILLED forms —
+# passport number and date of birth are visible as pixels, which no amount of
+# log redaction can reach.
+doc_regex='\.(png|jpe?g|pdf|gif|bmp|webp|tiff?)$'
+doc_hits=$(echo "$staged" | grep -Ei "$doc_regex" || true)
+if [ -n "$doc_hits" ]; then
+  echo "------------------------------------------------------------------"
+  echo "COMMIT BLOCKED: an image/PDF is staged."
+  echo "------------------------------------------------------------------"
+  echo "$doc_hits" | sed 's/^/  /'
+  echo
+  echo "Identity documents and screenshots of filled forms must never be"
+  echo "committed — a passport scan in git history cannot be recalled."
+  echo "Keep documents outside the repo (see DOCUMENT_STORAGE_TASKS.md)."
+  echo
+  echo "If this really is a harmless asset (a diagram, an icon):"
+  echo "  git commit --no-verify"
+  echo "------------------------------------------------------------------"
+  exit 1
+fi
+
+# Scan CONFIG files only. The key_regex matches `key = value`, which is INI
+# syntax but also ordinary Python assignment — so scanning source produced false
+# positives on lines like `password = data.get("account_password")` and
+# `self.password = password`. Secrets live in .ini/.json config, so restrict the
+# scan there and the rule becomes both accurate and meaningful.
+config_staged=$(echo "$staged" | grep -E '\.(ini|json|env|cfg|conf|toml|ya?ml)(\.example)?$' || true)
+[ -z "$config_staged" ] && exit 0
+
+added=$(git diff --cached -U0 -- $config_staged | grep -E '^\+' || true)
 [ -z "$added" ] && exit 0
 
 hits=""

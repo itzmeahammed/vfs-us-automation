@@ -1,0 +1,168 @@
+{
+  "description": "UAE -> Switzerland waitlist registration. Three pages: tick the waitlist checkbox on Appointment Details and Submit; fill 'Your Details' (/your-details) and Save; then Continue; then accept both consent checkboxes on /review-pay and Confirm. The Confirm click is the point of no return.",
+
+  "enabled": true,
+
+  "_comment_checkbox": "NOT pinned on purpose. This portal renders a bare <mat-checkbox> with no formcontrolname and only a positional id (mat-mdc-checkbox-0) that shifts whenever the page gains a control — so there is nothing stable to pin. detect.locate() finds the lone checkbox on the Appointment Details step instead. Add a \"checkbox\" key here only if VFS starts rendering several and picks the wrong one.",
+
+  "steps": [
+    {
+      "name": "appointment_details",
+      "url_contains": "application-detail",
+      "submit": { "role": "button", "name": "Continue" },
+      "_comment": "The waitlist checkbox is ticked by register.py before this step runs; Continue stays disabled until it is. Nothing is committed here — this only opens the details form."
+    },
+
+    {
+      "name": "your_details",
+      "url_contains": "your-details",
+      "wait_for_text": "Your Details",
+
+      "_comment_selectors": "This portal renders <app-dynamic-form>/<app-dynamic-control> with NO formcontrolname and only volatile ids (mat-input-3, mat-input-4, ... allocated in DOM order, so they shift whenever VFS adds or reorders a field). Every field is therefore addressed by its visible LABEL, which is the only stable anchor here. If VFS renames a label, change it below — no code change.",
+
+      "_comment_countdown": "The page shows 'Please wait 30 seconds before saving your details and continuing' (it counts DOWN, so a mid-timer screenshot shows a smaller number). The timer gates the SAVE only — the fields can be filled immediately.",
+
+      "_comment_why_dwell_not_poll": "The Save button ENABLES BEFORE the timer expires, but clicking it early does nothing: the page simply does not advance. So polling the button alone is not enough — it would click a live-looking button, see no navigation, and fail confusingly. dwell_seconds therefore waits out the full countdown AFTER filling, and _await_enabled still polls on top of that as a second check. Belt and braces: the wait handles the invisible timer, the poll handles the visible button state.",
+
+      "dwell_seconds": 32,
+      "_comment_dwell_value": "30s countdown + 2s margin. Measured from AFTER the fields are filled, which is itself several seconds in, so the real-world wait is comfortably past the timer.",
+
+      "timeout_ms": 120000,
+
+      "fields": [
+        {
+          "name": "first_name",
+          "label": "First Name",
+          "widget": "text",
+          "value": "{{first_name|upper}}",
+          "required": true,
+          "_comment": "The input carries appuppercase + class 'text-uppercase' — VFS upper-cases it anyway; doing it here keeps what we send identical to what is stored."
+        },
+        {
+          "name": "last_name",
+          "label": "Last Name",
+          "widget": "text",
+          "value": "{{last_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "nationality",
+          "label": "Current Nationality",
+          "widget": "mat-select",
+          "value": "{{nationality}}",
+          "required": true,
+          "_comment": "Options render in a cdk overlay at the end of <body>, not inside this block, so they are matched globally by role=option."
+        },
+        {
+          "name": "passport_number",
+          "label": "Passport Number",
+          "widget": "text",
+          "value": "{{passport_number|upper}}",
+          "required": true
+        },
+        {
+          "name": "phone_country_code",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 0,
+          "value": "{{phone_country_code|digits}}",
+          "required": true,
+          "_comment": "Split phone field: both inputs sit under ONE 'Contact number' caption, so index 0 = country code (maxlength 3, placeholder '44') and index 1 = the number (minlength 7, maxlength 15). |digits strips any leading '+'."
+        },
+        {
+          "name": "phone_number",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 1,
+          "value": "{{phone_number|digits}}",
+          "required": true
+        },
+        {
+          "name": "email",
+          "label": "Email",
+          "widget": "text",
+          "value": "{{email}}",
+          "required": true
+        },
+        {
+          "if_present": true,
+          "_comment_if_present": "The address lines appear in SOME renders of this form and not others (a session with them and one without have both been observed). \"if_present\" means: fill it when the page shows it, skip quietly when it does not. Without this the step would fail on every render that omits them.",
+          "name": "address_line_1",
+          "label": "Address line 1",
+          "widget": "text",
+          "value": "{{address_line_1|upper}}",
+          "required": true
+        },
+        {
+          "if_present": true,
+          "name": "address_line_2",
+          "label": "Address line 2",
+          "widget": "text",
+          "value": "{{address_line_2|upper}}",
+          "required": true,
+          "_comment": "Marked with an asterisk on this portal, so it IS required despite the name."
+        }
+      ],
+
+      "submit": { "role": "button", "name": "Save" },
+      "_comment_submit": "Buttons here are plain <button> with a <span class='mdc-button__label'> — no id, no formcontrolname. get_by_role(name=...) matches the accessible name, which is that span's text. A hidden 'Update' button shares the row; role+name avoids it."
+    },
+
+    {
+      "name": "details_summary",
+      "url_contains": "your-details",
+      "wait_for_text": "Your Details Summary",
+      "submit": { "role": "button", "name": "Continue" },
+      "_comment": "After Save the page STAYS on /your-details but swaps to a 'Your Details Summary' view listing the applicant(s), with Go Back / Add another applicant / Continue. The URL is unchanged, so \"wait_for_text\" is what actually distinguishes this step from the form before it. Continue goes to /review-pay.",
+      "_comment_multi_applicant": "'Add another applicant' is ignored — one client per registration, by design. Supporting several would mean looping the form step, which is a change to make deliberately if it is ever needed."
+    },
+
+    {
+      "name": "review_pay",
+      "url_contains": "review-pay",
+      "commits": true,
+
+      "_comment_commits": "THE POINT OF NO RETURN. Confirm submits the waitlist registration. Everything after this click is read-only in register.py — no retries, ever.",
+
+      "scroll_to_bottom": true,
+      "_comment_scroll": "The consent checkboxes and Confirm sit below the fold on this page. Scrolling first makes them visible so the clicks land reliably (and mirrors what a human does).",
+
+      "_comment_checkboxes": "Only TWO of the boxes on this page are ours: the Terms and Conditions consent, and the waitlist agreement. They are matched by their own WORDING rather than by position, because ids on this page are duplicated ('mat-mdc-checkbox-1' appears twice — invalid HTML on VFS's side) and positions shift whenever VFS adds or removes a consent.",
+
+      "fields": [
+        {
+          "name": "accept_terms",
+          "label": "I accept the",
+          "widget": "checkbox",
+          "index": 0,
+          "value": true,
+          "required": true,
+          "_comment": "The Terms and Conditions consent. \"I accept the\" matches more than one box (there is also a VAS T&Cs one), so index picks the first. NOTE its <label> contains an <a target=\"_blank\"> link to the T&Cs — clicking the label's centre opens that link instead of ticking, which is why the click ladder targets the native input first."
+        },
+        {
+          "name": "agree_waitlist",
+          "label": "Yes, I agree for waitlist confirmation",
+          "widget": "checkbox",
+          "value": true,
+          "required": true,
+          "_comment": "The waitlist agreement — the one that actually matters here. Its wording is UNIQUE on the page, so no index is needed and this keeps working if VFS reorders the consents. Its label has no link, so it is the straightforward one of the two."
+        }
+      ],
+
+      "submit": { "role": "button", "name": "Confirm" },
+      "_comment_submit": "Confirm starts disabled (disabled=\"true\") until the required consents are ticked; register.py polls for it to enable before clicking."
+    }
+  ],
+
+  "confirmation": {
+    "_comment": "Confirmed from a real run: after Confirm the page goes to /are/en/che/confirmation and shows 'Your Appointment is Waitlisted'.",
+
+    "url_contains": "confirmation",
+
+    "success_text": ["your appointment is waitlisted"],
+    "_comment_success_text": "Matched case-insensitively against the page body; ALL entries must be present. Deliberately the specific headline rather than the bare word 'waitlist', which also appears in the disclaimer at the top of the page and in the 'notified once your waitlist status is updated' sentence — matching those would report success on a page that merely mentions waitlists.",
+
+    "reference_pattern": "\\b([A-Z]{4}\\d{9,})\\b",
+    "_comment_reference": "The booking reference shown top-right, e.g. SWDB79918334684. Captured into the journal so a registration can be found again on the portal. If nothing matches, the run still succeeds — the reference is recorded as null and the success_text match is what decides the outcome."
+  }
+}

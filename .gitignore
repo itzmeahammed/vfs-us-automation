@@ -22,6 +22,23 @@ account_health.json.tmp
 # Per-country waitlist-notification cooldown state
 waitlist_cooldown.json
 waitlist_cooldown.json.tmp
+# Waitlist registration journal (what was submitted, and when)
+state/
+# Client files hold PII (passport numbers, DOB) — never commit.
+# Only the *.example template is tracked.
+config/registrants/*.json
+!config/registrants/*.json.example
+# Identity DOCUMENTS (passport bio pages) are worse than the JSON: a scan adds
+# the photo, MRZ and signature. They belong OUTSIDE this repo entirely (see
+# DOCUMENT_STORAGE_TASKS.md) — these rules are a backstop for a stray copy, not
+# the primary control. .gitignore only stops UNTRACKED files, so a pre-commit
+# hook backs it up in turn.
+config/registrants/**/*.png
+config/registrants/**/*.jpg
+config/registrants/**/*.jpeg
+config/registrants/**/*.pdf
+documents/
+config/documents/
 # Proxy lists / credentials — never commit
 config/proxylist.txt
 proxylist.txt

@@ -3,11 +3,12 @@
   "mode": "slot-check",
   "otp": true,
   "slot_check": {
+    "_comment_labels": "Labels must be UNIQUE within a route: a waitlist client file names the combination it wants by label, and two combos sharing one would be ambiguous (the lookup takes the first match, silently registering for the wrong category). These two were both 'Italy Visa Application Center ,Dubai' — now distinguished by their category.",
     "combinations": [
-      { "label": "Italy Visa Application Center ,Dubai",
+      { "label": "Dubai - Schengen Visa",
         "centre": "Dubai", "category": "Schengen Visa", "sub_category": "" },
-      { "label": "Italy Visa Application Center ,Dubai",
-        "centre": "Dubai", "category": "Short Stay", "sub_category": "Tourist visa" }       
+      { "label": "Dubai - Short Stay - Tourist visa",
+        "centre": "Dubai", "category": "Short Stay", "sub_category": "Tourist visa" }
     ]
   }
 }

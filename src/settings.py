@@ -117,6 +117,50 @@ class Logging(_Section):
     browser_activity: bool = False
 
 
+class Waitlist(_Section):
+    """Waitlist detection (always on) and registration (opt-in, gated).
+
+    cooldown_hours only affects the read-only NOTIFICATION. Everything else
+    gates the mutating registration flow, and every one of those defaults to
+    OFF/minimum — registering is never something that starts happening by
+    accident after a config edit.
+    """
+
+    cooldown_hours: float = 2.0        # per-country notification rate limit
+
+    # --- registration (mutates the VFS account) ---
+    register_enabled: bool = False     # MASTER kill switch
+    dry_run: bool = True               # walk the flow, stop before submitting
+    max_per_run: int = Field(default=1, ge=0)
+    max_per_day: int = Field(default=5, ge=0)
+    # Telegram for REGISTRATION outcomes. OFF by default: this bot runs on
+    # demand with you watching the terminal, so a message is redundant noise in
+    # a chat whose value is that it only pings when the hourly checker finds
+    # something. (The read-only 'waitlist available' notice is unaffected.)
+    telegram_enabled: bool = False
+
+    # --- which VFS account waitlist entries are created under ---
+    # A waitlist entry belongs to the account that created it, so the account is
+    # a deliberate choice, never the hourly slot-check rotation. See
+    # src/waitlist/accounts.py. Secrets stay on config_reader (not typed here).
+    #
+    # One account may serve several clients — VFS's real limit is undocumented,
+    # so both knobs below are configurable rather than assumed.
+    # --- client identity documents (passport bio pages) ---
+    # Retention, in days, for anything left behind by a crashed or abandoned
+    # run. Documents are normally deleted the moment a registration is confirmed
+    # (journal.update_status); this sweep is the backstop that makes "we delete
+    # after use" true rather than aspirational. 0 disables it.
+    # documents_root itself stays on config_reader — it is a path, not a tunable.
+    document_retention_days: int = Field(default=30, ge=0)
+
+    max_clients_per_account: int = Field(default=0, ge=0)   # 0 = unlimited
+    # Whether an account may hold TWO entries for the SAME combination. Default
+    # False = warn and proceed: we do not yet know it is a problem, and blocking
+    # wrongly is worse than a warning. Flip to True once VFS's behaviour is known.
+    one_client_per_account_combo: bool = False
+
+
 class Bandwidth(_Section):
     """Metered-proxy savings. Every byte the browser fetches is billed by the
     proxy, so trim what a slot-check doesn't need. Defaults are safe for the
@@ -162,6 +206,7 @@ _INI_SECTIONS = {
     "proxy": "proxy",
     "logging": "logging",
     "bandwidth": "bandwidth",
+    "waitlist": "waitlist",
 }
 
 
@@ -207,6 +252,7 @@ class Settings(BaseSettings):
     proxy: Proxy = Field(default_factory=Proxy)
     logging: Logging = Field(default_factory=Logging)
     bandwidth: Bandwidth = Field(default_factory=Bandwidth)
+    waitlist: Waitlist = Field(default_factory=Waitlist)
 
     @classmethod
     def settings_customise_sources(

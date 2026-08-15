@@ -1,0 +1,62 @@
+{
+  "_comment": "A CLIENT FILE — everything about one client, in one file. Copy to config/registrants/<name>.json (lowercase, e.g. ahmed.json). The filename IS the client id used on the command line. Adding a client is exactly this one file; removing them is one deletion.",
+
+  "_comment_pii": "These files hold passport numbers and dates of birth. config/registrants/*.json is gitignored — only this .example is committed. Never paste real data into an example file.",
+
+  "_comment_contract": "DATA + TARGETING only. No selectors, no page structure — those live in config/waitlist/<ROUTE>.json. The two are joined by field NAME: a route config writes {{passport_number}} and this file supplies it. That split is what lets one route config serve every client.",
+
+
+  "_comment_targeting": "===== WHO / WHERE =====",
+
+  "route": "AE-CHE",
+  "_comment_route": "ONE route per file, matching a key in config/vfs_urls.ini. A client who wants two countries needs two files (ahmed-che.json, ahmed-ita.json) — note that duplicates their passport number, so keep both in step if you edit one.",
+
+  "enabled": true,
+  "_comment_enabled": "Set false to park this client without deleting their data — they are skipped by every run until you set it back.",
+
+  "combos": [
+    "Dubai - SCHENGEN"
+  ],
+  "_comment_combos": "The combination label(s) this client is waiting on. Each MUST match a label in config/routes/AE-CHE.json exactly (case- and whitespace-insensitive). List several to register for several. Nothing registers unless it is named here.",
+
+  "account": "waitlist-acc1@example.com",
+  "account_password": "the-password",
+  "_comment_account": "OPTIONAL, but ALL-OR-NOTHING — set both keys or neither. The VFS account this client's waitlist entry is created under. A waitlist entry BELONGS TO its account: register under acc1 and only acc1 can see or cancel it. Omit BOTH keys to use the shared [waitlist] account from config.local.ini.",
+
+  "_comment_separate_pool": "Waitlist accounts are a SEPARATE POOL from the slot-check accounts in config/credentials.local.ini — nothing is read from that file, so the password must be given here. The hourly slot-check rotation is never used for waitlisting.",
+
+  "_comment_sharing": "Several clients MAY share one account — set \"account\" to the same email in each of their files. Limits are configurable via [waitlist] max_clients_per_account and one_client_per_account_combo, because VFS's real limit is undocumented.",
+
+  "_comment_proxy": "OPTIONAL — pin this client to one exit IP, e.g. \"http://user:pass@host:port\". Omit to pick automatically from config/proxylist.txt (the same pool the slot checker uses). Set [waitlist] proxy in config.local.ini instead if every client should share one IP.",
+  "__proxy": "http://user:pass@host:port",
+
+
+  "_comment_data": "===== WHAT TO TYPE =====",
+  "_comment_fields": "Field names are free-form — add whatever the portals you use ask for. The names below match what config/waitlist/AE-CHE.json expects. If a route config references a field this file lacks, `python -m src.waitlist check` names it before any browser is launched.",
+
+  "first_name": "AHMED",
+  "last_name": "KHAN",
+
+  "nationality": "India",
+  "_comment_nationality": "Must match the dropdown option text on the portal EXACTLY (matched as a case-insensitive substring). Check the real option list if a run reports it could not select.",
+
+  "passport_number": "A1234567",
+  "date_of_birth": "1990-04-12",
+  "_comment_dob": "Always store dates ISO (YYYY-MM-DD). A route config reformats per portal with {{date_of_birth|date:%d/%m/%Y}}.",
+
+  "phone_country_code": "971",
+  "phone_number": "501234567",
+  "_comment_phone": "Switzerland splits these into two inputs (country code max 3 chars, number 7-15). Store them separately; a portal wanting one field can use {{phone_country_code}}{{phone_number}}.",
+
+  "email": "ahmed@example.com",
+
+  "address_line_1": "FLAT 101, AL BARSHA TOWER",
+  "address_line_2": "SHEIKH ZAYED ROAD, DUBAI",
+
+  "_comment_passport_scan": "REQUIRED on portals that take the details from an uploaded document instead of typed fields (Italy). Two forms: \"managed\" to use the managed store (python -m src.waitlist documents add --registrant <id> --file <path>), or an absolute path to a file you keep yourself. PNG/JPG/PDF, under 2MB — validated before any browser launches. A managed document is DELETED automatically once the registration is confirmed.",
+  "passport_scan": "managed",
+
+  "_comment_extra": "Fields no current route uses are harmless — keep them for portals you add later.",
+  "gender": "Male",
+  "passport_expiry": "2030-06-30"
+}

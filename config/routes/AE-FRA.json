@@ -2,16 +2,17 @@
   "description": "UAE -> France. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
   "mode": "slot-check",
   "slot_check": {
+    "_comment_labels": "Labels must be UNIQUE within a route — a waitlist client file names the combination it wants by label, and duplicates would silently resolve to whichever came first. The centre alone is NOT unique here (two rows share each centre and differ only by category), so each label carries the category too.",
     "combinations": [
-      { "label": "Abu Dhabi", "disabled": true,
+      { "label": "Abu Dhabi - Short Stay - Business", "disabled": true,
         "centre": "Abu Dhabi", "category": "Short Stay - Business", "sub_category": "" },
-      { "label": "Abu Dhabi",
+      { "label": "Abu Dhabi - Short Stay (any purpose)",
         "centre": "Abu Dhabi", "category": "Short Stay (any purpose)", "sub_category": "" },
-      
-      { "label": "Temporary Enrolment Location - Damac Hills", "disabled": true,
-       "centre": "Temporary Enrolment Location - Damac Hills", "category": "Short Stay - Business", "sub_category": "" },
-      { "label": "Temporary Enrolment Location - Damac Hills",
-       "centre": "Temporary Enrolment Location - Damac Hills", "category": "Temporary Location-Damac Hills", "sub_category": "" }
+
+      { "label": "Temporary Enrolment Location - Damac Hills - Short Stay - Business", "disabled": true,
+        "centre": "Temporary Enrolment Location - Damac Hills", "category": "Short Stay - Business", "sub_category": "" },
+      { "label": "Temporary Enrolment Location - Damac Hills - Temporary Location-Damac Hills",
+        "centre": "Temporary Enrolment Location - Damac Hills", "category": "Temporary Location-Damac Hills", "sub_category": "" }
     ]
   }
 }
