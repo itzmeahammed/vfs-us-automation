@@ -1,0 +1,116 @@
+{
+  "_comment": "UAE -> Italy waitlist registration. Inherits the shared flow from _default.json and overrides what this portal does differently.",
+
+  "_comment_vs_switzerland": "Three real differences from AE-CHE, all of them structural rather than cosmetic: (1) the waitlist checkbox HAS a formcontrolname here, so it can be pinned properly; (2) 'Your Details' takes NO typed fields — you upload the passport bio page and VFS OCRs the details out of it; (3) there is an extra OTP step before review-pay, and that OTP goes to the registered MOBILE, not the email used at login.",
+
+  "extends": "_default",
+  "enabled": false,
+  "_comment_enabled": "OFF until the OTP step is implemented — see \"otp\" below. Everything up to it is configured and can be exercised with `doctor --route AE-ITA --walk`.",
+
+  "checkbox": "mat-checkbox[formcontrolname='agreeToWaitlist']",
+  "_comment_checkbox": "Pinned, unlike Switzerland: this portal DOES bind the control, and a named control beats inferring one from position or wording. The label reads 'Currently No slots are available for selected category, please confirm waitlist'.",
+
+  "steps": [
+    {
+      "name": "your_details",
+      "url_contains": "your-details",
+      "wait_for_text": "Your Details",
+
+      "_comment_no_typed_fields": "This portal does NOT ask for name/passport/phone as typed inputs. It asks for the passport BIO PAGE, then extracts the data from it — the page even says 'the data extracted from it can't be edited'. So the whole applicant form is one upload field.",
+
+      "no_screenshots": true,
+      "_comment_no_screenshots": "This page RENDERS the uploaded passport, so a debug screenshot would write the photo, MRZ and signature to disk as pixels — which log redaction cannot reach. The evidence value of a screenshot does not justify keeping a copy of someone's passport on every run. Other steps still screenshot normally.",
+
+      "_comment_countdown": "The page renders 'Please wait 8 seconds...' but it COUNTS DOWN — a capture partway through shows a smaller number than the real total, which is 30s, the same as Switzerland. Save enables before the timer expires yet does nothing until it does, so the wait is mandatory; 32s gives margin. Measured AFTER the upload and extraction, which are themselves several seconds in.",
+      "dwell_seconds": 32,
+
+      "timeout_ms": 120000,
+
+      "fields": [
+        {
+          "name": "passport_scan",
+          "selector": "app-file-upload input[type='file']",
+          "widget": "file",
+          "value": "{{passport_scan}}",
+          "required": true,
+
+          "_comment": "The <input type=file> is hidden=\"\" behind a styled 'Browse Files' button; set_input_files() targets the input directly, so the button is never clicked. Scoped to <app-file-upload> so it can never pick up some other file input on the page.",
+          "_comment_value": "Path to the passport bio-page image or a ONE-PAGE PDF, from the client file. PNG/JPG/PDF only, max 2MB — VFS rejects anything else. An absolute path is safest; a relative one resolves against the working directory.",
+
+          "after_upload": { "role": "button", "name": "Continue" },
+          "_comment_after_upload": "The upload renders a preview with Continue / Replace. Continue commits the file and starts the extraction. NOTE this is a plain <button class='file-browse'>, NOT a mat-button — matched by its accessible name, which works for both.",
+
+          "wait_after_ms": 15000,
+          "_comment_wait_after": "VFS OCRs the document server-side and fills the form from it. Nothing useful can be asserted until that finishes, and Save would be rejected with an empty form. 15s is a starting figure — raise it if a dry run shows Save still disabled."
+        }
+      ],
+
+      "submit": { "role": "button", "name": "Save" }
+    },
+
+    {
+      "name": "details_summary",
+      "url_contains": "your-details",
+      "wait_for_text": "Summary",
+      "submit": { "role": "button", "name": "Continue" },
+      "_comment": "Inherited from _default; restated only to document that this portal behaves the same way — the URL stays on /your-details and the content swaps to a summary."
+    },
+
+    {
+      "name": "otp",
+      "after": "details_summary",
+      "_comment_position": "POSITION MATTERS: this page sits between the details summary and /review-pay. Without \"after\" a new step is appended, which would put it AFTER the committing step and it would never be reached.",
+      "disabled": true,
+      "_comment_DISABLED": "NOT IMPLEMENTED YET. This step needs a human-in-the-loop OTP relay: the code goes to the registered MOBILE, so it cannot be read from the login mailbox the way otp_flow.py reads the sign-in code. Planned as a Telegram round trip (bot asks -> you reply -> bot types it). Until that exists this step is disabled and the route is \"enabled\": false, so nothing can half-run into it.",
+
+      "_comment_page": "Sits between the details summary and /review-pay. Shows a 'Generate OTP' button; clicking it sends the code and reveals an OTP input (type=password, maxlength=6) plus a Verify button, then Continue. 'Regenerate one-time password' is available, limited to 3 attempts before VFS logs the session off — so retries must be counted carefully.",
+
+      "wait_for_text": "Generate OTP",
+
+      "_comment_shape": "Recorded now so the implementation has a target to fill in:",
+      "_planned_generate": { "role": "button", "name": "Generate OTP" },
+      "_planned_input": "input[placeholder='OTP']",
+      "_planned_verify": { "role": "button", "name": "Verify" },
+      "_planned_submit": { "role": "button", "name": "Continue" },
+      "_planned_validity_seconds": 180,
+      "_planned_max_regenerations": 3
+    },
+
+    {
+      "name": "review_pay",
+      "url_contains": "review-pay",
+      "commits": true,
+      "scroll_to_bottom": true,
+
+      "_comment": "Identical in shape to Switzerland's, including the duplicate-id problem: several boxes share 'mat-mdc-checkbox-1'. Matched by wording, not position.",
+
+      "fields": [
+        {
+          "name": "accept_terms",
+          "label": "I accept the",
+          "widget": "checkbox",
+          "index": 0,
+          "value": true,
+          "required": true,
+          "_comment": "Terms and Conditions consent. Its <label> wraps an <a target='_blank'> to the T&Cs — clicking the label's centre opens that link instead of ticking, which is why fields.py targets the native input first."
+        },
+        {
+          "name": "agree_waitlist",
+          "label": "Yes, I agree for waitlist confirmation",
+          "widget": "checkbox",
+          "value": true,
+          "required": true,
+          "_comment": "Unique wording, so no index — this keeps working if VFS reorders the consents. Note the on-page text ends with a full stop ('...confirmation.'); the match is a case-insensitive SUBSTRING, so omitting it is intentional and more robust."
+        }
+      ],
+
+      "submit": { "role": "button", "name": "Confirm" }
+    }
+  ],
+
+  "confirmation": {
+    "_comment": "UNVERIFIED for this portal — inherited from _default and not yet seen on a real Italy run. Switzerland showed 'Your Appointment is Waitlisted' at /confirmation; this one is left as the looser 'waitlisted' until a live run confirms the exact headline. Tighten it then.",
+    "url_contains": "confirmation",
+    "success_text": ["waitlisted"]
+  }
+}

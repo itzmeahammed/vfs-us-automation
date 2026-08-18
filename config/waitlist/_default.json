@@ -1,0 +1,69 @@
+{
+  "_comment": "SHARED BASE for waitlist route configs. A route inherits it with \"extends\": \"_default\" and overrides only what its portal does differently. Extracted from AE-CHE after that route was proven end to end with a real registration (SWDB79923880977) — deliberately NOT written up front, so every line here is something a working route actually needed rather than a guess.",
+
+  "_comment_how_to_use": "Create config/waitlist/<ROUTE>.json containing {\"extends\": \"_default\", \"enabled\": true, \"steps\": [...]}. Steps merge BY NAME: repeat a step's name to override just the keys you list (the parent's other keys survive), add a new name to append a step, or set \"remove\": true to drop an inherited one. Then run `python -m src.waitlist check --route <ROUTE>` and `doctor --route <ROUTE> --walk` before any live run.",
+
+  "_comment_why_the_shape_holds": "VFS runs one Angular application across its portals, so the page sequence — Appointment Details -> Your Details -> a summary -> Review & Pay -> confirmation — and the URL fragments are consistent. What varies per country is the FIELD LIST, the button wording, and which consent checkboxes appear. Those are exactly what a route file overrides.",
+
+  "enabled": false,
+  "_comment_enabled": "OFF in the base so inheriting it can never by itself arm a route. Each route must set \"enabled\": true deliberately.",
+
+  "_comment_checkbox": "The waitlist checkbox is deliberately NOT pinned. Portals differ: some bind formcontrolname=\"agreeToWaitlist\", others (Switzerland) render a bare <mat-checkbox> whose only id is positional and shifts as the page changes. detect.locate() tries the bound forms first, then falls back to the checkbox whose wording mentions the waitlist. Pin \"checkbox\" in a route file only if that picks the wrong one.",
+
+  "steps": [
+    {
+      "name": "appointment_details",
+      "url_contains": "application-detail",
+      "submit": { "role": "button", "name": "Continue" },
+      "_comment": "register.py ticks the waitlist checkbox before this step runs; the button stays disabled until it is ticked. Nothing is committed here — this only opens the applicant form. Override \"submit\" if a portal labels it Submit/Next instead."
+    },
+
+    {
+      "name": "your_details",
+      "url_contains": "your-details",
+      "wait_for_text": "Your Details",
+
+      "_comment_fields": "NO fields here on purpose — the applicant form is the single biggest difference between portals, so every route must declare its own. Address them by \"label\" (the visible caption): VFS's <app-dynamic-form> emits no formcontrolname and only positional ids (mat-input-3...) that shift whenever a field is added. Mark fields that VFS renders inconsistently \"if_present\": true.",
+      "fields": [],
+
+      "_comment_countdown": "Portals gate the save button behind a countdown ('Please wait N seconds before saving your details and continuing'). The button ENABLES BEFORE the timer expires but clicking early does nothing, so a route must set \"dwell_seconds\" to just over its own N; _await_enabled then polls the button on top of that.",
+
+      "timeout_ms": 120000,
+      "submit": { "role": "button", "name": "Save" }
+    },
+
+    {
+      "name": "details_summary",
+      "url_contains": "your-details",
+      "wait_for_text": "Summary",
+      "submit": { "role": "button", "name": "Continue" },
+      "_comment": "After Save the URL STAYS on /your-details and only the content swaps to a summary of the applicant(s). The URL therefore cannot distinguish this step from the form before it — \"wait_for_text\" is what actually does. Set \"remove\": true in a route that has no summary page.",
+      "_comment_multi_applicant": "An 'Add another applicant' button usually sits here and is ignored: one client per registration, by design."
+    },
+
+    {
+      "name": "review_pay",
+      "url_contains": "review-pay",
+      "commits": true,
+
+      "_comment_commits": "THE POINT OF NO RETURN. Exactly one step must carry this flag (config.py refuses a config without one). Everything after its submit is read-only in register.py — no retries, ever.",
+
+      "scroll_to_bottom": true,
+      "_comment_scroll": "Consents and the submit button sit below the fold on this page.",
+
+      "_comment_fields": "NO consents here on purpose — which boxes appear, and their wording, differ per portal. Match them by their own \"label\" text rather than by position: ids on these pages are duplicated (two boxes sharing 'mat-mdc-checkbox-1' has been seen) and positions shift as VFS adds consents. Use \"index\" only when two boxes genuinely share wording. NOTE some consent labels wrap a link to the T&Cs — fields.py handles that, but it is why label-centre clicks are avoided.",
+      "fields": [],
+
+      "submit": { "role": "button", "name": "Confirm" }
+    }
+  ],
+
+  "confirmation": {
+    "_comment": "How a route recognises success. url_contains is common across portals; success_text is NOT — override it with wording specific to the confirmation headline. Avoid matching a bare 'waitlist', which also appears in disclaimers and in 'notified once your waitlist status is updated'; matching those would report success on a page that merely mentions waitlists.",
+    "url_contains": "confirmation",
+    "success_text": ["waitlisted"],
+
+    "reference_pattern": "\\b([A-Z]{4}\\d{9,})\\b",
+    "_comment_reference": "The booking reference shown top-right, e.g. SWDB79923880977 — captured into the journal so a registration can be found again on the portal. If nothing matches, the run still succeeds; success_text is what decides the outcome."
+  }
+}

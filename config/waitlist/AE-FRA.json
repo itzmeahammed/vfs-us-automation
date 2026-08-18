@@ -1,0 +1,47 @@
+{
+  "_comment": "UAE -> FRA waitlist registration. Inherits the shared flow from _default.json; only what this portal does DIFFERENTLY belongs here.",
+  "_comment_todo": "SCAFFOLD — not usable yet. Fill in the two field lists below, then: python -m src.waitlist doctor --route AE-FRA --walk",
+
+  "extends": "_default",
+  "enabled": false,
+  "_comment_enabled": "Flip to true only once `doctor --walk` reports every selector resolving.",
+
+  "steps": [
+    {
+      "name": "your_details",
+      "_comment": "Address fields by their VISIBLE LABEL — this portal family emits no formcontrolname and only positional ids that shift. Mark any field VFS renders inconsistently \"if_present\": true. Copy the shape from config/waitlist/AE-CHE.json.",
+
+      "_comment_dwell": "Set to just over this portal's countdown ('Please wait N seconds before saving'). Omit if it has none.",
+      "dwell_seconds": 32,
+
+      "fields": [
+        {
+          "name": "first_name",
+          "label": "First Name",
+          "widget": "text",
+          "value": "{{first_name|upper}}",
+          "required": true
+        }
+      ]
+    },
+
+    {
+      "name": "review_pay",
+      "_comment": "The consent checkboxes. Match each by its OWN wording; add \"index\" only when two boxes genuinely share text.",
+      "fields": [
+        {
+          "name": "agree_waitlist",
+          "label": "TODO: the waitlist agreement wording on this portal",
+          "widget": "checkbox",
+          "value": true,
+          "required": true
+        }
+      ]
+    }
+  ],
+
+  "confirmation": {
+    "_comment": "Override with THIS portal's confirmation headline. Avoid a bare 'waitlist' — that also appears in disclaimers.",
+    "success_text": ["waitlisted"]
+  }
+}

@@ -870,6 +870,32 @@ class VfsBot(ABC):
         """
         Fills the login form, signs in, and — once on the dashboard — clicks
         Start New Booking and runs the slot check.
+
+        This is the slot-checker's entry point and its behaviour is unchanged.
+        It is now a thin composition of two independently useful halves:
+
+            authenticate()          get to the dashboard
+            start_slot_check()      Start New Booking + check every combination
+
+        The split exists because "log in" and "check every configured combo" are
+        different concerns, and callers that only need the first should not be
+        forced to pay for the second. The waitlist runner is exactly that case:
+        it needs an authenticated session on the Appointment Details page so it
+        can select the ONE combination its client asked for, and running the full
+        slot check first would burn ~20s per unwanted combo, send a Telegram
+        notice nobody asked for, and then re-select the dropdowns anyway.
+        """
+        self.authenticate(page, email_id, password)
+        self.start_slot_check(page)
+
+    def authenticate(self, page, email_id: str, password: str) -> None:
+        """
+        Signs in and returns with the browser on the dashboard.
+
+        Everything up to (and including) reaching the dashboard: the login form,
+        Cloudflare Turnstile, credentials, OTP, and the post-Sign-In captcha
+        dialog — with the same-IP retry loop around the whole Turnstile-gated
+        path. Does NOT navigate onward to booking or check any slots.
         """
         self._wait_for_login_form(page)
         # Dismiss the cookie banner (it overlays the form and blocks fields).
@@ -1006,10 +1032,40 @@ class VfsBot(ABC):
             )
         logging.info(f"Reached dashboard (verified: URL + content): {page.url}")
         diagnostics.take_final_screenshot(page, "dashboard")
-        # start_new_booking() below does its own settle-wait before clicking —
-        # no need to also wait here (that used to be a redundant back-to-back
-        # 2s+2s pause doing the same job).
+
+    def start_booking(self, page, await_page: bool = False) -> None:
+        """Clicks Start New Booking, landing on Appointment Details (step 1).
+
+        Split out so a caller can reach the booking form WITHOUT running the
+        slot check that used to follow it unconditionally.
+
+        `await_page=True` additionally waits for the Appointment Details URL and
+        the loading spinner to clear, so the form is genuinely ready to drive.
+        run_slot_check() does that wait itself (unchanged), so the slot-check
+        path leaves this False; callers that skip run_slot_check must pass True
+        or they risk touching the dropdowns before the page exists.
+        """
+        # start_new_booking() does its own settle-wait before clicking — no need
+        # to also wait here (that used to be a redundant back-to-back 2s+2s
+        # pause doing the same job).
         slot_check.start_new_booking(page)
+        if not await_page:
+            return
+        try:
+            page.wait_for_url("**/application-detail", timeout=30000)
+        except Exception as e:
+            raise SlotCheckError(
+                f"Did not reach the Appointment Details page: {e}") from e
+        turnstile.wait_for_loader(page)
+        page.wait_for_timeout(500)
+
+    def start_slot_check(self, page) -> list:
+        """Start New Booking, then check EVERY configured combination.
+
+        Populates (and returns) self.slot_results for the supervisor's summary.
+        """
+        self.start_booking(page)
         self.slot_results = slot_check.run_slot_check(
             page, self.schema, self.source_country_code, self.destination_country_code
         )
+        return self.slot_results

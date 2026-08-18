@@ -1,0 +1,118 @@
+{
+  "description": "UAE -> Netherlands waitlist registration. Same four pages as Switzerland: tick the waitlist checkbox on Appointment Details and Continue; fill 'Your Details' (/your-details) and Save; Continue past the summary; accept both consents on /review-pay and Confirm. The Confirm click is the point of no return.",
+
+  "extends": "_default",
+
+  "enabled": true,
+  "_comment_enabled": "ARMED. The slot-check layer is real: config/routes/AE-NLD.json now carries the portal's exact centre/category/sub_category dropdown text and AE-NLD is live in config/vfs_urls.ini. The page mapping below came from real portal HTML. Note this only makes the route eligible — three further gates (client \"enabled\", the combo named in the client's \"combos\", and [waitlist] register_enabled) still have to pass, and dry_run is on by default.",
+
+  "_comment_no_otp": "CONFIRMED: no OTP at login and none during waitlist registration, so this route is NOT blocked behind the Telegram relay that holds up AE-ITA.",
+
+  "_comment_checkbox": "NOT pinned, same as AE-CHE. The captured checkbox is a bare <input class=\"mdc-checkbox__native-control\"> whose only id is positional (mat-mdc-checkbox-0-input) and shifts as the page gains controls — nothing stable to pin. detect.locate() finds the lone checkbox on the Appointment Details step. Add a \"checkbox\" key only if VFS starts rendering several and the wrong one gets picked.",
+
+  "steps": [
+    {
+      "name": "your_details",
+
+      "_comment_countdown": "The banner counts DOWN from 30 seconds, so a mid-timer capture shows a smaller number ('Please wait 8 seconds...' was captured partway through). Confirmed 30s — same as AE-CHE. The timer gates SAVE only; the fields can be filled immediately.",
+      "dwell_seconds": 32,
+      "_comment_dwell_value": "30s countdown + 2s margin, measured from AFTER the fields are filled (itself several seconds in), so the real wait is comfortably past the timer. As on AE-CHE the Save button enables BEFORE the timer expires but clicking early does nothing, so _await_enabled polling alone is not sufficient.",
+
+      "_comment_selectors": "<app-dynamic-form>/<app-dynamic-control> with no formcontrolname and only volatile positional ids (mat-input-3..8, allocated in DOM order). Every field is addressed by its visible LABEL — the only stable anchor. Confirmed from the captured HTML.",
+
+      "_comment_no_address": "Switzerland's address_line_1/2 are ABSENT here — the captured form ends at Email. Not carried over: an if_present field that never appears is just a wasted presence probe per run. Add them if a render ever shows them.",
+
+      "fields": [
+        {
+          "name": "first_name",
+          "label": "First Name",
+          "widget": "text",
+          "value": "{{first_name|upper}}",
+          "required": true,
+          "_comment": "input carries appuppercase + class 'text-uppercase'; VFS upper-cases it anyway, so doing it here keeps what we send identical to what is stored."
+        },
+        {
+          "name": "last_name",
+          "label": "Last Name",
+          "widget": "text",
+          "value": "{{last_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "nationality",
+          "label": "Current Nationality",
+          "widget": "mat-select",
+          "value": "{{nationality}}",
+          "required": true,
+          "_comment": "<mat-select id='mat-select-3'>; options render in a cdk overlay at the end of <body>, not inside this block, so they are matched globally by role=option."
+        },
+        {
+          "name": "passport_number",
+          "label": "Passport Number",
+          "widget": "text",
+          "value": "{{passport_number|upper}}",
+          "required": true
+        },
+        {
+          "name": "phone_country_code",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 0,
+          "value": "{{phone_country_code|digits}}",
+          "required": true,
+          "_comment": "Split phone field, identical to AE-CHE: both inputs sit under ONE 'Contact number' caption, so index 0 = country code (maxlength 3, placeholder '44') and index 1 = the number (minlength 7, maxlength 15). |digits strips any leading '+'."
+        },
+        {
+          "name": "phone_number",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 1,
+          "value": "{{phone_number|digits}}",
+          "required": true
+        },
+        {
+          "name": "email",
+          "label": "Email",
+          "widget": "text",
+          "value": "{{email}}",
+          "required": true,
+          "_comment": "type=email, maxlength 50. Note the input also carries appuppercase/text-uppercase on this portal, but the value is sent as stored — VFS does not upper-case the email server-side."
+        }
+      ],
+
+      "submit": { "role": "button", "name": "Save" },
+      "_comment_submit": "Plain <button> with <span class='mdc-button__label'> Save </span> — no id, no formcontrolname. get_by_role(name=...) matches that span's text. A hidden 'Update' button and a 'Cancel' share the row; role+name avoids both."
+    },
+
+    {
+      "name": "review_pay",
+
+      "_comment_checkboxes": "Two consents, matched by their own WORDING rather than position — ids here are positional (mat-mdc-checkbox-1 / -3, note the gap) and shift as VFS adds consents.",
+
+      "fields": [
+        {
+          "name": "accept_terms",
+          "label": "I accept the",
+          "widget": "checkbox",
+          "index": 0,
+          "value": true,
+          "required": true,
+          "_comment": "The Terms and Conditions consent (input value='VAS T&Cs'). Its <label> wraps an <a target=\"_blank\"> to .../nld/termsandconditions — clicking the label centre opens that link in a new tab instead of ticking, which is why the click ladder targets the native input first. index 0 kept for the same reason as AE-CHE: 'I accept the' is a prefix that a second VAS consent can also match."
+        },
+        {
+          "name": "agree_waitlist",
+          "label": "Yes, I agree for waitlist confirmation",
+          "widget": "checkbox",
+          "value": true,
+          "required": true,
+          "_comment": "The waitlist agreement — the one that actually matters. Wording is UNIQUE on the page and its label holds no link, so no index is needed and this survives VFS reordering the consents. Identical wording to AE-CHE."
+        }
+      ]
+    }
+  ],
+
+  "confirmation": {
+    "_comment_unverified": "INHERITED, NOT OBSERVED. No confirmation page has been captured for this portal — 'waitlisted' comes from _default. AE-CHE's real headline was 'Your Appointment is Waitlisted'; if NLD matches, tighten this to that exact phrase. A bare 'waitlisted' is looser than ideal because the word also appears in disclaimers, so confirm this on the first live run.",
+    "success_text": ["waitlisted"]
+  }
+}

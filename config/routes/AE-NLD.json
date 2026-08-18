@@ -2,19 +2,20 @@
   "description": "UAE -> Netherlands. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
   "mode": "slot-check",
   "slot_check": {
+    "_comment_labels": "Labels must be UNIQUE within a route — a waitlist client file names the combination it wants by label, and duplicates would silently resolve to whichever came first. The centre alone is NOT unique here (three Abu Dhabi rows, two Dubai rows), so each label carries its category as well. The centre/category/sub_category values themselves are UNTOUCHED — they must stay the portal's exact dropdown text.",
+    "_comment_otp": "CONFIRMED: this portal needs NO OTP — not at login, and not during waitlist registration. So \"otp\" stays absent (false) and NLD is not blocked behind the Telegram relay that holds up AE-ITA.",
     "combinations": [
-      { "label": "Netherlands Visa Application Center-Abu Dhabi", "disabled": true,
+      { "label": "Abu Dhabi - Business Visa", "disabled": true,
         "centre": "Netherlands Visa Application Center-Abu Dhabi", "category": "Business Visa", "sub_category": "Business Purpose" },
-      { "label": "Netherlands Visa Application Center-Abu Dhabi",
+      { "label": "Abu Dhabi - Schengen Visa",
         "centre": "Netherlands Visa Application Center-Abu Dhabi", "category": "Schengen Visa", "sub_category": "Schengen Short Stay" },
-      { "label": "Netherlands Visa Application Center-Abu Dhabi",
+      { "label": "Abu Dhabi - Tourist Visa",
         "centre": "Netherlands Visa Application Center-Abu Dhabi", "category": "Tourist Visa", "sub_category": "Tourist Purpose" },
-      
-      { "label": "Netherlands Visa application center- Dubai", "disabled": true,
+
+      { "label": "Dubai - Business Visa", "disabled": true,
         "centre": "Netherlands Visa application center- Dubai", "category": "Business Visa", "sub_category": "Business Purpose" },
-      { "label": "Netherlands Visa application center- Dubai",
+      { "label": "Dubai - Tourist Visa",
         "centre": "Netherlands Visa application center- Dubai", "category": "Tourist Visa", "sub_category": "Tourist Purpose" }
     ]
   }
 }
-
