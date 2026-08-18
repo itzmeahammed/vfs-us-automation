@@ -36,10 +36,15 @@ class TestNoRetryOnOtp(unittest.TestCase):
         self.assertEqual(attempts, 1)                 # attempt 1 only — no retry
         self.assertEqual(outcome["status"], "FAILED")
 
-    def test_other_retryable_still_retries_twice(self):
-        # A non-OTP retryable (stuck login form) still uses both attempts.
+    def test_other_retryable_uses_every_attempt(self):
+        # A non-OTP retryable (stuck login form) still exhausts the configured
+        # budget. Asserted against the setting, not a literal, so retuning
+        # [account_safety] max_attempts doesn't break a test about OTP.
+        from src.settings import settings
+
         attempts, outcome = _run_with(LoginFormNotReadyError("stuck"))
-        self.assertEqual(attempts, 2)
+        self.assertEqual(attempts, settings().account_safety.max_attempts)
+        self.assertGreater(attempts, 1, "non-OTP failures must still retry")
         self.assertEqual(outcome["status"], "FAILED")
 
 

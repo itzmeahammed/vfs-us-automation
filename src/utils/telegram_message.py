@@ -317,3 +317,31 @@ def failure_alert(source_code: str, dest_code: str, error: str, attempts: int,
         msg += f"\nAccount: {email}"
     msg += f"\n\nLast error:\n{error}"
     return msg
+
+
+def bandwidth_warning(used_mb: float, cap_mb: float, percent: float) -> str:
+    """Builds the 'proxy data is running down' warning (sent once per day).
+
+    Deliberately actionable rather than alarming: at this point nothing has
+    stopped, so the message says how much is left and what happens if it runs
+    out. See bandwidth_budget.py for when this fires.
+    """
+    return (
+        f"📊 Proxy data {percent:.0f}% used today — "
+        f"{used_mb:.0f} of {cap_mb:.0f} MB.\n"
+        f"Remaining: {max(0.0, cap_mb - used_mb):.0f} MB.\n\n"
+        "Slot checks continue as normal. If the cap is reached, the remaining "
+        "routes pause until tomorrow."
+    )
+
+
+def bandwidth_cap_reached(used_mb: float, cap_mb: float) -> str:
+    """Builds the 'daily cap spent, routes paused' notice (sent once per day)."""
+    return (
+        f"🛑 Daily proxy data cap reached — "
+        f"{used_mb:.0f} of {cap_mb:.0f} MB.\n\n"
+        "Remaining routes are PAUSED for today and later runs will exit "
+        "immediately. No accounts were struck; checks resume automatically at "
+        "midnight.\n\n"
+        "To resume sooner: python -m src.utils.bandwidth_budget reset"
+    )

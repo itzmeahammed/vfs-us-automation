@@ -17,7 +17,7 @@ import logging
 
 from src.settings import settings
 from src.utils.config_reader import get_config_value
-from src.vfs_bot import diagnostics, turnstile
+from src.vfs_bot import diagnostics, page_guard, turnstile
 from src.vfs_bot.errors import SlotCheckError
 
 # ===== Angular Material dropdown selection ==================================
@@ -32,7 +32,7 @@ def _loader_stuck(page) -> bool:
     try:
         return page.locator(
             "ngx-ui-loader .ngx-overlay.loading-foreground"
-        ).is_visible()
+        ).first.is_visible()      # .first: is_visible() is strict about matches
     except Exception:
         return False
 
@@ -104,8 +104,11 @@ def select_mat_dropdown(page, control_name: str, value: str,
         bool: True if the option was selected, False otherwise.
     """
     last_options = []
+    where = f"selecting '{value}' for '{control_name}'"
     for attempt in range(1, attempts + 1):
         try:
+            # Free liveness check before spending any timeout on this attempt.
+            page_guard.assert_alive(page, where)
             turnstile.wait_for_loader(page)  # lists load behind a full-screen spinner
             # If the spinner is STILL up after the wait, a backend request is hung.
             # Don't burn a full option_timeout_ms waiting for options a stalled
@@ -114,7 +117,19 @@ def select_mat_dropdown(page, control_name: str, value: str,
             trigger = page.locator(
                 f"mat-select[formcontrolname='{control_name}']"
             ).first
-            trigger.scroll_into_view_if_needed(timeout=10000)
+            # A control that isn't in the DOM AT ALL is not a flaky element — the
+            # form is gone (VFS swapped in an error view). Waiting on it is what
+            # cost ~12s per attempt, 9 attempts deep, on a page that was already
+            # dead. Confirm with a full DOM classification, then stop retrying:
+            # three more identical timeouts cannot conjure the control back.
+            if trigger.count() == 0:
+                page_guard.assert_alive(page, where, deep=True)
+                logging.warning(
+                    f"Dropdown '{control_name}' is not present on the page at all "
+                    "— the appointment form is gone; not retrying."
+                )
+                break
+            trigger.scroll_into_view_if_needed(timeout=3000)
             # Open the panel; if the loading overlay intercepts the normal click,
             # force it (a spurious/stale overlay shouldn't block an enabled control).
             try:
@@ -145,7 +160,15 @@ def select_mat_dropdown(page, control_name: str, value: str,
             page.wait_for_timeout(1000)
             turnstile.wait_for_loader(page)  # let the dependent dropdown reload
             return True
+        except page_guard.BLOCK_ERRORS:
+            raise      # the session is dead — never degrade this to a retry
         except Exception as e:
+            # A step that FAILED is itself grounds to go and look: Angular can
+            # swap in an error view client-side with no navigation event, so the
+            # passive sentinel may have nothing flagged. This deep check is the
+            # one DOM pass that turns "mystery timeout" into a typed block error
+            # the supervisor can rotate the IP on.
+            page_guard.assert_alive(page, where, deep=True)
             # Capture what was on offer (before Escape closes the panel) so a
             # mismatch between the route JSON and the portal's real labels shows
             # up in the log instead of a bare timeout.
@@ -195,6 +218,11 @@ def read_slot_message(page, timeout: int = 12000) -> str:
     '... for 2 Applicants is : 11-08-2026'. Each is its own role=alert div, so
     ALL of them are collected and newline-joined (the old code read only .first
     and silently dropped the rest).
+
+    Returning "" means "no banner on a LIVE form" — genuine no-availability. It
+    must never mean "the page died while we waited", which is exactly how a
+    blocked session used to be reported as no availability; the caller asserts
+    liveness on the empty result to keep that distinction honest.
     """
     try:
         turnstile.wait_for_loader(page)
@@ -214,6 +242,8 @@ def read_slot_message(page, timeout: int = 12000) -> str:
         # Fallback for any markup without role=alert: the single first banner.
         return page.get_by_text(
             "Earliest available slot", exact=False).first.inner_text().strip()
+    except page_guard.BLOCK_ERRORS:
+        raise      # wait_for_loader spotted a dead session — don't swallow it
     except Exception:
         return ""
 
@@ -224,6 +254,7 @@ def read_slot_message(page, timeout: int = 12000) -> str:
 def start_new_booking(page) -> None:
     """Clicks the 'Start New Booking' button on the VFS dashboard."""
     try:
+        page_guard.assert_alive(page, "starting a new booking")
         page.wait_for_timeout(2000)
         # VFS renders two copies of this button (responsive: one for mobile,
         # one for desktop) — one is CSS-hidden at any given viewport. Target
@@ -242,7 +273,13 @@ def start_new_booking(page) -> None:
         page.wait_for_timeout(800)
         diagnostics.take_screenshot(page, "06_start_new_booking")
         logging.debug(f"Start New Booking opened. URL: {page.url}")
+    except page_guard.BLOCK_ERRORS:
+        raise      # session dead — the caller must fail the route, not press on
     except Exception as e:
+        # Classify before shrugging: if the dashboard was pulled out from under
+        # us, that must surface as a block (rotate IP), not a swallowed warning
+        # that lets run_slot_check march into a dead page.
+        page_guard.assert_alive(page, "starting a new booking", deep=True)
         logging.warning(f"Start New Booking failed: {e}")
         diagnostics.take_screenshot(page, "ERROR_start_new_booking")
 
@@ -365,7 +402,13 @@ def run_slot_check(page, schema: dict, source_country_code: str,
     # browser instead of grinding per-combo timeouts and reporting a fake result.
     try:
         page.locator("mat-select").first.wait_for(state="visible", timeout=20000)
+    except page_guard.BLOCK_ERRORS:
+        raise
     except Exception as e:
+        # Classify first: if VFS blocked us on the way here, say so (and let the
+        # supervisor rotate the IP) instead of reporting a generic slow load.
+        page_guard.assert_alive(page, "opening the Appointment Details form",
+                                deep=True)
         diagnostics.take_final_screenshot(page, "appointment_form_not_loaded")
         raise SlotCheckError(
             "Reached the Appointment Details URL but its form controls never "
@@ -384,6 +427,13 @@ def run_slot_check(page, schema: dict, source_country_code: str,
         label = combo_label(combo)
         logging.info(f"Checking slot for: {label}")
 
+        # Free liveness check at the top of every combination. A block raises
+        # straight out of run_slot_check: the remaining combos are abandoned
+        # rather than "checked" against a dead page and reported as no
+        # availability. A half-checked route reporting no slots is worse than a
+        # route reporting failure — the supervisor can retry a failure.
+        page_guard.assert_alive(page, f"starting combination '{label}'")
+
         ok, fail_detail = _select_combo(page, combo, prev)
         prev = {
             "centre": combo.get("centre"),
@@ -399,9 +449,16 @@ def run_slot_check(page, schema: dict, source_country_code: str,
         else:
             message = read_slot_message(page, timeout=settings().timeouts.slot_read_ms)
             if not message:
-                # No slot banner. VFS may instead offer a waitlist checkbox —
-                # detect it (read-only) and, if present, mark this combo as
-                # 'waitlist' instead of plain 'no availability'.
+                # An empty read is ambiguous: genuinely no availability, or the
+                # session died while we waited out the timeout (which is exactly
+                # how a blocked run once reported "no availability" for a combo
+                # it never really checked). Resolve it with one DOM pass BEFORE
+                # committing to the no-slot interpretation.
+                page_guard.assert_alive(
+                    page, f"reading the slot banner for '{label}'", deep=True)
+                # Confirmed live and no banner. VFS may instead offer a waitlist
+                # checkbox — detect it (read-only) and, if present, mark this
+                # combo as 'waitlist' instead of plain 'no availability'.
                 message = (waitlist.as_result() if waitlist.is_offered(page)
                            else "No slot message shown (no availability?).")
 

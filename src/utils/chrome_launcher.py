@@ -331,12 +331,19 @@ class ChromeProcess:
             scheme, host, port_, user, pw = _split_proxy(self.proxy)
             if user and pw and host and port_:
                 from src.utils.proxy_forwarder import ProxyForwarder
-                self._forwarder = ProxyForwarder(host, port_, user, pw, scheme=scheme)
+                # Host blocking is enforced HERE, not in the browser: the
+                # forwarder refuses a denylisted host before the metered
+                # upstream is dialled, and unlike a Playwright route it costs no
+                # HTTP cache. Denylisted bytes are never billed at all.
+                deny = bw.blocked_hosts if bw else None
+                self._forwarder = ProxyForwarder(host, port_, user, pw,
+                                                 scheme=scheme, blocked_hosts=deny)
                 local_port = self._forwarder.start()
                 proxy_arg = f"http://127.0.0.1:{local_port}"
                 logging.debug(
                     f"Chrome proxy via local forwarder :{local_port} -> "
-                    f"{scheme}://{host}:{port_}"
+                    f"{scheme}://{host}:{port_} "
+                    f"({len(deny or ())} host(s) denylisted)"
                 )
             else:
                 logging.debug(f"Chrome routing through proxy: {host}:{port_}")
@@ -400,6 +407,7 @@ class ChromeProcess:
             # this — the short-lived IP-probe forwarder stays silent).
             fwd = self._forwarder
             fwd_mb = getattr(fwd, "mb", 0.0)
+            fwd_blocked = getattr(fwd, "blocked_requests", 0)
             try:
                 hosts = fwd.top_hosts(6)
             except Exception:
@@ -420,6 +428,12 @@ class ChromeProcess:
                     for host, nbytes in hosts:
                         self.traffic_lines.append(
                             f"    {nbytes / (1024 * 1024):6.1f} MB  {host}")
+                    if fwd_blocked:
+                        # Refused at the tunnel, so these never reached the
+                        # upstream and are absent from the MB above.
+                        self.traffic_lines.append(
+                            f"Denylisted hosts refused this route: {fwd_blocked} "
+                            "request(s) — never dialled upstream.")
             except Exception:
                 pass
         if not self._proc:

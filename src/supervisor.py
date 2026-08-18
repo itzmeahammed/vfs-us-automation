@@ -47,6 +47,7 @@ from src.vfs_bot.vfs_bot import (
     GeoBlockedError,
     InvalidCredentialsError,
     IpBlockedError,
+    LoginFormNotReadyError,
     OtpVerificationError,
     RetryableError,
     SignInDisabledError,
@@ -70,6 +71,12 @@ def _max_attempts() -> int:
 _INFRA_EXC_NAMES = (
     "CdpConnectError", "LoginFormNotReadyError", "SignInDisabledError",
     "TurnstileRejectedError", "GeoBlockedError", "IpBlockedError",
+    # The session was killed from outside mid-flow (error page / dead session),
+    # which is never the account holder's doing — must not cost it a strike.
+    "PageBlockedError",
+    # VFS silently refused the login and re-showed the form. Matching is by
+    # exact class name, not isinstance, so this subclass needs its own entry.
+    "LoginBouncedError",
     "ConnectionResetError", "ConnectionRefusedError", "ConnectionAbortedError",
     "ConnectionError", "TimeoutError",
 )
@@ -81,6 +88,7 @@ _INFRA_MARKERS = (
     "cdp endpoint never came up", "err_proxy", "err_tunnel", "err_empty_response",
     "err_connection", "err_timed_out", "err_address_unreachable", "net::err",
     "proxy", "forwarder", "geo-block", "403203",
+    "page-load budget",   # E: login/Turnstile loop hit the nav cap — infra, not acct
 )
 
 
@@ -236,8 +244,10 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
     Runs a route with ONE account (selected up front, skipping benched/disabled)
     and its pinned proxy IP, updating account health per the outcome.
 
-    On a 403201 IP block it rotates to a DIFFERENT IP and retries once (up to
-    MAX_IP_TRIES IPs) WITHOUT penalising the account — it's the IP, not the user.
+    On an IP-scoped block — 403201, or the 403203 'Permission Issues' refusal,
+    which in the field fires mid-session against an IP that had already logged in
+    — it rotates to a DIFFERENT IP and retries (up to MAX_IP_TRIES IPs) WITHOUT
+    penalising the account: it's the IP that was refused, not the user.
 
     Test overrides (single-route only): `force_email`(+`force_password`) forces a
     specific account; `force_proxy` forces a proxy URL ('' = direct/local).
@@ -286,7 +296,11 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
     MAX_IP_TRIES = 1 if keep_open else settings().retry.max_ip_tries
     last_error = None
     last_error_infra = False  # was the last failure infra/network (no account strike)?
-    ip_blocked = False
+    # Set when every IP we were allowed to try got hard-blocked: "ip" for a
+    # 403201 IP block, "geo" for the 403203 / 'Permission Issues' refusal. Both
+    # are IP-scoped, so both rotate first and only give up once the IP budget is
+    # spent; they differ only in the outcome status they report.
+    blocked_kind = None
     for attempt in range(1, max_attempts + 1):
         logging.info(f"=== Attempt {attempt}/{max_attempts} (ip {proxy_label}) ===")
         traffic_sink = []  # bandwidth lines, logged AFTER this attempt's outcome
@@ -311,17 +325,39 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             else:
                 logging.info(f"Success on attempt {attempt}.")
             return outcome
-        except (IpBlockedError, SignInDisabledError) as e:
-            # Both mean "this IP isn't working here": a hard 403201 block, or
-            # Cloudflare/Turnstile that wouldn't pass. Rotate to a DIFFERENT IP
+        except (IpBlockedError, GeoBlockedError, SignInDisabledError,
+                LoginFormNotReadyError) as e:
+            # All of these mean "this IP isn't working here": a hard 403201 block,
+            # VFS's 403203 'Permission Issues' refusal, Cloudflare/Turnstile that
+            # wouldn't pass, or the login form never rendering (Cloudflare parking
+            # a stuck spinner on the challenge gate). Rotate to a DIFFERENT IP
             # instead of hammering (and re-downloading) the same one, and do NOT
             # penalise the account — it's the IP, not the user.
-            is_block = isinstance(e, IpBlockedError)
-            # Both are IP/infra, never the account's fault — so if this ends up
+            #
+            # LoginFormNotReadyError is included because a Cloudflare-blocked IP
+            # often can't even re-render the form after the Turnstile reload — and
+            # that surfaced here as a plain retryable, so BOTH attempts reused the
+            # SAME dead IP and the route failed. Rotating gives attempt 2 a fresh
+            # IP, which the field logs show usually succeeds.
+            #
+            # The geo case is here rather than in its own terminal handler
+            # because the field says so: it fires mid-session on an IP that had
+            # already logged in and checked a combination, i.e. it is VFS
+            # rate-limiting that IP, not a genuine location restriction. Another
+            # IP usually works, and stopping the route on the first one threw
+            # away the run for no reason.
+            kind = ("ip" if isinstance(e, IpBlockedError)
+                    else "geo" if isinstance(e, GeoBlockedError) else None)
+            # All are IP/infra, never the account's fault — so if this ends up
             # being the run's final failure, it must not strike the account.
             last_error_infra = True
-            last_error = (f"IP blocked (403201) on {proxy_label}" if is_block
-                          else f"Cloudflare/Turnstile not passed on {proxy_label}")
+            last_error = (
+                f"IP blocked (403201) on {proxy_label}" if kind == "ip"
+                else f"Blocked (403203 Permission Issues) on {proxy_label}"
+                if kind == "geo"
+                else f"Login form never rendered on {proxy_label}"
+                if isinstance(e, LoginFormNotReadyError)
+                else f"Cloudflare/Turnstile not passed on {proxy_label}")
             newp = None
             if not forced_proxy and len(tried_proxies) < MAX_IP_TRIES:
                 newp, _ip = proxy_pool.pick_for_run(
@@ -332,10 +368,11 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
                 logging.warning(f"{route}: {last_error} [{account}] — rotating to a "
                                 f"different IP {proxy_label}, retrying.")
                 continue  # retry on the new IP (no backoff, not an account strike)
-            if is_block:
-                # 403201 and no alternate IP left: fail this run (don't hammer).
+            if kind:
+                # Hard IP-scoped block and no alternate IP left: fail this run
+                # rather than hammer the same refused IP.
                 logging.warning(f"{route}: {last_error} [{account}] — no alternate IP.")
-                ip_blocked = True
+                blocked_kind = kind
                 break
             # Turnstile failure with no alternate IP (local run / pool exhausted):
             # fall through to a same-IP retry — a fresh browser may pass.
@@ -346,13 +383,6 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             # success and not a failure, so leave its health untouched. Skip.
             logging.info(f"{source}-{dest}: account not registered here — skipping. ({e})")
             return _outcome(source, dest, "SKIPPED", attempt, error=str(e),
-                            account=account, proxy=proxy_label)
-        except GeoBlockedError as e:
-            # IP/environment, not the account — do NOT touch account health.
-            logging.error(f"Geo-blocked for {source}-{dest}: {e}")
-            _alert_failure(source, dest, f"Geo-blocked (403203): {e}",
-                           attempts=attempt, account=account)
-            return _outcome(source, dest, "GEO", attempt, error=str(e),
                             account=account, proxy=proxy_label)
         except (InvalidCredentialsError, AccountBlockedError) as e:
             # Needs a HUMAN fix, not a timed cooldown: wrong password, or VFS's
@@ -439,16 +469,20 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             logging.info(f"Backing off {backoff}s before next attempt...")
             time.sleep(backoff)
 
-    # IP block that couldn't be worked around (all tried IPs 403201, or forced/
-    # no alternate). Do NOT penalise the account — it's the IP. Just alert & fail.
-    if ip_blocked:
+    # IP-scoped block that couldn't be worked around (every IP we were allowed to
+    # try was refused, or the proxy was forced / none available). Do NOT penalise
+    # the account — it's the IP. Just alert & fail.
+    if blocked_kind:
         n = len(tried_proxies) or 1
-        msg = (f"IP blocked (403201) — tried {n} IP(s), all blocked. "
+        code = "403201" if blocked_kind == "ip" else "403203 Permission Issues"
+        msg = (f"IP blocked ({code}) — tried {n} IP(s), all blocked. "
                f"Route failed this run; a different/residential IP is needed.")
         logging.error(f"{route}: {msg}")
         _alert_failure(source, dest, msg, attempts=n, account=account)
-        return _outcome(source, dest, "FAILED", n, error=msg,
-                        account=account, proxy=proxy_label)
+        # 'GEO' keeps the geo case distinguishable in the run summary; the 403201
+        # case keeps its historical 'FAILED' status.
+        return _outcome(source, dest, "FAILED" if blocked_kind == "ip" else "GEO",
+                        n, error=msg, account=account, proxy=proxy_label)
 
     # Infra/network failure (proxy exit died, Cloudflare/Turnstile, CDP, geo):
     # NOT the account's fault, so fail the run WITHOUT striking the account — a
@@ -511,7 +545,12 @@ def run_all_routes() -> bool:
     A compact run summary (every route's status) is sent to the summary chat at
     the end of every run, regardless of success/failure.
 
-    Returns True only if ALL routes succeeded.
+    Bandwidth: routes are billed against a daily cap ([bandwidth] daily_cap_mb).
+    Once it is spent the remaining routes are marked PAUSED and later runs the
+    same day return immediately without alerting again — see bandwidth_budget.py.
+
+    Returns True only if ALL routes succeeded. A budget pause counts as success:
+    nothing failed, and no account was struck.
     """
     routes = _all_routes()
     if not routes:
@@ -528,8 +567,44 @@ def run_all_routes() -> bool:
         + ", ".join(f"{s}-{d}" for s, d in routes)
     )
 
+    # Daily proxy-data budget. Read once up front so a spent cap costs one file
+    # read instead of a whole run, and tracked per route below.
+    from src.utils import bandwidth_budget, proxy_forwarder
+    if bandwidth_budget.is_exhausted():
+        logging.error(
+            f"Daily proxy data cap spent ({bandwidth_budget.used_mb():.1f} of "
+            f"{bandwidth_budget.cap_mb():.0f} MB) — skipping this run entirely. "
+            "Resets at midnight; 'python -m src.utils.bandwidth_budget reset' "
+            "to resume sooner."
+        )
+        # Log only — no Telegram. The one-time cap notice has already been sent,
+        # and every remaining run today would hit this same branch: sending a
+        # summary from each would be ~20 identical "everything paused" messages.
+        # The run that actually spent the cap still sends its summary below.
+        # True, not False: a deliberate pause is not a failed run.
+        return True
+    billed_mb = proxy_forwarder.session_mb()   # baseline for the per-route delta
+
     outcomes = []
     for idx, (source, dest) in enumerate(routes, start=1):
+        # Stop before STARTING a route we can't afford. Checked here rather than
+        # mid-route on purpose: killing a browser halfway wastes the bytes it has
+        # already spent, so the route in flight always finishes and the day can
+        # end one route over the cap. Cheaper than the connectivity probe below,
+        # so it goes first.
+        if bandwidth_budget.is_exhausted():
+            logging.error(
+                f"Daily proxy data cap reached ({bandwidth_budget.used_mb():.1f} of "
+                f"{bandwidth_budget.cap_mb():.0f} MB) — pausing after "
+                f"{idx - 1}/{len(routes)} route(s). No accounts struck; resets at "
+                "midnight."
+            )
+            outcomes.extend(
+                _outcome(s, d, "PAUSED", 0, error="daily proxy data cap reached")
+                for s, d in routes[idx - 1:]
+            )
+            break
+
         # Re-check connectivity before each route: if the link drops mid-run,
         # stop here instead of letting every remaining route fail with
         # connection-refused (striking accounts, flooding the log). Cheap when
@@ -553,6 +628,14 @@ def run_all_routes() -> bool:
             logging.exception(f"Route {source}-{dest} crashed unexpectedly: {e}")
             outcome = _outcome(source, dest, "FAILED", _max_attempts(), error=str(e))
         outcomes.append(outcome)
+        # Bill this route against the daily budget. session_mb() only moves when
+        # a forwarder stops (which run() has already done by now), so the delta
+        # is exactly what this route cost — including its retries and IP probes.
+        # Recording per route, not per run, means a crash can't lose the day's
+        # usage. record() also fires the 60%/100% Telegram alerts, once each.
+        now_mb = proxy_forwarder.session_mb()
+        bandwidth_budget.record(now_mb - billed_mb)
+        billed_mb = now_mb
         # Log the route's final status at a level that matches it: a genuine
         # failure (FAILED/GEO/BLOCKED/LOCKED/RESTRICTED) is an ERROR, not INFO,
         # so it stands out in the log. OK/SKIPPED/PAUSED stay INFO.
@@ -563,11 +646,17 @@ def run_all_routes() -> bool:
     all_ok = all(o["ok"] for o in outcomes)
     logging.info(f"All routes done. Overall {'OK' if all_ok else 'with failures'}.")
     if settings().bandwidth.log_usage:
-        from src.utils import proxy_forwarder
         logging.info(
             f"Total proxy traffic this run: {proxy_forwarder.session_mb():.1f} MB "
             f"across {len(routes)} route(s)."
         )
+        cap = bandwidth_budget.cap_mb()
+        if cap > 0:
+            logging.info(
+                f"Daily proxy data: {bandwidth_budget.used_mb():.1f} / {cap:.0f} MB "
+                f"({bandwidth_budget.percent_used():.0f}%) — "
+                f"{bandwidth_budget.remaining_mb():.1f} MB left today."
+            )
     _send_run_summary(outcomes)
     return all_ok
 

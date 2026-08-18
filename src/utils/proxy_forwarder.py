@@ -10,6 +10,16 @@ It is transparent: for HTTPS it tunnels the CONNECT to the upstream (adding the
 auth header once), then pipes raw bytes — so Cloudflare/Turnstile see a normal
 TLS connection egressing from the residential IP. Pure stdlib; no dependencies.
 
+It is also where HOST BLOCKING lives (`blocked_hosts`). Refusing a request here
+beats refusing it in the browser twice over: the upstream is never dialled, so
+the metered proxy is never billed a single byte — and, crucially, it costs no
+Chromium HTTP cache. (Browser-side blocking needs a Playwright route, and
+installing one makes Chromium re-issue every matched request through the network
+stack instead of its disk cache — measured at ~4.7 MB per route-attempt of VFS
+bundles that would otherwise have been free. See vfs_bot._install_resource_blocking.)
+Only proxied runs get host blocking; on a direct connection there is no metered
+upstream to protect, so there is nothing to save.
+
 Lifecycle is owned by ChromeProcess: one forwarder per browser, started before
 Chrome and stopped when Chrome is killed (routes run one at a time, so there is
 only ever one forwarder on one local port).
@@ -22,6 +32,61 @@ import socket
 import threading
 
 _BUF = 65536
+
+
+def _bare_host(authority: str) -> str:
+    """'host:443' / '[::1]:443' / 'HOST.' -> 'host' (lowercased, no port/dot)."""
+    a = (authority or "").strip()
+    # Drop any userinfo ('user:pw@host'). Chrome never sends it, but reading the
+    # host from the wrong side of the '@' would silently defeat the denylist.
+    if "@" in a:
+        a = a.rsplit("@", 1)[1]
+    if a.startswith("["):                       # IPv6 literal: [::1]:443
+        end = a.find("]")
+        a = a[1:end] if end > 0 else a[1:]
+    else:
+        a = a.split(":", 1)[0]
+    return a.strip().rstrip(".").lower()
+
+
+def _header(head: bytes, name: bytes) -> str:
+    """Value of a request header from the raw head block, '' if absent."""
+    want = name.lower() + b":"
+    for line in head.split(b"\r\n")[1:]:
+        if not line:                            # blank line ends the headers
+            break
+        if line.lower().startswith(want):
+            return line[len(want):].strip().decode("ascii", "ignore")
+    return ""
+
+
+def dest_host(method: bytes, target: bytes, head: bytes) -> str:
+    """Destination hostname of a proxied request; '' when undeterminable.
+
+    CONNECT carries 'host:port' in cleartext even though the payload is TLS.
+    A plain HTTP proxy request carries an absolute URI. Origin-form requests
+    (some clients still send them) fall back to the Host header.
+    """
+    t = target.decode("ascii", "ignore").strip()
+    if method == b"CONNECT":
+        authority = t
+    elif "://" in t:
+        authority = t.split("://", 1)[1].split("/", 1)[0]
+    else:
+        authority = ""
+    return _bare_host(authority or _header(head, b"host"))
+
+
+def host_blocked(host: str, patterns) -> bool:
+    """True if `host` matches a denylist entry exactly or as a dotted suffix.
+
+    Suffix matching is deliberately dotted so 'facebook.net' covers
+    'connect.facebook.net' but never a lookalike like 'notfacebook.net'.
+    """
+    if not host or not patterns:
+        return False
+    return any(host == p or host.endswith("." + p) for p in patterns)
+
 
 # Running total of bytes tunnelled across ALL forwarders this process (i.e. the
 # whole supervisor run — every route). Lets run_all_routes report a single
@@ -43,7 +108,8 @@ def reset_session_bytes() -> None:
 
 class ProxyForwarder:
     def __init__(self, up_host: str, up_port: int, username: str, password: str,
-                 bind_host: str = "127.0.0.1", scheme: str = "http"):
+                 bind_host: str = "127.0.0.1", scheme: str = "http",
+                 blocked_hosts=None):
         self.up_host = up_host
         self.up_port = int(up_port)
         self._user = username or ""
@@ -52,6 +118,13 @@ class ProxyForwarder:
         # Upstream protocol: 'http' (HTTP CONNECT) or 'socks5'/'socks' (SOCKS5).
         self.scheme = (scheme or "http").lower()
         self.bind_host = bind_host
+        # Hosts to refuse outright (analytics/telemetry). Normalised once here so
+        # the hot path is a plain set lookup and callers can pass any iterable.
+        # Empty/None disables blocking entirely — e.g. the short-lived IP probe
+        # in proxy_pool, which must reach its geo-check API unimpeded.
+        self._blocked_hosts = frozenset(
+            _bare_host(h) for h in (blocked_hosts or ()) if str(h).strip()
+        )
         self._srv = None
         self._thread = None
         self._stop = threading.Event()
@@ -59,6 +132,7 @@ class ProxyForwarder:
         self._err_logged = False  # log the first upstream error only (avoid spam)
         self._bytes = 0           # bytes tunnelled through THIS forwarder (billed)
         self._bytes_by_host = {}  # per-destination-host byte tally (diagnostics)
+        self.blocked_requests = 0  # requests refused by the host denylist
         self._bytes_lock = threading.Lock()
 
     @staticmethod
@@ -149,9 +223,25 @@ class ProxyForwarder:
             if len(parts) < 2:
                 return
             method, target = parts[0].upper(), parts[1]
-            # Destination host (for the per-host byte breakdown). For CONNECT the
-            # target is 'host:port' in cleartext even though the payload is TLS.
-            host = target.split(b":", 1)[0].decode("ascii", "ignore") or None
+            # Destination host: drives the per-host byte breakdown AND the
+            # denylist below.
+            host = dest_host(method, target, head)
+
+            # Denylisted host: refuse BEFORE dialling upstream, so the metered
+            # proxy never sees these bytes. Chrome treats the 403 exactly as it
+            # treats a failed request — which is what an aborted analytics call
+            # is anyway.
+            if host_blocked(host, self._blocked_hosts):
+                with self._bytes_lock:
+                    self.blocked_requests += 1
+                try:
+                    client.sendall(b"HTTP/1.1 403 Forbidden\r\n"
+                                   b"Content-Length: 0\r\n"
+                                   b"Proxy-Connection: close\r\n"
+                                   b"Connection: close\r\n\r\n")
+                except OSError:
+                    pass
+                return
 
             up = socket.create_connection((self.up_host, self.up_port), timeout=30)
             auth = self._auth.encode()
@@ -197,7 +287,10 @@ class ProxyForwarder:
                 rest = head.split(b"\r\n", 1)[1]
                 up.sendall(first_line + b"\r\n"
                            + b"Proxy-Authorization: Basic " + auth + b"\r\n" + rest)
-                self._pipe(client, up)
+                # dest_host() resolves the absolute-URI form too, so these bytes
+                # are attributed like tunnelled ones instead of vanishing from
+                # the per-host breakdown.
+                self._pipe(client, up, host=host)
         except Exception as e:
             # Log ONCE per forwarder (Chrome opens many connections; a refused/
             # broken upstream would otherwise spam dozens of identical lines).

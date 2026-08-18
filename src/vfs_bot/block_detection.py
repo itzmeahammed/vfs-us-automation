@@ -20,6 +20,7 @@ from src.vfs_bot.errors import (
     AccessRestrictedError,
     AccountBlockedError,
     AccountLockedError,
+    GeoBlockedError,
     IpBlockedError,
 )
 
@@ -199,6 +200,13 @@ _ACCOUNT_BLOCK_TABLE = (
     (is_access_denied, AccountBlockedError, "access_denied"),
     (is_account_locked, AccountLockedError, "account_locked"),
     (is_access_restricted, AccessRestrictedError, "access_restricted"),
+    # 403203 / 'Permission Issues' is listed LAST because its text is the most
+    # generic of the four, so a page carrying both codes classifies as the more
+    # specific one. It lives here (rather than only in turnstile's pre-dashboard
+    # wait, its original home) so EVERY raise_if_blocked call site catches it —
+    # including the ones during the slot check, where VFS was refusing sessions
+    # mid-run with nothing watching for it.
+    (is_geo_blocked, GeoBlockedError, "geo_blocked"),
 )
 
 
@@ -212,6 +220,7 @@ def raise_if_blocked(page, cause: Exception = None) -> None:
                                                             (manual fix needed)
       429202 'Account Locked'                            -> AccountLockedError
       429001 / 'Access Restricted'                       -> AccessRestrictedError
+      403203 / 'Permission Issues'                       -> GeoBlockedError
 
     No-op if the page isn't a block page. `cause` (if given) is chained.
     """
@@ -219,6 +228,20 @@ def raise_if_blocked(page, cause: Exception = None) -> None:
         diagnostics.take_final_screenshot(page, "ip_blocked_403201")
         raise IpBlockedError("VFS 403201 — IP blocked (too many requests / "
                              "flagged IP). Rotate to a different IP.") from cause
+    raise_if_rendered_block(page, cause)
+
+
+def raise_if_rendered_block(page, cause: Exception = None) -> None:
+    """The BODY-TEXT half of raise_if_blocked: every block VFS renders as a
+    readable page (403203 Permission Issues, 429002, 429202, 429001).
+
+    Split out because it costs ONE small innerText read, whereas the 403201 check
+    above it scans full_page_text — page.content() serialises the entire Angular
+    DOM, plus every sub-frame. Hot-path callers that merely want to confirm a page
+    is healthy (page_guard's probe after each empty slot read) use this and skip
+    that cost; the 403201 JSON body that needs the full scan always announces
+    itself as a refused document or an error route as well, and those callers use
+    the full raise_if_blocked."""
     for predicate, error_cls, screenshot_name in _ACCOUNT_BLOCK_TABLE:
         if predicate(page):
             diagnostics.take_final_screenshot(page, screenshot_name)

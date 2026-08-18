@@ -49,6 +49,29 @@ class TurnstileRejectedError(SignInDisabledError):
     then rotates to a different IP (logged only — no Telegram alert for it)."""
 
 
+class LoginBouncedError(TurnstileRejectedError):
+    """Sign In was clicked and VFS put us straight back on the login form —
+    fields still filled, Sign In re-enabled, no error banner, no OTP step, no
+    dashboard.
+
+    This is the single most common way a run dies in the field, and it used to
+    be invisible: nothing looked for it, so the flow just waited out whichever
+    timeout came next and then mislabelled the result —
+      * otp routes  -> 'no OTP input appeared within 60s' (OtpVerificationError,
+                       which the supervisor does NOT retry and DOES strike the
+                       account for — the worst possible answer to a Cloudflare
+                       rejection);
+      * other routes -> DashboardNotReachedError after the full ~90s poll.
+
+    It subclasses TurnstileRejectedError because that is what a silent bounce
+    almost always is — the login API refused a stale/rejected token — and
+    because that class already encodes the right response: reload and re-solve
+    on the SAME IP once, then let the supervisor rotate to a different one. The
+    account is never at fault, so its name is in supervisor._INFRA_EXC_NAMES
+    (which matches on the exact class name, not isinstance).
+    """
+
+
 class DashboardNotReachedError(RetryableError):
     """Sign In was clicked but the dashboard never loaded (bad creds, captcha,
     or a slow/blocked redirect)."""
@@ -58,14 +81,33 @@ class SlotCheckError(RetryableError):
     """Reached the appointment step but couldn't complete the slot check."""
 
 
+class PageBlockedError(RetryableError):
+    """The session died mid-flow: VFS replaced the app with an error page
+    (/page-not-found, an unrecognised 4xx/5xx error view, 'Session Expired')
+    that no specific block predicate matched.
+
+    Raised by page_guard.assert_alive as the catch-all for "the page we were
+    driving is gone". Retryable: a fresh browser — and, once the supervisor
+    rotates, a fresh IP — is the way out. Its NAME is listed in supervisor
+    _INFRA_EXC_NAMES so it never strikes the account: the session was killed
+    from the outside, which is not the account holder's doing.
+
+    The specific, better-classified cases (403201, 403203, 429xxx) raise their
+    own errors from block_detection.raise_if_blocked instead."""
+
+
 class GeoBlockedError(Exception):
     """
-    VFS returned its 'Permission Issues (403203)' page — the request is blocked
-    because the IP is outside the permitted location (or rate-limited).
+    VFS returned its 'Permission Issues (403)' page — the request is refused
+    because the IP is outside the permitted location, or (far more commonly in
+    the field) because that IP has been rate-limited mid-session.
 
-    This is NOT a RetryableError on purpose: retrying with a fresh browser uses
-    the SAME IP, so it would fail identically. The supervisor should log it and
-    stop immediately instead of burning attempts.
+    NOT a RetryableError on purpose: a fresh browser on the SAME IP fails
+    identically, so it must never go down the plain retry path. A DIFFERENT IP
+    usually works, though — it is the IP that is refused, not the account — so
+    the supervisor rotates the proxy and retries, exactly like IpBlockedError,
+    and only gives up (GEO outcome + alert) once the IP budget is exhausted.
+    The account is never penalised for it.
     """
 
 

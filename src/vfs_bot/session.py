@@ -86,7 +86,7 @@ def _is_cloudflare_cookie(cookie: dict) -> bool:
     )
 
 
-def clear_site_session(context) -> None:
+def clear_site_session(context, keep_cf: bool = None) -> None:
     """
     Clears VFS's stale login/session cookies while KEEPING Cloudflare's
     clearance cookies (cf_clearance / __cf*) — so a persistent profile stays
@@ -101,9 +101,15 @@ def clear_site_session(context) -> None:
     — we drop it and let Turnstile re-run cleanly. The HTTP asset cache is
     untouched either way; that's what makes a local-warmed profile cheap to
     run on a proxy IP.
+
+    `keep_cf` overrides that config decision. Pass False to force cf_clearance
+    out as well — the escalation used when a 'Session Expired or Invalid' page
+    survives a session-cookie clear, where the clearance itself is the last
+    remaining suspect. None (default) reads browser.keep_cf_clearance as before.
     """
-    keep_cf = str(get_config_value(
-        "browser", "keep_cf_clearance", "true")).strip().lower() != "false"
+    if keep_cf is None:
+        keep_cf = str(get_config_value(
+            "browser", "keep_cf_clearance", "true")).strip().lower() != "false"
     try:
         all_cookies = context.cookies()
     except Exception as e:

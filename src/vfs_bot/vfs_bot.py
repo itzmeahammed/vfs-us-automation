@@ -13,6 +13,7 @@ from src.vfs_bot import (
     browser_setup,
     diagnostics,
     otp_flow,
+    page_guard,
     session,
     slot_check,
     turnstile,
@@ -33,6 +34,7 @@ from src.vfs_bot.errors import (  # noqa: F401
     LoginError,
     LoginFormNotReadyError,
     OtpVerificationError,
+    PageBlockedError,
     RetryableError,
     SignInDisabledError,
     SlotCheckError,
@@ -113,6 +115,13 @@ class VfsBot(ABC):
         self._block_responses = []
         # How many resource requests the bandwidth filter aborted this run.
         self._blocked_requests = 0
+        # E: page loads (goto/reload) done in THIS browser attempt. Capped so a
+        # login/Turnstile loop can't spiral into a dozen metered fetches.
+        self._nav_count = 0
+        # The run's browser context, set once run() has one. Needed so mid-run
+        # recovery can clear cookies (a 'Session Expired' page is a stale-cookie
+        # symptom, so re-navigating without clearing them changes nothing).
+        self._context = None
         # Wire bytes the browser received this run (counted with OR without a
         # proxy, so local-IP and proxy runs can be compared on the same metric).
         self._net_bytes = 0
@@ -150,6 +159,14 @@ class VfsBot(ABC):
                     self._block_responses.append(resp)
                     logging.debug(f"Captured VFS 403 ({rtype or '?'}) from {resp.url} "
                                   "— classified (403201 vs Turnstile) after Sign In.")
+                    # Also flag the session sentinel. Post-login these 403s used
+                    # to be stashed and never read again (classification only
+                    # runs at the Sign-In checkpoint), so an API refusing the
+                    # slot-check silently went unnoticed. The flag makes the next
+                    # page_guard.assert_alive() confirm against the DOM — and
+                    # clear itself if the app actually recovered.
+                    page_guard.suspect(
+                        page, f"VFS API returned 403 for {resp.url}")
             except Exception:
                 pass
         try:
@@ -197,18 +214,60 @@ class VfsBot(ABC):
             "VFS API returned 403 without a 403201 code — treating as a rejected "
             "Turnstile token, not an IP block.")
 
-    def _install_resource_blocking(self, context) -> None:
-        """Abort billed-but-useless resource types (image/media/font by default)
-        before they leave the browser, so their bytes never hit the metered proxy.
+    def _note_navigation(self, what: str) -> None:
+        """Count a page load (goto/reload) and enforce the per-attempt cap (E).
 
-        Installed on the CONTEXT so it also covers the Turnstile iframe. Kept
-        deliberately narrow: JS and CSS are never blocked (CSS positions the
-        Turnstile checkbox for the coordinate click). Fully fail-safe — any error
-        in the filter lets the request through rather than breaking the flow.
+        A wedged login/Turnstile can otherwise reload the same page many times in
+        one browser, each fetch billed by the proxy. When the cap is hit we raise
+        RetryableError with the 'page-load budget' marker, which the supervisor
+        classifies as INFRA (no account strike) and relaunches a fresh browser —
+        usually on a different IP — instead of grinding more loads here."""
+        self._nav_count += 1
+        cap = settings().retry.max_page_loads_per_attempt
+        if cap and self._nav_count > cap:
+            raise RetryableError(
+                f"Page-load budget exceeded ({self._nav_count} > {cap}) while "
+                f"'{what}' — login/Turnstile is looping on this browser; bailing "
+                "to relaunch fresh."
+            )
+
+    def _install_resource_blocking(self, context) -> None:
+        """Abort unneeded RESOURCE TYPES (image/media/font) before they egress.
+
+        OFF unless [bandwidth] block_resource_types is set, for two compounding
+        reasons — read both before switching it on:
+
+          1. Interception is not free. Installing a Playwright route makes
+             Chromium re-issue every matched request through the network stack
+             instead of serving it from the disk cache, for the whole run. That
+             throws away persist_cache: measured at ~4.7 MB per route-attempt of
+             VFS bundles that would otherwise cost nothing. A type filter has to
+             beat that before it saves anything at all.
+          2. Blocking image/media/font risks the Turnstile solve — it shifts the
+             coordinate-clicked checkbox and the odd load pattern trips CF.
+
+        HOST blocking deliberately does NOT live here. It runs in the proxy
+        forwarder (see proxy_forwarder.host_blocked), which refuses the request
+        before the metered upstream is dialled — strictly cheaper, and it leaves
+        the cache intact.
+
+        Installed on the CONTEXT so it also covers the Turnstile iframe. JS and
+        CSS are never blockable (CSS positions the Turnstile checkbox). Fully
+        fail-safe — any error in the filter lets the request through.
         """
         blocked = settings().bandwidth.blocked_types
         if not blocked:
             return
+
+        # Loud on purpose: this is the switch that silently tripled the bill in
+        # August 2026, and the cost never shows up as an error — only as a
+        # bigger invoice.
+        logging.warning(
+            f"Bandwidth: block_resource_types={sorted(blocked)} is ON — request "
+            "interception DISABLES Chromium's HTTP cache for this run, so every "
+            "asset is refetched through the metered proxy. Compare 'Proxy "
+            "traffic this route' against a run with it off before keeping it."
+        )
 
         def _filter(route):
             try:
@@ -225,7 +284,6 @@ class VfsBot(ABC):
 
         try:
             context.route("**/*", _filter)
-            logging.debug(f"Bandwidth: blocking resource types {sorted(blocked)}.")
         except Exception as e:
             logging.warning(f"Could not install resource blocking (continuing): {e}")
 
@@ -263,6 +321,12 @@ class VfsBot(ABC):
         # Watch for HTTP 403 (IP/access blocks) at the network level, so we
         # catch 403201 even when it's an XHR/JSON that never renders (or the
         # page dies right after). Bodies are classified post Sign-In.
+        # The always-on session sentinel: flags the page the moment VFS navigates
+        # us to an error route or refuses a document request, so the checkpoints
+        # in the slot-check flow (page_guard.assert_alive) can bail in ~1s instead
+        # of grinding minutes of timeouts against a form that is no longer there.
+        # Installed BEFORE the 403 watcher, which reports into it.
+        self._listeners.extend(page_guard.install(page))
         self._block_responses = []
         self._attach_block_watcher(page)
 
@@ -287,12 +351,17 @@ class VfsBot(ABC):
         (the base_events.py error seen in the field). Detaching first means no
         such handler is left to fire during teardown.
         """
+        pages = set()
         for target, event, handler in getattr(self, "_listeners", []):
+            pages.add(target)
             try:
                 target.remove_listener(event, handler)
             except Exception:
                 pass
         self._listeners = []
+        # Drop the sentinel state too, so nothing survives this run's page.
+        for target in pages:
+            page_guard.uninstall(target)
 
     # ------------------------------------------------------------------ #
     # run() setup steps                                                  #
@@ -379,6 +448,9 @@ class VfsBot(ABC):
             browser, context, page = browser_setup.launch_or_attach(
                 p, browser_type, headless_mode, cdp_url
             )
+            # Held so mid-run recovery can clear cookies (see
+            # _clear_session_cookies); the run owns its lifecycle, not us.
+            self._context = context
             self._instrument_page(page, context)
 
             # Pin a fixed viewport so the page layout (and thus the Turnstile
@@ -392,6 +464,7 @@ class VfsBot(ABC):
             # session, so this loads the clean login page with Cloudflare
             # clearance still intact.
             logging.debug(f"Navigating to {vfs_url}")
+            self._note_navigation("initial login load")
             page.goto(vfs_url, timeout=settings().timeouts.page_load_ms,
                       wait_until="domcontentloaded")
 
@@ -441,7 +514,7 @@ class VfsBot(ABC):
             if self._blocked_requests:
                 logging.info(
                     f"Bandwidth: aborted {self._blocked_requests} asset request(s) "
-                    f"(image/media/font) — those bytes never hit the proxy."
+                    f"in-browser — those bytes never hit the proxy."
                 )
             logging.info("Slot check complete. Run finished.")
             return True
@@ -462,14 +535,50 @@ class VfsBot(ABC):
     # Login                                                              #
     # ------------------------------------------------------------------ #
 
-    def _refresh_login_url(self, page) -> None:
+    def _clear_session_cookies(self, drop_clearance: bool = False) -> None:
+        """Drop VFS's session cookies mid-run (optionally cf_clearance too).
+
+        Best-effort: the context is only available on the CDP/launch path, and a
+        failure here must never break a recovery attempt — a re-navigation with
+        stale cookies is still better than no re-navigation at all."""
+        context = getattr(self, "_context", None)
+        if context is None:
+            logging.debug("No browser context held — cannot clear cookies here.")
+            return
+        try:
+            session.clear_site_session(
+                context, keep_cf=False if drop_clearance else None)
+            if drop_clearance:
+                logging.info(
+                    "Dropped cf_clearance as well — re-solving Turnstile from "
+                    "scratch is cheaper than another 'Session Expired' page."
+                )
+        except Exception as e:
+            logging.warning(f"Could not clear session cookies (continuing): {e}")
+
+    def _refresh_login_url(self, page, attempt: int = 1) -> None:
         """Navigate fresh to the login URL WITHOUT the long form-wait (unlike
         _reload_login_form). Used to clear a 'Session Expired or Invalid' page so
         the caller can re-poll for the form on its own budget — waiting 120s for
-        the username field here would reintroduce the very hang we're avoiding."""
+        the username field here would reintroduce the very hang we're avoiding.
+
+        The navigation alone used to be pointless: 'Session Expired or Invalid'
+        IS a stale-session symptom, so re-requesting the same URL with the same
+        cookies just re-serves the same page — which is exactly what the field
+        logs showed. So each refresh now actually changes something first, and
+        escalates if the page survives it:
+
+          attempt 1 — drop VFS's session cookies (Cloudflare clearance kept, so
+                      Turnstile does not have to be re-solved from scratch);
+          attempt 2+ — drop cf_clearance too. It is bound to the IP that earned
+                      it, and a clearance left over from a different egress IP
+                      is itself a cause of this page.
+        """
+        self._clear_session_cookies(drop_clearance=attempt > 1)
         self._block_responses = []
         url_key = f"{self.source_country_code}-{self.destination_country_code}"
         vfs_url = get_config_value("vfs-url", url_key)
+        self._note_navigation("session-expired refresh")
         try:
             if vfs_url:
                 page.goto(vfs_url, timeout=settings().timeouts.page_load_ms,
@@ -499,10 +608,11 @@ class VfsBot(ABC):
                 if refreshed < session_refreshes:
                     refreshed += 1
                     logging.warning(
-                        f"VFS 'Session Expired or Invalid' page — refreshing the "
-                        f"login URL ({refreshed}/{session_refreshes})."
+                        f"VFS 'Session Expired or Invalid' page — clearing the "
+                        f"stale session and reloading the login URL "
+                        f"({refreshed}/{session_refreshes})."
                     )
-                    self._refresh_login_url(page)
+                    self._refresh_login_url(page, attempt=refreshed)
                     page.wait_for_timeout(750)
                     continue
                 diagnostics.take_final_screenshot(page, "session_expired")
@@ -587,6 +697,7 @@ class VfsBot(ABC):
             if turn_attempt <= refresh_attempts:
                 logging.debug("Turnstile not passed — refreshing the page to retry.")
                 diagnostics.take_final_screenshot(page, f"turnstile_fail_{turn_attempt}")
+                self._note_navigation("Turnstile refresh")
                 try:
                     page.reload(timeout=60000, wait_until="domcontentloaded")
                 except Exception as e:
@@ -662,6 +773,46 @@ class VfsBot(ABC):
                 raise RetryableError(f"Could not click Sign In: {e}") from e
         return otp_since
 
+    def _settle_after_signin(self, page) -> None:
+        """Wait only as long as it takes to learn what the Sign In click did.
+
+        Returns as soon as ANY outcome is knowable — a VFS 403 captured, the URL
+        moved off /login, the OTP field rendered, or a 'Verify Captcha' dialog
+        appeared — and otherwise gives up at signin_settle_ms. The flat 2s sleep
+        this replaces was a race the bot regularly lost: a proxied /user/login
+        403 that arrived at 2.5s went unclassified, and the run then spent 60-90s
+        blaming the wrong step for it."""
+        ceiling = settings().timeouts.signin_settle_ms
+        otp_selector = self.selectors.get("otp") if self.schema.get("otp") else None
+        # Compare against the URL we actually submitted from rather than testing
+        # for '/login': every route happens to use that path today, but a new one
+        # that didn't would make this return on the first poll and reintroduce
+        # the very race it exists to close.
+        try:
+            start_url = page.url or ""
+        except Exception:
+            start_url = ""
+        step_ms, waited = 250, 0
+        while waited < ceiling:
+            if self._block_responses:
+                return          # VFS answered with a 403 — classify it now
+            try:
+                if (page.url or "") != start_url:
+                    return      # navigated on: dashboard, OTP step or an error page
+            except Exception:
+                pass
+            if turnstile.captcha_visible(page):
+                return          # Cloudflare re-challenged; the caller solves it
+            if otp_selector:
+                try:
+                    el = page.locator(otp_selector).first
+                    if el.count() > 0 and el.is_visible():
+                        return  # the OTP step rendered — Sign In was accepted
+                except Exception:
+                    pass
+            page.wait_for_timeout(step_ms)
+            waited += step_ms
+
     @staticmethod
     def _raise_known_login_errors(page) -> None:
         """Raises EmailNotRegisteredError / InvalidCredentialsError if the
@@ -699,6 +850,7 @@ class VfsBot(ABC):
         self._block_responses = []
         url_key = f"{self.source_country_code}-{self.destination_country_code}"
         vfs_url = get_config_value("vfs-url", url_key)
+        self._note_navigation("login-form reload")
         try:
             if vfs_url:
                 page.goto(vfs_url, timeout=settings().timeouts.page_load_ms,
@@ -751,8 +903,14 @@ class VfsBot(ABC):
                 diagnostics.take_final_screenshot(page, "after_signin")
 
                 # The Sign In API is where VFS returns either a 403201 IP block OR
-                # a rejected-Turnstile 403 — classify the captured body here.
-                page.wait_for_timeout(2000)
+                # a rejected-Turnstile 403 — classify the captured body below.
+                # Poll for the outcome rather than sleeping a flat 2s: on a slow
+                # proxy the 403 regularly landed AFTER that window, so the check
+                # below saw nothing and the flow marched on to wait out a 60s OTP
+                # timeout (otp routes) or the 90s dashboard poll. Polling exits as
+                # soon as the answer is knowable, so it is also FASTER than the
+                # old fixed sleep on every healthy run.
+                self._settle_after_signin(page)
 
                 # Sometimes Cloudflare answers Sign In with a 403 AND pops the
                 # interactive 'Verify Captcha' dialog (app-cloudflare-dialog) to
@@ -794,7 +952,11 @@ class VfsBot(ABC):
                     # text — no AI; default "image" uses the OpenAI PNG reader.
                     otp_flow.verify_otp(
                         page, self.selectors["otp"], email_id, password,
-                        otp_since, otp_mode=self.schema.get("otp_mode", "image"))
+                        otp_since, otp_mode=self.schema.get("otp_mode", "image"),
+                        # Keep reading captured VFS 403s while we wait for the
+                        # OTP field: a late login-403 must surface as an IP block
+                        # or a rejected token, never as 'no OTP input appeared'.
+                        on_poll=lambda: self._check_blocked(page, check_network=True))
 
                 # After Sign In, Cloudflare often shows the 'Verify Captcha' dialog
                 # (app-cloudflare-dialog) that BLOCKS the redirect to the
@@ -802,7 +964,11 @@ class VfsBot(ABC):
                 # we've landed on the dashboard, for up to ~90s, while also
                 # watching for the 'not registered' banner.
                 if not turnstile.await_dashboard_handling_captcha(
-                        page, timeout_ms=settings().timeouts.dashboard_ms):
+                        page, timeout_ms=settings().timeouts.dashboard_ms,
+                        # Same reason as the OTP wait: a login-403 that lands
+                        # after the post-Sign-In check must be classified while
+                        # we poll, not left to expire as a dashboard timeout.
+                        on_poll=lambda: self._check_blocked(page, check_network=True)):
                     self._raise_known_login_errors(page)
                     block_detection.raise_if_blocked(page)
                     # Not a known state — report what we ACTUALLY landed on.

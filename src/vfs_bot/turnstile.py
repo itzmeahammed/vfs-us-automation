@@ -18,8 +18,8 @@ functions rather than methods.
 import logging
 
 from src.settings import settings
-from src.vfs_bot import block_detection, diagnostics
-from src.vfs_bot.errors import GeoBlockedError
+from src.vfs_bot import block_detection, diagnostics, page_guard
+from src.vfs_bot.errors import GeoBlockedError, LoginBouncedError
 
 # ===== Turnstile widget (login page) ========================================
 
@@ -396,7 +396,13 @@ def wait_for_loader(page, timeout: int = 30000) -> None:
     Also clears any Cloudflare 'Verify Captcha' dialog and the VFS 'please
     wait before continuing' reminder first — either can pop up at any step
     and blocks the form until dismissed.
+
+    Raises (via page_guard) if VFS has killed the session: this is the single
+    most-called function in the slot-check flow, so the free sentinel check here
+    gives near-continuous liveness coverage for no cost. Without it we would sit
+    out the full `timeout` waiting for a spinner on a page that no longer exists.
     """
+    page_guard.assert_alive(page, "waiting for the VFS loader")
     dismiss_captcha(page)
     dismiss_wait_dialog(page)
     try:
@@ -452,7 +458,43 @@ def dashboard_content_ready(page) -> bool:
         return False
 
 
-def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
+def login_form_showing(page) -> bool:
+    """True if the sign-in form is on screen, settled and usable again.
+
+    Called only AFTER Sign In has been clicked, where it means the login
+    BOUNCED: VFS threw us back to the form instead of sending an OTP or loading
+    the dashboard. That state is otherwise indistinguishable from "still
+    loading" until some other timeout expires, which is why runs used to sit
+    there for 60-90s before mislabelling the failure.
+
+    Every clause exists to rule out a page that is merely mid-flight:
+      * no 'Verify Captcha' dialog — a challenge is still in progress;
+      * a VISIBLE password field — the login form's signature (the OTP step has
+        a code input, the dashboard has neither);
+      * no full-screen ngx-loader — the Sign In request is still running;
+      * Sign In present AND re-enabled — Angular only re-enables the button once
+        it has given up on the submission.
+    """
+    try:
+        if captcha_visible(page):
+            return False
+        pw = page.locator("input[type='password']").filter(visible=True)
+        if pw.count() == 0:
+            return False
+        # .first matters: is_visible() is strict, so a page rendering more than
+        # one loader overlay would raise, get swallowed below, and silently
+        # disable bounce detection altogether.
+        if page.locator(
+                "ngx-ui-loader .ngx-overlay.loading-foreground").first.is_visible():
+            return False
+        btn = page.get_by_role("button", name="Sign In").first
+        return btn.count() > 0 and btn.is_visible() and btn.is_enabled()
+    except Exception:
+        return False
+
+
+def await_dashboard_handling_captcha(page, timeout_ms: int = 90000,
+                                      on_poll=None) -> bool:
     """
     Waits for the dashboard while continuously dismissing the Cloudflare
     'Verify Captcha' dialog, which can pop up at any time during the post-
@@ -461,12 +503,21 @@ def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
     Returns True only once the dashboard is BOTH at the /dashboard URL AND has
     rendered its content (see dashboard_content_ready) — not on the URL alone,
     which Cloudflare can reach with a blank body. Returns False on timeout.
+
+    `on_poll` (optional) is called each iteration and may raise. The bot passes
+    its network-block classifier, so a VFS 403 that arrives after the post
+    Sign-In check — routine on a slow proxy — is read here rather than sitting
+    unexamined while this polls for a dashboard that will never load. Without
+    it, a 403201 IP block reached this function as an unexplained timeout.
     """
     step_ms = 1000
     waited = 0
     captcha_cycles = 0
     url_logged = False
+    loader_up = 0  # B: how long the ngx loader has been continuously stuck
     max_cycles = settings().retry.dashboard_captcha_cycles
+    frozen_ms = settings().timeouts.dashboard_frozen_ms
+    bounce_grace_ms = settings().timeouts.login_bounce_grace_ms
     while waited < timeout_ms:
         # Already there — URL AND content both ready?
         try:
@@ -482,6 +533,10 @@ def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
                     return True
         except Exception:
             pass
+        # Read any VFS 403 captured since Sign In, so a late one is classified
+        # (403201 IP block vs rejected token) instead of expiring as a timeout.
+        if on_poll is not None:
+            on_poll()
         # Stop early if VFS served its 'Permission Issues (403203)' geo-block
         # page — retrying won't help (same IP), so raise to abort immediately.
         if block_detection.is_geo_blocked(page):
@@ -511,6 +566,52 @@ def await_dashboard_handling_captcha(page, timeout_ms: int = 90000) -> bool:
                 "dashboard cannot load from here; failing fast (no 90s wait)."
             )
             return False
+        # Sign In bounced straight back to the login form. The dashboard will
+        # never arrive, so stop polling for it: raise the classified error and
+        # let the caller reload + re-solve on this IP, then rotate. The grace
+        # period keeps us from mistaking the form that is still on screen during
+        # the submission itself for a bounce.
+        if waited >= bounce_grace_ms and login_form_showing(page):
+            logging.warning(
+                f"Sign In bounced back to the login form after "
+                f"{waited / 1000:.0f}s (no OTP, no dashboard, no error banner) "
+                "— not waiting out the dashboard timeout."
+            )
+            diagnostics.take_final_screenshot(page, "login_bounced")
+            raise LoginBouncedError(
+                "Sign In returned to the login form with no error shown — the "
+                "login was silently refused (stale/rejected Cloudflare token)."
+            )
+        # B: fast-bail a "solved but frozen" redirect. After the captcha clears,
+        # Cloudflare can leave the app wedged behind a stuck ngx-loader overlay
+        # that never redirects to the dashboard (no dialog, no block page — just
+        # a dead spinner intercepting clicks). Waiting the full dashboard_ms here
+        # just burns ~90s on a session that will never load, so if the loader
+        # stays up continuously (and no captcha dialog is mid-solve) for
+        # frozen_ms, abandon this attempt — a fresh IP/browser breaks it.
+        if frozen_ms:
+            try:
+                loader_visible = (
+                    page.locator(
+                        "ngx-ui-loader .ngx-overlay.loading-foreground"
+                    ).first.is_visible()          # .first: is_visible() is strict
+                    and not captcha_visible(page)
+                )
+            except Exception:
+                loader_visible = False
+            if loader_visible:
+                loader_up += step_ms
+                if loader_up >= frozen_ms:
+                    logging.warning(
+                        f"Post-login redirect frozen — loading spinner stuck for "
+                        f"{loader_up / 1000:.0f}s with no dashboard (session wedged "
+                        "behind Cloudflare); bailing fast so a fresh IP/browser "
+                        "can retry."
+                    )
+                    diagnostics.take_final_screenshot(page, "dashboard_frozen")
+                    return False
+            else:
+                loader_up = 0
         # Clear the captcha dialog if it's blocking the redirect. If Cloudflare
         # keeps RE-PRESENTING it after each solve (a re-challenge loop), stop:
         # every re-solve re-downloads the challenge (megabytes) and never

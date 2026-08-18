@@ -36,8 +36,14 @@ class TestDefaultsMatchOldConstants(unittest.TestCase):
     def test_retry(self):
         r = Retry()
         self.assertEqual(r.backoff_seconds, 15)            # BACKOFF_SECONDS
-        self.assertEqual(r.max_ip_tries, 2)                # MAX_IP_TRIES
-        self.assertEqual(r.turnstile_refresh_attempts, 2)  # TURNSTILE_REFRESH_ATTEMPTS
+        # Raised 2 -> 3 with AccountSafety.max_attempts: an IP rotation consumes
+        # a relaunch, so a third IP is only reachable if a third attempt exists.
+        # TestPairedRetryBudget below pins them together.
+        self.assertEqual(r.max_ip_tries, 3)
+        # Deliberately 1, not the historical 2: a Cloudflare-flagged IP does not
+        # un-flag on reload, so one same-IP retry then rotate avoids re-downloading
+        # the whole challenge for nothing.
+        self.assertEqual(r.turnstile_refresh_attempts, 1)
         self.assertEqual(r.cdp_port, 9222)                 # CDP_PORT
 
     def test_browser(self):
@@ -54,7 +60,7 @@ class TestDefaultsMatchOldConstants(unittest.TestCase):
         self.assertEqual(a.hard_cooldown_hours, 24)
         self.assertEqual(a.soft_cooldown_hours, 2)
         self.assertEqual(a.fail_threshold, 3)
-        self.assertEqual(a.max_attempts, 2)
+        self.assertEqual(a.max_attempts, 3)   # raised 2 -> 3, see test_retry
 
     def test_schedule(self):
         s = Schedule()
@@ -85,6 +91,26 @@ class TestTypeCoercion(unittest.TestCase):
         from pydantic import ValidationError
         with self.assertRaises(ValidationError):
             Retry(backoff_seconds="not-a-number")
+
+
+class TestPairedRetryBudget(unittest.TestCase):
+    """max_ip_tries and max_attempts are one budget spent two ways: rotating to a
+    fresh IP consumes a browser relaunch. If max_ip_tries exceeds max_attempts
+    the extra IPs are unreachable, and the config comments promise they match —
+    so pin the invariant on the EFFECTIVE settings, not just the defaults."""
+
+    def test_defaults_are_paired(self):
+        self.assertEqual(Retry().max_ip_tries, AccountSafety().max_attempts)
+
+    def test_configured_values_are_paired(self):
+        from src.settings import settings
+        from src.utils.config_reader import initialize_config
+
+        initialize_config()
+        s = settings()
+        self.assertLessEqual(
+            s.retry.max_ip_tries, s.account_safety.max_attempts,
+            "max_ip_tries > max_attempts means the last IP(s) can never be tried")
 
 
 if __name__ == "__main__":

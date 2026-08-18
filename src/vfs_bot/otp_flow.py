@@ -18,6 +18,7 @@ from src.vfs_bot.dom_utils import fill_field
 from src.vfs_bot.errors import (
     EmailNotRegisteredError,
     InvalidCredentialsError,
+    LoginBouncedError,
     OtpVerificationError,
     TurnstileRejectedError,
 )
@@ -42,6 +43,24 @@ def _raise_login_banner_errors(page) -> None:
             "Login page: email or password is incorrect (shown after Sign In) — "
             "stopping this run for this account (no retries)."
         )
+
+
+def _raise_login_bounced(page, waited_ms: int) -> None:
+    """Report a silent login bounce as what it is, never as an OTP failure.
+
+    The distinction is not cosmetic: OtpVerificationError tells the supervisor
+    'do not retry, and strike the account', which is precisely wrong for a login
+    VFS refused. LoginBouncedError instead reloads and re-solves on this IP,
+    then rotates — and leaves the account's health alone."""
+    logging.warning(
+        f"Sign In bounced back to the login form after {waited_ms / 1000:.0f}s "
+        "— no OTP was ever sent; this is a login failure, not an OTP failure."
+    )
+    diagnostics.take_final_screenshot(page, "login_bounced")
+    raise LoginBouncedError(
+        "Route is flagged otp=true but Sign In returned to the login form with "
+        "no error shown — the login was silently refused, so no OTP arrived."
+    )
 
 
 def submit_otp(page) -> bool:
@@ -125,7 +144,8 @@ def otp_rejected_after_submit(page, timeout_ms: int = 12000) -> bool:
 
 
 def verify_otp(page, otp_selector: str, email_id: str, password: str,
-                since_epoch: float, otp_mode: str = "image") -> None:
+                since_epoch: float, otp_mode: str = "image",
+                on_poll=None) -> None:
     """
     Completes the OTP step on routes flagged "otp": true.
 
@@ -141,6 +161,12 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
         per-submit re-reads to recover a misread (Italy, etc.).
       * "text"            — the code is plain text in the email body; read it
         directly with NO AI (Greece). See src/utils/greece_otp.py.
+
+    `on_poll` (optional) is called once per wait iteration and may raise. The
+    bot passes its network-block classifier here so a VFS 403 that lands AFTER
+    the post-Sign-In check — routine on a slow proxy — is read while we wait,
+    instead of sitting unexamined in the captured-response list for 60s. Without
+    it, a rejected Cloudflare token was reported as a missing OTP field.
     """
     from src.utils import otp_service
 
@@ -148,6 +174,7 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
     # (e.g. a recently-verified session). Captcha can pop here too.
     otp_input = None
     waited = 0
+    bounce_grace_ms = settings().timeouts.login_bounce_grace_ms
     while waited < 60000:
         try:
             if "/dashboard" in (page.url or ""):
@@ -155,6 +182,11 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
                 return
         except Exception:
             pass
+        # Read any VFS 403 captured since Sign In. A 403201 becomes an IP block
+        # and anything else a rejected Turnstile token — both far better answers
+        # than the OTP timeout this used to become.
+        if on_poll is not None:
+            on_poll()
         # The OTP page can be replaced by an account-block page (429002 denied
         # / 429202 locked / 429001 restricted). Classify it here — so it's
         # handled correctly instead of masquerading as an OTP timeout — and
@@ -171,13 +203,22 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
                 break
         except Exception:
             pass
+        # Sign In silently bounced back to the login form: no banner to match
+        # above, and no OTP will ever arrive. Bail now rather than waiting out
+        # the remaining ~55s only to blame the OTP step for a login failure.
+        if waited >= bounce_grace_ms and turnstile.login_form_showing(page):
+            _raise_login_bounced(page, waited)
         turnstile.dismiss_captcha(page)
         page.wait_for_timeout(1000)
         waited += 1000
     if otp_input is None:
         # One last classification pass before the generic OTP-timeout error.
+        if on_poll is not None:
+            on_poll()
         block_detection.raise_if_blocked(page)
         _raise_login_banner_errors(page)
+        if turnstile.login_form_showing(page):
+            _raise_login_bounced(page, waited)
         diagnostics.take_final_screenshot(page, "otp_field_missing")
         raise OtpVerificationError(
             "Route is flagged otp=true but no OTP input appeared within 60s "

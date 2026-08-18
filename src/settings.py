@@ -50,6 +50,18 @@ class Timeouts(_Section):
                                     # cold login_wait_ms: a reload that hasn't
                                     # rendered the form in ~45s is stuck, so bail
     dashboard_ms: int = 90000       # await dashboard while handling captcha
+    dashboard_frozen_ms: int = 30000  # B: if the post-login loading spinner stays
+                                    # stuck this long with no dashboard (a "solved
+                                    # but frozen" session), bail early instead of
+                                    # grinding the full dashboard_ms — saves ~60s
+                                    # and lets a fresh IP/browser retry
+    signin_settle_ms: int = 8000    # poll ceiling for the Sign In outcome (a 403
+                                    # captured / URL moved / OTP field rendered /
+                                    # captcha popped). Replaces a flat 2s sleep
+                                    # that a proxied login-403 routinely beat
+    login_bounce_grace_ms: int = 6000  # how long the login form may stay on
+                                    # screen after Sign In before it counts as a
+                                    # bounce rather than a submission in flight
     slot_read_ms: int = 12000       # read the 'Earliest available slot' banner
 
 
@@ -60,14 +72,31 @@ class Retry(_Section):
     """
 
     backoff_seconds: int = 15             # pause between relaunch attempts
-    max_ip_tries: int = 2                 # different IPs to try on a 403201 block
-    turnstile_refresh_attempts: int = 2   # page reloads to unstick Turnstile
-    turnstile_signin_retries: int = 2     # same-IP reload+re-solve on a rejected
-                                          # (non-403201) login 403 before rotating IP
-    session_refresh_attempts: int = 1     # login-URL refreshes on a 'Session Expired
-                                          # or Invalid' page before failing fast
+    max_ip_tries: int = 3                 # fresh IPs to rotate through on a block /
+                                          # Turnstile fail. Capped by max_attempts
+                                          # too (rotation consumes an attempt), so
+                                          # keep the two equal. Churn-safe: a failed
+                                          # login isn't recorded as an account IP.
+    turnstile_refresh_attempts: int = 1   # page reloads to unstick Turnstile (A:
+                                          # a flagged IP won't un-flag on reload —
+                                          # 1 retry then rotate, saves re-downloads)
+    turnstile_signin_retries: int = 0     # same-IP re-login on a rejected post-Sign
+                                          # -In token. 0 = rotate IP immediately —
+                                          # each same-IP re-login ESCALATES CF's
+                                          # challenge difficulty on that IP.
+    session_refresh_attempts: int = 2     # recovery passes on a 'Session Expired
+                                          # or Invalid' page before failing fast.
+                                          # Raised from 1 now that each pass does
+                                          # something DIFFERENT (clear the session
+                                          # cookies, then also drop cf_clearance)
+                                          # rather than re-requesting the same URL
+                                          # with the same cookies that caused it
     dashboard_captcha_cycles: int = 3     # times to re-solve the post-Sign-In captcha
                                           # dialog before declaring a re-challenge loop
+    max_page_loads_per_attempt: int = 6   # E: hard cap on navigations (goto/reload)
+                                          # within ONE browser attempt — a login/
+                                          # Turnstile loop can't spiral into a dozen
+                                          # metered page loads; bail to relaunch fresh
     cdp_port: int = 9222                  # Chrome remote-debugging port
 
 
@@ -85,7 +114,9 @@ class AccountSafety(_Section):
     hard_cooldown_hours: int = 24
     soft_cooldown_hours: int = 2
     fail_threshold: int = 3
-    max_attempts: int = 2                 # mirror of Retry.max_attempts (INI [account_safety])
+    max_attempts: int = 3                 # in-run browser relaunches; also caps how
+                                          # many fresh IPs a route rotates through
+                                          # (rotation consumes one) — keep == max_ip_tries
 
 
 class Schedule(_Section):
@@ -124,15 +155,48 @@ class Bandwidth(_Section):
     KEPT — CSS drives the Turnstile checkbox position)."""
 
     log_usage: bool = True            # passive: log "Proxy traffic this route: X MB"
+    # daily_cap_mb: ACTIVE ceiling on billed proxy traffic per calendar day.
+    # Once today's total reaches it, the supervisor pauses the remaining routes
+    # (status PAUSED — not a failure, no account is struck) and every later run
+    # today exits immediately. Checked BETWEEN routes, never mid-route, so the
+    # day can end one route over. 0 disables the cap. See bandwidth_budget.py.
+    daily_cap_mb: int = 800
+    # warn_at_percent: send ONE Telegram warning per day the first time usage
+    # crosses this share of the cap — the point is to hear about a regression at
+    # lunchtime, not from the invoice. 0 disables the warning.
+    warn_at_percent: int = 60
     # mute_chrome defaults ON: it only silences Chrome's OWN background phone-home
     # (Optimization Guide model ~35 MB/launch, component/safebrowsing updates,
     # sync, telemetry) — NONE of which touch page rendering or the Turnstile
     # widget, and which otherwise dominate the proxy bill. Turn OFF only to debug.
     mute_chrome: bool = True           # disable Chrome's background/phone-home traffic
-    # block_resource_types defaults EMPTY (OFF): blocking image/media/font DOES
-    # risk the Cloudflare Turnstile solve (shifts the coordinate-clicked checkbox
-    # + trips CF heuristics), so opt in via config only after re-verifying it.
+    # block_resource_types defaults EMPTY (OFF) and should STAY that way unless a
+    # measurement says otherwise. Two costs, not one:
+    #   1. It is the only setting that installs a Playwright route, and request
+    #      interception makes Chromium bypass its HTTP disk cache for the whole
+    #      run — measured at ~4.7 MB per route-attempt of VFS bundles that
+    #      persist_cache would otherwise serve for free. Blocking a few hundred
+    #      KB of images does not come close to paying that back.
+    #   2. Blocking image/media/font risks the Turnstile solve (shifts the
+    #      coordinate-clicked checkbox + trips CF heuristics).
     block_resource_types: str = ""    # Playwright resource types to abort (comma list)
+    # block_hosts: third-party HOSTS to refuse outright (analytics / marketing /
+    # telemetry the slot-check never needs). Enforced in the PROXY FORWARDER
+    # (src/utils/proxy_forwarder.py), not in the browser: it drops the request
+    # before the metered upstream is dialled, so those bytes are never billed —
+    # and it costs no HTTP cache, unlike block_resource_types above. Matched by
+    # exact host or dotted-suffix (so 'facebook.net' also blocks
+    # 'connect.facebook.net' but never 'notfacebook.net').
+    # Applies to PROXIED runs only; on a direct connection nothing is metered.
+    # NEVER add challenges.cloudflare.com / *.vfsglobal.com here (login + app).
+    block_hosts: str = (
+        "www.googletagmanager.com,connect.facebook.net,www.facebook.com,"
+        "js-cdn.dynatrace.com,passwordsleakcheck-pa.googleapis.com,"
+        "csp-reporting.cloudflare.com,static.cloudflareinsights.com,"
+        "sctauditing-pa.googleapis.com,www.clarity.ms,"
+        "googleads.g.doubleclick.net,analytics.google.com,"
+        "www.google-analytics.com,gemini.gstatic.com"
+    )
     # Persist a PER-ACCOUNT browser profile across runs so static JS/CSS/fonts (and
     # that account's cf_clearance) are served from disk cache instead of re-fetched
     # through the metered proxy. Off by default — verify Turnstile with a live run
@@ -147,6 +211,14 @@ class Bandwidth(_Section):
             t.strip().lower()
             for t in self.block_resource_types.split(",")
             if t.strip()
+        }
+
+    @property
+    def blocked_hosts(self) -> set:
+        return {
+            h.strip().lower()
+            for h in self.block_hosts.split(",")
+            if h.strip()
         }
 
 
