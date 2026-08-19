@@ -36,10 +36,10 @@ class TestDefaultsMatchOldConstants(unittest.TestCase):
     def test_retry(self):
         r = Retry()
         self.assertEqual(r.backoff_seconds, 15)            # BACKOFF_SECONDS
-        # Raised 2 -> 3 with AccountSafety.max_attempts: an IP rotation consumes
-        # a relaunch, so a third IP is only reachable if a third attempt exists.
+        # Paired with AccountSafety.max_attempts: an IP rotation consumes a
+        # relaunch, so an Nth IP is only reachable if an Nth attempt exists.
         # TestPairedRetryBudget below pins them together.
-        self.assertEqual(r.max_ip_tries, 3)
+        self.assertEqual(r.max_ip_tries, 2)
         # Deliberately 1, not the historical 2: a Cloudflare-flagged IP does not
         # un-flag on reload, so one same-IP retry then rotate avoids re-downloading
         # the whole challenge for nothing.
@@ -60,7 +60,7 @@ class TestDefaultsMatchOldConstants(unittest.TestCase):
         self.assertEqual(a.hard_cooldown_hours, 24)
         self.assertEqual(a.soft_cooldown_hours, 2)
         self.assertEqual(a.fail_threshold, 3)
-        self.assertEqual(a.max_attempts, 3)   # raised 2 -> 3, see test_retry
+        self.assertEqual(a.max_attempts, 2)   # paired with max_ip_tries, see test_retry
 
     def test_schedule(self):
         s = Schedule()

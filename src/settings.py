@@ -72,7 +72,7 @@ class Retry(_Section):
     """
 
     backoff_seconds: int = 15             # pause between relaunch attempts
-    max_ip_tries: int = 3                 # fresh IPs to rotate through on a block /
+    max_ip_tries: int = 2                 # fresh IPs to rotate through on a block /
                                           # Turnstile fail. Capped by max_attempts
                                           # too (rotation consumes an attempt), so
                                           # keep the two equal. Churn-safe: a failed
@@ -114,7 +114,7 @@ class AccountSafety(_Section):
     hard_cooldown_hours: int = 24
     soft_cooldown_hours: int = 2
     fail_threshold: int = 3
-    max_attempts: int = 3                 # in-run browser relaunches; also caps how
+    max_attempts: int = 2                 # in-run browser relaunches; also caps how
                                           # many fresh IPs a route rotates through
                                           # (rotation consumes one) — keep == max_ip_tries
 
