@@ -1,18 +1,23 @@
 {
-  "description": "UAE -> Germany. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category/sub-category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made. NOTE: the combinations below are PLACEHOLDERS mirroring the Hungary layout — verify the real centre/category/sub-category dropdown values on the German portal (and set \"otp\": true if it requires an emailed code) before uncommenting AE-DEU in config/vfs_urls.ini.",
+  "description": "UAE -> Germany. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category/sub-category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
   "mode": "slot-check",
   "slot_check": {
     "_comment_labels": "Labels must be UNIQUE within a route — a waitlist client file names the combination it wants by label, and duplicates would silently resolve to whichever came first. These four previously used just two labels between them; each now carries its category.",
-    "_comment_centre_bug": "UNVERIFIED: the two 'Dubai' rows still have centre = 'Germany Visa Application Centre- Abu Dhabi', which looks like a copy-paste error carried over from the Abu Dhabi rows. It has never surfaced because AE-DEU is commented out in config/vfs_urls.ini. Confirm the real Dubai centre string on the portal before enabling this route.",
+
+    "_comment_centre_bug": "ACTIVE BUG — the two 'Dubai' rows carry centre = 'Germany Visa Application Centre- Abu Dhabi', a copy-paste error from the Abu Dhabi rows above. This was harmless while AE-DEU was commented out in config/vfs_urls.ini, but the route is now LIVE, so 'Dubai - Short Term Visa' was checking ABU DHABI and reporting it as Dubai — and a waitlist client naming that label would have been registered at the wrong centre. Both Dubai rows are therefore \"disabled\" until the real Dubai centre string is read off the portal. Fix: open the German portal's Appointment Details centre dropdown, copy the Dubai option text EXACTLY, replace it below, and drop the \"disabled\" flag. Selection is an exact-text match — a wrong string does not warn, it simply fails to select.",
+
+    "_comment_otp": "UNVERIFIED: set \"otp\": true at the top level if this portal emails a login code (as AE-ITA does).",
+
     "combinations": [
       { "label": "Abu Dhabi - Business Visa", "disabled": true,
         "centre": "Germany Visa Application Centre- Abu Dhabi", "category": "Business Visa", "sub_category": "Business Purpose" },
       { "label": "Abu Dhabi - Short Term Visa",
         "centre": "Germany Visa Application Centre- Abu Dhabi", "category": "Short Term Visa", "sub_category": "Short Stay" },
+
       { "label": "Dubai - Business Visa", "disabled": true,
-        "centre": "Germany Visa Application Centre- Abu Dhabi", "category": "Business Visa", "sub_category": "Business Purpose" },
-      { "label": "Dubai - Short Term Visa",
-        "centre": "Germany Visa Application Centre- Abu Dhabi", "category": "Short Term Visa", "sub_category": "Short Stay" }
+        "centre": "TODO: the real Dubai centre option text — see _comment_centre_bug", "category": "Business Visa", "sub_category": "Business Purpose" },
+      { "label": "Dubai - Short Term Visa", "disabled": true,
+        "centre": "TODO: the real Dubai centre option text — see _comment_centre_bug", "category": "Short Term Visa", "sub_category": "Short Stay" }
     ]
   }
 }
