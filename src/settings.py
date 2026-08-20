@@ -148,6 +148,23 @@ class Logging(_Section):
     browser_activity: bool = False
 
 
+class Webhook(_Section):
+    """Outbound callbacks to your web app (Phase 4).
+
+    OFF by default and inert without both a URL and a secret: the bot must not
+    start posting client data anywhere because a config file gained a key.
+
+    The secret signs every request body (HMAC-SHA256). Your app verifies it and
+    rejects anything that does not match — otherwise anyone who learns the
+    callback URL can post fake "registration confirmed" events.
+    """
+
+    enabled: bool = False           # master switch for outbound delivery
+    url: str = ""                   # https://your-app/webhooks/vfs
+    secret: str = ""                # shared HMAC signing key (NOT the API token)
+    timeout_seconds: float = 10.0   # per attempt; retries are on top of this
+
+
 class Waitlist(_Section):
     """Waitlist detection (always on) and registration (opt-in, gated).
 
@@ -162,6 +179,15 @@ class Waitlist(_Section):
     # --- registration (mutates the VFS account) ---
     register_enabled: bool = False     # MASTER kill switch
     dry_run: bool = True               # walk the flow, stop before submitting
+    # Auto-trigger (Phase 3): let the slot checker fire a waitlist run when it
+    # finds an open waitlist. TWO switches, both defaulting to the safe side:
+    #   auto_trigger_enabled  - off entirely. Nothing fires without this.
+    #   auto_trigger_dry_run  - on: walk the whole flow but stop before the
+    #                           committing click. Turn OFF only once you have
+    #                           watched real dry runs and trust the mapping.
+    # register_enabled still gates everything behind BOTH of these.
+    auto_trigger_enabled: bool = False
+    auto_trigger_dry_run: bool = True
     max_per_run: int = Field(default=1, ge=0)
     max_per_day: int = Field(default=5, ge=0)
     # Telegram for REGISTRATION outcomes. OFF by default: this bot runs on
@@ -325,6 +351,7 @@ class Settings(BaseSettings):
     logging: Logging = Field(default_factory=Logging)
     bandwidth: Bandwidth = Field(default_factory=Bandwidth)
     waitlist: Waitlist = Field(default_factory=Waitlist)
+    webhook: Webhook = Field(default_factory=Webhook)
 
     @classmethod
     def settings_customise_sources(

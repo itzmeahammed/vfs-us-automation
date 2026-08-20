@@ -16,9 +16,23 @@ Storage is an append-only JSON-lines file, matching the atomic-write pattern
 account_health.py and waitlist_cooldown.py already use — right-sized for a
 manually-invoked tool that registers a handful of times.
 
-Scaling note: this bot is run ON DEMAND, so there is exactly one writer and the
-read-check-write in `blocking_entry()` cannot race. If waitlist registration is
-ever moved onto the scheduler (concurrent runs), swap this for SQLite with
+Scaling note: the read-check-write in `blocking_entry()` is not atomic, so it is
+only safe while there is exactly ONE writer at a time. That invariant is now
+enforced explicitly rather than assumed: every browser-driving entry point takes
+the global run lock in `src/utils/runlock.py` —
+
+    supervisor.main()              runlock.acquire("slot-check", on_busy="skip")
+    runner.run_registration()      runlock.acquire("waitlist-run")
+    run_task.ps1 / run_ec2.sh      the same OS mutex / lockfile
+
+so a scheduled slot check, an auto-triggered registration and a manual run
+serialise instead of interleaving. DO NOT add a new writer without taking that
+lock; two concurrent runs can double-register a client, which costs a real
+appointment slot.
+
+If registration ever needs genuine PARALLELISM (several runs at once, rather
+than several callers taking turns), the lock stops being enough — swap this for
+SQLite with
 
     CREATE UNIQUE INDEX ... ON registrations(route, combo, registrant_id)
         WHERE status IN ('pending','success','unknown');
@@ -119,6 +133,43 @@ def blocking_entry(route: str, combo: str, registrant_id: str) -> Optional[dict]
     row = latest_for(route, combo, registrant_id)
     if row and row.get("status") in Status.COMMITTED_STATES:
         return row
+    return None
+
+
+def blocking_entry_for_route(route: str, registrant_id: str) -> Optional[dict]:
+    """The row proving this client already holds an entry on this ROUTE, or None.
+
+    Stronger than `blocking_entry`, and deliberately so. That one keys on
+    (route, combo, registrant_id), which is right for tracking entries: two
+    combos ARE two separate registrations on the portal.
+
+    But one client wants ONE appointment. A person already waitlisted for
+    'Dubai - SCHENGEN' must not also be queued for 'Abu Dhabi - SCHENGEN' on the
+    same route — that holds two slots for one need, denies one to somebody else,
+    and risks VFS voiding both as duplicates.
+
+    So a client's `combos` list is a PREFERENCE ORDER ("I'll take whichever
+    opens first"), not a shopping list. This is the query that enforces it:
+    the first committed entry on a route ends that client's run for that route,
+    now and in future runs, until the entry is resolved or cancelled.
+
+    Returns the row for whichever combo they hold, so callers can name it.
+    """
+    want_route = _normalise(route).upper()
+    want_client = _normalise(registrant_id)
+
+    # Latest row per combo, then the first still in a committed state.
+    latest: dict = {}
+    for row in entries():
+        if _normalise(row.get("route")).upper() != want_route:
+            continue
+        if _normalise(row.get("registrant_id")) != want_client:
+            continue
+        latest[_normalise(row.get("combo"))] = row
+
+    for row in latest.values():
+        if row.get("status") in Status.COMMITTED_STATES:
+            return row
     return None
 
 

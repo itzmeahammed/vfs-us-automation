@@ -59,3 +59,10 @@ config/config.local.ini
 *.bak-*
 *.ini.tmp
 .proxy_run.state
+
+# Webhook API: local secrets (shared token) and per-job logs.
+# .env.api holds VFSAPI_SECRET_TOKEN — never commit it.
+.env.api
+logs/api_jobs/
+ngrok.yml
+ngrok.local.yml

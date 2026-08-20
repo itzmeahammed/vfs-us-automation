@@ -429,6 +429,37 @@ def run_registration(source: str, dest: str,
     committed_this_run = 0
     bot = None      # bound inside the try; needed by _report_usage in finally
 
+    # Global run lock — taken AFTER validation (so a bad config still fails fast
+    # without queueing behind another run) but BEFORE Chrome starts.
+    #
+    # This is what makes auto-triggering safe. journal.py documents that the
+    # append-only journal assumes exactly ONE writer; the scheduled slot check,
+    # an auto-triggered registration and a manual run are three potential
+    # writers. Two at once can double-register a client — a real appointment
+    # slot — and would also collide on the fixed Chrome debugging port.
+    #
+    # on_busy="raise" (unlike the supervisor's "skip"): a registration is
+    # deliberate, so the caller must be TOLD it did not happen, not silently
+    # given an empty result list.
+    from src.utils import runlock
+    with runlock.acquire("waitlist-run", timeout=runlock.DEFAULT_TIMEOUT_SECONDS):
+        return _run_registration_locked(
+            route=route, source=source, dest=dest, plan=plan, url=url,
+            resolved=resolved, account=account, proxy_url=proxy_url,
+            force_dry_run=force_dry_run, keep_open=keep_open,
+            results=results, committed_this_run=committed_this_run, bot=bot,
+        )
+
+
+def _run_registration_locked(*, route, source, dest, plan, url, resolved,
+                             account, proxy_url, force_dry_run, keep_open,
+                             results, committed_this_run,
+                             bot) -> List[WaitlistResult]:
+    """The browser-driving half of run_registration, holding the run lock.
+
+    Split out purely so the lock's scope is explicit and covers every line that
+    touches Chrome or the journal. See run_registration for the contract.
+    """
     _reset_usage()
     chrome = ChromeProcess(port=settings().retry.cdp_port, url=url,
                            proxy=proxy_url, profile_key=resolved.email)

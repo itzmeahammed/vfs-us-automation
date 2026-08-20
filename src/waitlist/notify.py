@@ -143,6 +143,12 @@ def notify_registered(result, login_url: str = "") -> None:
     from src.settings import settings
     from src.waitlist import redaction
 
+    # The web app is told about EVERY outcome, including SKIPPED — its user is
+    # waiting on an answer and "we looked, and here is why nothing happened" is
+    # a real answer. Telegram deliberately stays quieter (see below): it is a
+    # chat whose value is that it only pings when something needs a human.
+    _post_webhook(result)
+
     if result.status == Status.SKIPPED:
         return  # a guard declining is a log line, not a message
 
@@ -164,3 +170,29 @@ def notify_registered(result, login_url: str = "") -> None:
         telegram.send_message(message)
     else:
         logging.warning("Telegram not configured — registration notice logged only.")
+
+
+def _post_webhook(result) -> None:
+    """Deliver a registration outcome to the web app. Never raises.
+
+    Separate from the Telegram path on purpose: a webhook failure must not stop
+    a Telegram alert (or vice versa), and the run itself must never fail because
+    a callback endpoint was down. Delivery is retried and then dead-lettered
+    inside src/utils/webhook.py.
+    """
+    try:
+        from src.utils import webhook
+
+        if not webhook.is_configured():
+            return
+        outcome = webhook.notify_registration(result.to_dict())
+        if outcome.dead_lettered:
+            logging.error(
+                "Registration outcome for %s could not be delivered to the web "
+                "app and was dead-lettered. The registration itself is "
+                "unaffected — see %s.",
+                result.registrant_id, webhook.DEADLETTER_PATH)
+    except Exception as exc:                       # noqa: BLE001
+        # A broken callback must never turn a successful registration into a
+        # failed run.
+        logging.warning("Webhook notification failed (non-fatal): %s", exc)

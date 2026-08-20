@@ -232,6 +232,46 @@ def cmd_check(args) -> int:
 # run (launches a browser)                                                     #
 # --------------------------------------------------------------------------- #
 
+# Markers around the machine-readable block. The run's own logging writes to
+# the same stream, so the API cannot just json.loads() the whole output — it
+# slices between these instead. Deliberately unlikely to appear in a log line.
+RESULT_JSON_BEGIN = "---VFS-RESULT-JSON-BEGIN---"
+RESULT_JSON_END = "---VFS-RESULT-JSON-END---"
+
+
+def _emit_result_json(outcome: str, results, combo: str = "",
+                      banner: str = "") -> None:
+    """Print the run's outcome as JSON between markers, for the webhook API.
+
+    `outcome` is the RUN-level verdict; per-client detail lives in `results`:
+
+        completed        the plan ran to the end (individual results may still
+                         be failed/skipped — check them, not just this)
+        slots_available  a bookable slot appeared, so the run stopped and
+                         nothing was registered. A better outcome, not an error.
+
+    Scrubbed through redaction before printing: results carry client ids and
+    reasons, and this block is written to a job log the API reads back.
+    """
+    import json
+
+    from src.waitlist import redaction
+
+    payload = {
+        "outcome": outcome,
+        "results": [r.to_dict() for r in (results or [])],
+    }
+    if combo:
+        payload["combo"] = combo
+    if banner:
+        payload["banner"] = banner
+
+    text = json.dumps(payload, ensure_ascii=False, default=str)
+    print(RESULT_JSON_BEGIN)
+    print(redaction.scrub(text))
+    print(RESULT_JSON_END)
+
+
 def cmd_run(args) -> int:
     from src.waitlist.runner import SlotsAvailable, run_registration
 
@@ -294,11 +334,16 @@ def cmd_run(args) -> int:
         print()
         print("  A bookable slot exists, so a waitlist sign-up is not the right")
         print("  action. Go and book it on the portal.")
+        if getattr(args, "json_output", False):
+            _emit_result_json(outcome="slots_available", results=[],
+                              combo=e.combo, banner=e.banner)
         return 2
 
     print()
     for result in results:
         print(result.summary())
+    if getattr(args, "json_output", False):
+        _emit_result_json(outcome="completed", results=results)
     return 0 if all(r.status != Status.FAILED for r in results) else 1
 
 
@@ -599,6 +644,10 @@ def main() -> None:
                        help="Force a proxy URL ('' for local IP).")
     p_run.add_argument("--keep-open", action="store_true",
                        help="Leave the browser open at the end for inspection.")
+    p_run.add_argument("--json", action="store_true", dest="json_output",
+                       help="Also print a machine-readable result block between "
+                            "VFS-RESULT-JSON markers. Used by the webhook API to "
+                            "report per-client outcomes; harmless interactively.")
     p_run.set_defaults(func=cmd_run)
 
     p_add = sub.add_parser(
