@@ -19,7 +19,7 @@ import logging
 import time
 from collections import defaultdict, deque
 from threading import Lock
-from typing import Deque, Dict, Final
+from typing import Deque, Dict, Final, Optional
 
 from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
@@ -52,42 +52,82 @@ _api_key_header = APIKeyHeader(
 
 
 class _RateLimiter:
-    """Fixed-window request counter, keyed by client IP.
+    """Sliding-window request counter with a per-IP AND a global ceiling.
 
     In-memory and per-process — it resets when the server restarts and does not
     survive multiple workers. That is fine for its actual job: blunting a flood
     from someone who has guessed the URL. It is NOT a substitute for the token.
+
+    WHY TWO CEILINGS
+    ----------------
+    The per-IP bucket keys on `_client_ip`, which prefers X-Forwarded-For
+    because every request arrives over loopback from the tunnel. That header is
+    set by the CALLER. An attacker who rotates it gets a brand-new bucket on
+    every request and is never limited — the per-IP limit alone is bypassable
+    by design, not by accident.
+
+    The global bucket counts every request in the window regardless of source,
+    so a header-rotating flood still hits a wall. It is sized well above the
+    per-IP limit so ordinary use by several clients never reaches it.
     """
 
-    def __init__(self, max_requests: int, window_seconds: int) -> None:
+    def __init__(self, max_requests: int, window_seconds: int,
+                 max_global_requests: int) -> None:
         self._max = max_requests
         self._window = window_seconds
+        self._max_global = max_global_requests
         self._hits: Dict[str, Deque[float]] = defaultdict(deque)
+        self._global: Deque[float] = deque()
         self._lock = Lock()
 
-    def check(self, client_ip: str) -> bool:
-        """Record a hit. Return False if `client_ip` is over its limit."""
+    def check(self, client_ip: str) -> Optional[str]:
+        """Record a hit. Returns None when allowed, else which limit tripped.
+
+        The return value distinguishes 'ip' from 'global' for LOGGING only —
+        both produce the same 429 to the caller, because telling a flood which
+        ceiling it hit tells it how to shape the next one.
+        """
         now = time.monotonic()
         cutoff = now - self._window
         with self._lock:
+            while self._global and self._global[0] < cutoff:
+                self._global.popleft()
+
             bucket = self._hits[client_ip]
             # Drop timestamps that have aged out of the window.
             while bucket and bucket[0] < cutoff:
                 bucket.popleft()
+
             if len(bucket) >= self._max:
-                return False
+                return "ip"
+            if len(self._global) >= self._max_global:
+                return "global"
+
             bucket.append(now)
-            # Keep the dict from growing without bound across many IPs.
+            self._global.append(now)
+            # Keep the dict from growing without bound across many IPs. An
+            # attacker rotating X-Forwarded-For creates a fresh key per
+            # request, so this sweep is load-bearing, not cosmetic.
             if len(self._hits) > 1024:
                 for ip in [k for k, v in self._hits.items() if not v]:
                     del self._hits[ip]
-            return True
+                # Still oversized means every bucket is live; drop the oldest
+                # by last-hit so memory stays bounded under an active flood.
+                if len(self._hits) > 1024:
+                    oldest = sorted(
+                        self._hits.items(),
+                        key=lambda item: item[1][-1] if item[1] else 0.0,
+                    )[: len(self._hits) - 1024]
+                    for ip, _ in oldest:
+                        del self._hits[ip]
+            return None
 
 
 _settings = get_settings()
 _limiter = _RateLimiter(
     max_requests=_settings.rate_limit_requests,
     window_seconds=_settings.rate_limit_window_seconds,
+    max_global_requests=_settings.rate_limit_global_requests,
 )
 
 
@@ -118,8 +158,14 @@ async def require_token(
 
     # Rate limit BEFORE the comparison so a flood of bad tokens is cheap to
     # absorb and cannot be used to probe timing.
-    if not _limiter.check(ip):
-        log.warning("Rate limit exceeded for %s on %s", ip, request.url.path)
+    tripped = _limiter.check(ip)
+    if tripped is not None:
+        # Logged with WHICH ceiling tripped, because a 'global' trip is the
+        # signature of a caller rotating X-Forwarded-For to evade the per-IP
+        # bucket — worth telling apart in the log even though the caller gets
+        # the same opaque 429 either way.
+        log.warning("Rate limit exceeded (%s) for %s on %s",
+                    tripped, ip, request.url.path)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many requests. Slow down.",
@@ -156,3 +202,4 @@ def _reset_rate_limiter() -> None:
     """
     with _limiter._lock:                       # noqa: SLF001 — test seam
         _limiter._hits.clear()                 # noqa: SLF001
+        _limiter._global.clear()               # noqa: SLF001

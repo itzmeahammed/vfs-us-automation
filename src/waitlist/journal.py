@@ -45,7 +45,7 @@ swap touches this file only.
 import json
 import logging
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from src.waitlist.result import Status, WaitlistResult
 
@@ -306,3 +306,44 @@ def resolve(route: str, combo: str, registrant_id: str,
     result.finish(status, result.reason)
     append(result)
     return result
+
+
+def summarise_by_client() -> Dict[str, dict]:
+    """Per-client rollup of the registration history, keyed by registrant id.
+
+    Reads the journal ONCE and buckets it, rather than scanning per client: a
+    listing endpoint asking each of N clients for its own history would re-read
+    the whole file N times for the same answer.
+
+    Each value carries:
+        last_status     outcome of the most recent attempt
+        last_run_at     when that attempt finished, else when it started
+        vfs_reference   reference from the most recent SUCCESSFUL attempt
+        run_count       total attempts
+
+    `vfs_reference` deliberately comes from the last SUCCESS rather than the
+    last attempt: once a client is registered, a later failed or dry run does
+    not undo that booking, and blanking the reference would hide a real
+    registration that still exists on the portal.
+    """
+    out: Dict[str, dict] = {}
+    for entry in entries():
+        rid = str(entry.get("registrant_id") or "")
+        if not rid:
+            continue
+        when = entry.get("finished_at") or entry.get("started_at") or ""
+        row = out.setdefault(rid, {
+            "last_status": None, "last_run_at": None,
+            "vfs_reference": None, "run_count": 0,
+        })
+        row["run_count"] += 1
+
+        # The journal is append-ordered, but timestamps are the honest key —
+        # an entry written out of order must not look like the latest.
+        if row["last_run_at"] is None or when >= (row["last_run_at"] or ""):
+            row["last_run_at"] = when or None
+            row["last_status"] = entry.get("status")
+
+        if entry.get("status") == "success" and entry.get("vfs_reference"):
+            row["vfs_reference"] = entry["vfs_reference"]
+    return out

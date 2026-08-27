@@ -52,6 +52,21 @@ class ApiSettings(BaseSettings):
         description="Shared secret expected in the X-Webhook-Secret-Token header.",
     )
 
+    # --- Admin console ------------------------------------------------------
+    # Serve the browser UI at GET /console. OFF by default: anything reachable
+    # through the tunnel should be there because you chose it.
+    #
+    # Declared HERE rather than read from os.environ so it can be set in
+    # .env.api like every other setting. A bare os.environ lookup would silently
+    # ignore that file — pydantic-settings loads .env.api into this object, it
+    # does not export those values into the process environment.
+    enable_console: bool = False
+
+    # Swagger UI (/docs), ReDoc (/redoc) and the raw schema (/openapi.json).
+    # OFF by default: anything exposed through a tunnel should not publish a
+    # machine-readable map of its own attack surface. Local development only.
+    enable_docs: bool = False
+
     # --- Network ------------------------------------------------------------
     # 127.0.0.1 ONLY. The tunnel connects to us over loopback, so there is never
     # a reason to bind 0.0.0.0 and expose this to your LAN as well.
@@ -100,14 +115,43 @@ class ApiSettings(BaseSettings):
     # Where each job's combined stdout/stderr is written (one file per job id).
     job_log_dir: Path = REPO_ROOT / "logs" / "api_jobs"
 
-    # How many finished jobs to keep in the in-memory status registry.
+    # How many finished jobs to keep in the in-memory status registry. Eviction
+    # past this point only drops the MEMORY copy — the record stays in the
+    # JSONL history below and is still served by GET /jobs/{id}.
     job_history_limit: int = Field(default=100, ge=1, le=10_000)
+
+    # Durable job history. Every state transition is appended here, so a
+    # restart mid-run cannot make "did this job register anyone?" unanswerable.
+    job_history_file: Path = REPO_ROOT / "logs" / "api_jobs" / "jobs.jsonl"
+
+    # --- Log retention ------------------------------------------------------
+    # One log file per job, forever, is a slow disk leak. Two independent
+    # ceilings: anything older than max_age_days goes, and if the directory is
+    # still over max_total_mb the oldest survivors go until it fits. Set either
+    # to 0 to disable that half.
+    job_log_max_age_days: int = Field(default=30, ge=0, le=3650)
+    job_log_max_total_mb: int = Field(default=2048, ge=0)
 
     # --- Rate limiting ------------------------------------------------------
     # Coarse per-process limit on trigger attempts, counted per client IP. Cheap
     # insurance against someone who has the URL hammering the endpoint.
     rate_limit_requests: int = Field(default=20, ge=1)
     rate_limit_window_seconds: int = Field(default=60, ge=1)
+
+    # Per-IP limiting keys on X-Forwarded-For, which the CALLER controls: a
+    # flood that rotates that header gets a fresh bucket every request and is
+    # never limited. This second ceiling counts every authenticated request in
+    # the window regardless of source, so a header-rotating flood still hits a
+    # wall. Sized well above the per-IP limit so normal multi-client use is
+    # unaffected and only an actual flood trips it.
+    rate_limit_global_requests: int = Field(default=200, ge=1)
+
+    # --- Idempotency --------------------------------------------------------
+    # How long an Idempotency-Key is remembered. A web app retrying a request
+    # whose response it never saw gets the ORIGINAL job back rather than
+    # spawning a second live registration run.
+    idempotency_ttl_seconds: int = Field(default=86_400, ge=60, le=604_800)
+    idempotency_max_keys: int = Field(default=1_000, ge=16, le=100_000)
 
     @field_validator("secret_token")
     @classmethod

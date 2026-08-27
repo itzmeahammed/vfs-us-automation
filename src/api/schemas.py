@@ -175,6 +175,33 @@ class TriggerResponse(BaseModel):
     accepted: bool = True
     message: str
     job: JobResponse
+    replayed: bool = Field(
+        default=False,
+        description="True when an Idempotency-Key matched an earlier request "
+                    "and the ORIGINAL job is being returned — nothing new was "
+                    "started. Treat the job exactly as you would a fresh one.",
+    )
+
+
+class JobLogResponse(BaseModel):
+    """Tail of a job's log file.
+
+    Exists because the absolute `log_file` path in JobResponse is meaningless to
+    a remote web app (and mildly disclosive). This returns the content instead.
+    """
+
+    job_id: str
+    lines: List[str] = Field(default_factory=list)
+    line_count: int = 0
+    truncated: bool = Field(
+        default=False,
+        description="True when older lines were omitted — this is a TAIL, not "
+                    "the whole log.",
+    )
+    log_available: bool = Field(
+        default=True,
+        description="False when the log file has been pruned or never existed.",
+    )
 
 
 class JobListResponse(BaseModel):
@@ -303,18 +330,158 @@ class ClientCreateRequest(BaseModel):
         return data
 
 
+class ClientPatchRequest(BaseModel):
+    """A PARTIAL client update: only the keys actually sent are changed.
+
+    Every field is optional, including the ones ClientCreateRequest requires.
+    Distinguishing "sent as null" from "not sent" is done with
+    `model_fields_set`, not by the value — the endpoint reads that set rather
+    than treating None as "remove", because a caller sending `"account": null`
+    plausibly means either.
+
+    Use PUT when you want omitted fields REMOVED; use this when you want them
+    left alone.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    route: Optional[str] = Field(default=None, description="Route id, e.g. AE-CHE.")
+    combos: Optional[List[str]] = Field(
+        default=None, description="Combination label(s). Replaces the whole list."
+    )
+    enabled: Optional[bool] = Field(
+        default=None,
+        description="Arm or park the client. Omit to leave the current state.",
+    )
+    account: Optional[str] = None
+    account_password: Optional[str] = None
+
+    @field_validator("route")
+    @classmethod
+    def _validate_route_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip().upper()
+        if not _ROUTE_RE.match(v):
+            raise ValueError("route must look like 'AE-CHE' — 2 letters, dash, 2-4 letters.")
+        return v
+
+    @field_validator("combos")
+    @classmethod
+    def _validate_combos(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        if not v:
+            raise ValueError("combos must list at least one combination label.")
+        out = []
+        for combo in v:
+            label = " ".join(str(combo).split())
+            if not label:
+                raise ValueError("combos entries must be non-empty labels.")
+            if not _COMBO_RE.match(label):
+                raise ValueError(
+                    f"combo {combo!r} must be a label like 'Dubai - SCHENGEN'."
+                )
+            out.append(label)
+        return out
+
+    def to_patch(self) -> Dict[str, Any]:
+        """Only the keys the caller actually sent, ready to merge.
+
+        Reads `model_fields_set` rather than filtering None, so an explicit
+        null is preserved as an intentional value while an omitted field simply
+        does not appear.
+        """
+        sent = self.model_fields_set or set()
+        dumped = self.model_dump()
+        return {key: value for key, value in dumped.items() if key in sent}
+
+
 class ClientSummary(BaseModel):
-    """One row in a client listing."""
+    """One row in a client listing.
+
+    The first four fields are always present and cost nothing but a file read.
+    Everything below them is filled only when the caller asks via `?include=`,
+    because each extra costs real work per client — see ClientListResponse.
+    """
 
     client_id: str
     route: str
     combos: List[str] = Field(default_factory=list)
     enabled: bool = False
 
+    created_at: str = Field(
+        default="",
+        description="When the client was first written (UTC, ISO 8601). "
+                    "Clients that predate timestamping were backfilled with "
+                    "the date of that migration, not their true creation date.",
+    )
+    updated_at: str = Field(
+        default="",
+        description="When the client was last written (UTC, ISO 8601).",
+    )
+    enabled_at: str = Field(
+        default="",
+        description="When the client was last ARMED (UTC, ISO 8601). Empty "
+                    "while parked: it is cleared on disable, so it never reads "
+                    "as live when it is not.",
+    )
+
+    # --- include=status ---------------------------------------------------
+    runnable: Optional[bool] = Field(
+        default=None,
+        description="Would this client register right now? Null unless "
+                    "`include=status` was requested.",
+    )
+    problem_count: Optional[int] = Field(
+        default=None,
+        description="How many pre-flight problems this client has. Null unless "
+                    "`include=status`. Call GET /clients/{id} for the detail.",
+    )
+
+    # --- include=journal --------------------------------------------------
+    last_status: Optional[str] = Field(
+        default=None,
+        description="Outcome of this client's most recent registration attempt "
+                    "(success, failed, pending, dry_run). Null unless "
+                    "`include=journal`, or if they have never run.",
+    )
+    last_run_at: Optional[str] = Field(
+        default=None,
+        description="When that attempt finished (or started, if it is still "
+                    "running). Null unless `include=journal`.",
+    )
+    vfs_reference: Optional[str] = Field(
+        default=None,
+        description="The VFS booking reference from the most recent SUCCESSFUL "
+                    "registration, e.g. SWDB79918334684. Null unless "
+                    "`include=journal`, or if none has succeeded.",
+    )
+    run_count: Optional[int] = Field(
+        default=None,
+        description="How many registration attempts this client has made. "
+                    "Null unless `include=journal`.",
+    )
+
 
 class ClientListResponse(BaseModel):
+    """A client listing.
+
+    `include` is opt-in rather than always-on because the extras are not free:
+    `status` re-runs each client's full pre-flight (tens of milliseconds each,
+    so a large fleet would turn a list call into a multi-second one), and
+    `journal` reads the registration history. A dashboard asks for what it
+    needs in ONE call; a simple picker keeps the cheap default.
+    """
+
     count: int
     clients: List[ClientSummary] = Field(default_factory=list)
+    included: List[str] = Field(
+        default_factory=list,
+        description="Which optional blocks were actually filled in, echoed "
+                    "back so a caller can tell 'not requested' from 'requested "
+                    "but empty'.",
+    )
 
 
 class ClientWriteResponse(BaseModel):
@@ -339,14 +506,75 @@ class ClientDetailResponse(BaseModel):
     problems: List[ProblemModel] = Field(default_factory=list)
 
 
+class RouteFieldModel(BaseModel):
+    """One field this route's VFS form asks for.
+
+    Together these are the signup form a web app should render. They are
+    derived from the route's own step definitions — the same config the bot
+    fills from — so they cannot drift from what the portal really wants.
+    """
+
+    name: str = Field(description="Key to send in the POST /clients body.")
+    label: str = Field(description="The portal's own label for this field.")
+    kind: str = Field(
+        description="Input type to render: text, select, checkbox, file, date."
+    )
+    required: bool = Field(
+        description="False for fields the portal only shows on some renders."
+    )
+    step: str = Field(description="Which form step asks for it.")
+    notes: str = Field(
+        default="",
+        description="Value constraints, e.g. digits-only or upper-cased.",
+    )
+    options: List[str] = Field(
+        default_factory=list,
+        description=(
+            "For a dropdown, the exact option strings observed on the portal. "
+            "Render the control from these and send back one of them verbatim: "
+            "the bot matches the option by this text, so a near-miss "
+            "('Lebanese' where the portal says 'Lebanon') cannot be selected. "
+            "Empty unless options_status is 'known'."
+        ),
+    )
+    options_status: str = Field(
+        default="not_a_choice",
+        description=(
+            "How far this field's options can be trusted. 'known': options[] "
+            "was captured from the live portal — render a dropdown, and note "
+            "that POST /clients REJECTS any other value. 'unknown': this is a "
+            "dropdown whose options have not been harvested yet — render free "
+            "text and warn, as the value cannot be checked until they are. "
+            "'not_a_choice': an ordinary text/date/file field; ignore options[]."
+        ),
+    )
+    options_captured_at: str = Field(
+        default="",
+        description=(
+            "When options[] was read off the portal (ISO 8601), or empty if "
+            "never. Shows at a glance whether a list is observed or stale."
+        ),
+    )
+
+
 class RouteReadinessResponse(BaseModel):
-    """Whether a route accepts registrations, and its valid combos."""
+    """Whether a route accepts registrations, its combos, and its form fields."""
 
     route: str
     ready: bool
     combos: List[str] = Field(
         default_factory=list,
         description="Valid combination labels — use these to populate a form.",
+    )
+    fields: List[RouteFieldModel] = Field(
+        default_factory=list,
+        description=(
+            "The client-data fields this route needs. Render a form from these "
+            "rather than hardcoding a field list: routes genuinely differ (one "
+            "needs address lines, another needs a passport scan), and a "
+            "hardcoded form silently creates clients that can never register. "
+            "Send them as top-level keys in the POST /clients body."
+        ),
     )
     problems: List[ProblemModel] = Field(default_factory=list)
 
@@ -402,6 +630,13 @@ class StatusResponse(BaseModel):
     needs_attention: bool = False
     webhook_configured: bool = False
     undelivered_webhooks: int = 0
+    degraded: List[str] = Field(
+        default_factory=list,
+        description="Things this response could NOT determine. A non-empty list "
+                    "means some fields above are placeholders rather than "
+                    "measurements — most importantly, an unreadable journal "
+                    "makes an empty `dangling` list mean 'unknown', not 'none'.",
+    )
 
 
 class ResolveRequest(BaseModel):

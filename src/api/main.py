@@ -28,19 +28,27 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from src.api import __version__
 from src.api.config import get_settings
-from src.api.jobs import JobManager, JobStartError, JobStatus
+from src.api.jobs import (
+    JobAlreadyRunningError,
+    JobManager,
+    JobStartError,
+    JobStatus,
+    read_log_tail,
+)
 from src.api.schemas import (
     ErrorResponse,
     HealthResponse,
     JobListResponse,
+    JobLogResponse,
     JobResponse,
     TriggerRequest,
     TriggerResponse,
@@ -58,11 +66,67 @@ job_manager = JobManager()
 
 # Docs are off unless explicitly enabled. Anything exposed through a tunnel
 # should not publish a machine-readable map of itself.
-_DOCS_ENABLED = os.environ.get("VFSAPI_ENABLE_DOCS", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
+def _docs_enabled_at_import() -> bool:
+    """Whether /docs, /redoc and /openapi.json exist at all.
+
+    Unlike the console flag this MUST be resolved at import time: FastAPI takes
+    docs_url/redoc_url/openapi_url as constructor arguments, so the routes are
+    created (or not) before any request arrives.
+
+    It still goes through ApiSettings rather than a bare os.environ lookup, so
+    VFSAPI_ENABLE_DOCS works from .env.api like every other knob. Reading
+    os.environ directly silently ignored that file — the same trap already
+    fixed for the console.
+    """
+    try:
+        return bool(get_settings().enable_docs)
+    except Exception:                                  # noqa: BLE001
+        # Settings are invalid; the server is about to fail loudly anyway.
+        # Default to the closed answer rather than publishing a schema.
+        return False
+
+
+_DOCS_ENABLED = _docs_enabled_at_import()
+
+# The admin console at GET /console. OFF by default, for the same reason as the
+# docs: anything reachable through the tunnel should be there because you chose
+# it, not because it shipped enabled.
+#
+# The page holds no secret of its own — it asks for the API token and sends it
+# as X-Webhook-Secret-Token like any other caller, so serving the HTML gives an
+# unauthenticated visitor nothing but markup. It must be served BY THIS APP
+# rather than opened from disk: there is deliberately no CORS middleware, so a
+# file:// page cannot call the API at all.
+def documents_max_upload_bytes() -> int:
+    """Body ceiling for a document upload, plus multipart framing overhead.
+
+    Read from documents.MAX_BYTES rather than duplicated, so raising the portal
+    limit in one place cannot leave the middleware rejecting files the endpoint
+    would accept. The margin covers the multipart boundary, headers and the
+    filename — a body is always a little larger than the file inside it.
+    """
+    try:
+        from src.waitlist.documents import MAX_BYTES
+
+        return MAX_BYTES + 64 * 1024
+    except Exception:                                  # noqa: BLE001
+        return 2 * 1024 * 1024 + 64 * 1024
+
+
+def _console_enabled() -> bool:
+    """Whether GET /console serves the UI.
+
+    Read at REQUEST time, not import time, and from ApiSettings — so it can be
+    set in .env.api like every other knob. A module-level os.environ lookup
+    ignored that file entirely, which meant the documented way to configure this
+    server silently did not work for this one flag.
+    """
+    try:
+        return bool(get_settings().enable_console)
+    except Exception:                                  # noqa: BLE001
+        # Settings failed to validate; the server is already failing loudly
+        # elsewhere. Default to the safe answer rather than raising here.
+        return False
 
 
 @asynccontextmanager
@@ -84,6 +148,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # endpoints still work, and /clients will report the problem per-route.
         log.exception("Could not initialise the bot config — /clients endpoints "
                       "may report routes as unavailable.")
+
+    # Rebuild the job registry from disk BEFORE the first request can arrive.
+    # Anything left 'running' by a previous process is reconciled to 'unknown'
+    # and flagged for a human: the child may have completed a real registration
+    # that we never recorded, and guessing either way is worse than saying so.
+    try:
+        orphaned = job_manager.load_history()
+        if orphaned:
+            log.error(
+                "%d job(s) were interrupted by the last shutdown and need "
+                "human verification — see GET /jobs?needs_attention=true.",
+                orphaned,
+            )
+    except Exception:                              # noqa: BLE001
+        log.exception("Could not load job history — starting with an empty "
+                      "registry. Past jobs remain on disk.")
+
+    # Housekeeping: one log file per job, forever, is a slow disk leak.
+    try:
+        job_manager.prune_logs()
+    except Exception:                              # noqa: BLE001
+        log.exception("Job log pruning failed — continuing.")
+
     log.info(
         "Webhook API v%s listening on http://%s:%s (docs=%s, single_flight=%s)",
         __version__,
@@ -205,7 +292,16 @@ async def security_headers(request: Request, call_next: Any) -> Any:
     Content-Length is checked before the body is read, so a large payload is
     rejected rather than buffered.
     """
-    max_bytes = 64 * 1024  # 64 KB — this API only ever receives small JSON.
+    # 64 KB — this API only ever receives small JSON. The ONE exception is a
+    # document upload: some portals (Italy) want the passport bio page, and VFS
+    # itself allows 2 MB, so a blanket 64 KB cap rejected every real scan with a
+    # misleading "body too large" that named the wrong limit.
+    #
+    # The wider cap is scoped to that exact path suffix, and the endpoint still
+    # enforces documents.MAX_BYTES on the bytes it actually reads — Content-Length
+    # is a claim, not a measurement.
+    is_upload = request.method == "POST" and request.url.path.endswith("/documents")
+    max_bytes = (documents_max_upload_bytes() if is_upload else 64 * 1024)
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > max_bytes:
         return JSONResponse(
@@ -241,6 +337,24 @@ async def security_headers(request: Request, call_next: Any) -> Any:
             "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
             "img-src 'self' https://fastapi.tiangolo.com data:; "
             "connect-src 'self'; "
+            "frame-ancestors 'none'"
+        )
+    elif _console_enabled() and request.url.path == "/console":
+        # The console is one self-contained file: its CSS and JS are inline, so
+        # 'unsafe-inline' is what makes it render at all. Everything else stays
+        # shut — no external origin may supply script, style, or images, and
+        # connect-src 'self' means the page can only ever call THIS API.
+        #
+        # Narrower than it looks: this branch matches the single /console path,
+        # so every JSON response keeps the strict policy below.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "script-src 'unsafe-inline'; "
+            "style-src 'unsafe-inline'; "
+            "connect-src 'self'; "
+            "img-src 'self' data:; "
+            "form-action 'none'; "
+            "base-uri 'none'; "
             "frame-ancestors 'none'"
         )
     else:
@@ -280,6 +394,36 @@ async def health() -> HealthResponse:
     )
 
 
+_CONSOLE_FILE = Path(__file__).resolve().parent / "console.html"
+
+
+@app.get("/console", response_class=HTMLResponse, include_in_schema=False)
+async def console() -> HTMLResponse:
+    """The admin console. Serves markup only — every API call it makes is
+    authenticated exactly like any other client.
+
+    Unauthenticated ON PURPOSE. The page contains no data and no secret: it
+    renders a sign-in box and asks for the token, which the browser then sends
+    as X-Webhook-Secret-Token on each request. Requiring a token to fetch the
+    HTML would mean having nowhere to type the token in.
+
+    404s (not 403) when disabled, so a probe through the tunnel cannot tell a
+    switched-off console from a build that never had one.
+    """
+    if not _console_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Not found.")
+    try:
+        html = _CONSOLE_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.exception("Console file missing or unreadable: %s", _CONSOLE_FILE)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Console asset is unavailable.",
+        ) from exc
+    return HTMLResponse(content=html)
+
+
 @app.post(
     "/trigger/waitlist",
     response_model=TriggerResponse,
@@ -292,34 +436,56 @@ async def health() -> HealthResponse:
         500: {"model": ErrorResponse},
     },
 )
-async def trigger_waitlist(payload: TriggerRequest) -> TriggerResponse:
+async def trigger_waitlist(
+    payload: TriggerRequest,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+        max_length=200,
+        description=(
+            "Optional. Send a stable unique value (a UUID) to make retries "
+            "safe: a repeat with the same key returns the ORIGINAL job instead "
+            "of starting a second run. Strongly recommended for live triggers."
+        ),
+    ),
+) -> TriggerResponse:
     """Spawn the waitlist job in the background and return at once.
 
     202 Accepted means "spawned", never "finished". Poll GET /jobs/{job_id}
-    for the outcome, or read the per-job log file named in the response.
+    for the outcome, or read the log with GET /jobs/{job_id}/logs.
+
+    IDEMPOTENCY. Without a key, a client that retries after a network timeout
+    can start a SECOND live registration run — single-flight blocks the
+    concurrent case but not a sequential retry after the first finished. Send
+    an Idempotency-Key and the retry returns the original job untouched.
     """
     try:
-        record = await job_manager.trigger(
+        record, replayed = await job_manager.trigger(
             extra_args=payload.to_cli_args(),
             payload=payload.model_dump(mode="json"),
+            idempotency_key=idempotency_key,
         )
-    except JobStartError as exc:
-        # Two distinct causes, two distinct codes: 409 when something is
-        # already running (retry later), 500 when the process would not start.
-        already_running = "already running" in str(exc)
+    except JobAlreadyRunningError as exc:
+        # A distinct exception type, not a substring of the message: rewording
+        # the message must never silently turn a 409 into a 500.
         raise HTTPException(
-            status_code=(
-                status.HTTP_409_CONFLICT
-                if already_running
-                else status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
-            detail=str(exc),
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except JobStartError as exc:
+        # The process would not start at all — a broken install, not a busy one.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc
 
     return TriggerResponse(
         accepted=True,
-        message="Job started in the background.",
+        message=(
+            "Replayed: this Idempotency-Key already started a job, so nothing "
+            "new was spawned."
+            if replayed else "Job started in the background."
+        ),
         job=JobResponse(**record.to_dict()),
+        replayed=replayed,
     )
 
 
@@ -330,10 +496,19 @@ async def trigger_waitlist(payload: TriggerRequest) -> TriggerResponse:
     tags=["jobs"],
     responses={401: {"model": ErrorResponse}},
 )
-async def list_jobs(limit: int = 20) -> JobListResponse:
+async def list_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    needs_attention: bool = Query(
+        default=False,
+        description="Return only jobs with an unresolved submit or an outcome "
+                    "lost to a restart. These BLOCK their client from running "
+                    "again until a human verifies the VFS account.",
+    ),
+) -> JobListResponse:
     """Recent jobs, most recent first."""
-    limit = max(1, min(limit, 100))
-    records = job_manager.recent(limit)
+    records = job_manager.recent(limit if not needs_attention else 100)
+    if needs_attention:
+        records = [r for r in records if r.needs_attention][:limit]
     active = job_manager.active_job
     return JobListResponse(
         count=len(records),
@@ -358,6 +533,62 @@ async def get_job(job_id: str) -> JobResponse:
             detail=f"No job with id {job_id!r}.",
         )
     return JobResponse(**record.to_dict())
+
+
+@app.get(
+    "/jobs/{job_id}/logs",
+    response_model=JobLogResponse,
+    dependencies=[Depends(require_token)],
+    tags=["jobs"],
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+def get_job_logs(
+    job_id: str,
+    lines: int = Query(default=200, ge=1, le=2000,
+                       description="How many trailing lines to return."),
+) -> JobLogResponse:
+    """Tail of a job's log.
+
+    The `log_file` field elsewhere is an absolute path on the machine running
+    this API — useless to a remote web app, and a small disclosure besides.
+    This serves the content instead, so an operator can diagnose a failed run
+    without shell access.
+
+    Declared `def`, not `async def`: it reads a file, and FastAPI runs a sync
+    endpoint in a threadpool rather than blocking the event loop.
+    """
+    record = job_manager.get(job_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No job with id {job_id!r}.",
+        )
+
+    path = record.log_file
+    if not path or not os.path.exists(path):
+        # A pruned or never-created log is not a 404 on the JOB — the job is
+        # real and its status still means something.
+        return JobLogResponse(
+            job_id=job_id, lines=[], line_count=0,
+            truncated=False, log_available=False,
+        )
+
+    try:
+        tail, truncated = read_log_tail(path, lines)
+    except OSError as exc:
+        log.warning("Could not read log for job %s: %s", job_id, exc)
+        return JobLogResponse(
+            job_id=job_id, lines=[], line_count=0,
+            truncated=False, log_available=False,
+        )
+
+    return JobLogResponse(
+        job_id=job_id,
+        lines=tail,
+        line_count=len(tail),
+        truncated=truncated,
+        log_available=True,
+    )
 
 
 @app.post(

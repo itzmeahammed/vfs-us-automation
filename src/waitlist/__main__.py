@@ -485,14 +485,34 @@ def cmd_doctor(args) -> int:
                 print("Aborted.")
                 return 1
 
+    # Dropdown options are OBSERVED whenever we are on the page anyway; the
+    # flag only decides whether they are written back. Reading them either way
+    # means a plain --walk still reports drift ("4 options in config, 5 on the
+    # page") without the side effect of editing a config file.
+    harvests = []
+
     findings = run_doctor(
         source=source, dest=dest, combo=args.combo,
         registrant_id=args.registrant, walk=args.walk,
         email=args.email, password=args.password,
         proxy=args.proxy_url, keep_open=args.keep_open,
+        harvests=harvests,
     )
     print()
     print(doctor.report(findings, route))
+
+    changes = []
+    if harvests and args.harvest:
+        from datetime import datetime, timezone
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            changes = doctor.apply_harvest(route, harvests, stamp)
+        except Exception as e:                       # noqa: BLE001
+            print(f"\n✗ Could not write options into the route config: {e}")
+            return 1
+    if harvests:
+        print(doctor.harvest_report(harvests, changes, wrote=bool(args.harvest)))
+
     return 0 if all(f.ok for f in findings) else 1
 
 
@@ -666,6 +686,11 @@ def main() -> None:
                           help="Also tick the checkbox and submit to reach the "
                                "later pages. Advances the form; creates NO "
                                "registration. Use when mapping a new country.")
+    p_doctor.add_argument("--harvest", action="store_true",
+                          help="Write each dropdown's real options into the "
+                               "route config (needs --walk to reach the later "
+                               "pages). Without it the options are only "
+                               "reported.")
     p_doctor.add_argument("--yes", action="store_true",
                           help="Skip the --walk confirmation prompt.")
     p_doctor.add_argument("--email", help="Force a specific account.")

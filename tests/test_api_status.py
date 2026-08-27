@@ -182,6 +182,10 @@ def test_docs_csp_allows_the_swagger_cdn(monkeypatch):
     import importlib
 
     monkeypatch.setenv("VFSAPI_ENABLE_DOCS", "1")
+    # The flag now comes from ApiSettings, which is lru_cached — without this
+    # the reload re-reads the settings object built BEFORE the env var was set.
+    import src.api.config as config_mod
+    config_mod.get_settings.cache_clear()
     import src.api.main as main_mod
     reloaded = importlib.reload(main_mod)
 
@@ -200,14 +204,27 @@ def test_docs_csp_allows_the_swagger_cdn(monkeypatch):
             ] == "default-src 'none'; frame-ancestors 'none'"
     finally:
         # Restore the module to its docs-disabled state for other tests.
+        # Clearing the settings cache is load-bearing: leaving a docs-enabled
+        # ApiSettings cached makes the NEXT test see /docs as enabled and fail.
         monkeypatch.delenv("VFSAPI_ENABLE_DOCS", raising=False)
+        import src.api.config as config_mod
+        config_mod.get_settings.cache_clear()
         importlib.reload(main_mod)
 
 
-def test_docs_are_disabled_by_default(api):
-    """Off unless explicitly enabled — an exposed schema maps the API."""
-    assert api.get("/openapi.json").status_code == 404
-    assert api.get("/docs").status_code == 404
+def test_docs_are_disabled_by_default():
+    """Off unless explicitly enabled — an exposed schema maps the API.
+
+    Asserts the DEFAULT on the settings object rather than hitting the app,
+    because the developer's own .env.api may legitimately enable docs locally.
+    A test that fails because the operator turned a feature on is testing the
+    machine, not the code.
+    """
+    import src.api.config as config_mod
+
+    fields = config_mod.ApiSettings.model_fields
+    assert fields["enable_docs"].default is False
+    assert fields["enable_console"].default is False
 
 
 def test_openapi_declares_the_security_scheme(monkeypatch):
@@ -223,6 +240,10 @@ def test_openapi_declares_the_security_scheme(monkeypatch):
     import importlib
 
     monkeypatch.setenv("VFSAPI_ENABLE_DOCS", "1")
+    # The flag now comes from ApiSettings, which is lru_cached — without this
+    # the reload re-reads the settings object built BEFORE the env var was set.
+    import src.api.config as config_mod
+    config_mod.get_settings.cache_clear()
     import src.api.main as main_mod
     reloaded = importlib.reload(main_mod)
 

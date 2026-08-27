@@ -579,7 +579,8 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
                registrant_id: Optional[str] = None, walk: bool = False,
                email: Optional[str] = None, password: Optional[str] = None,
                proxy: Optional[str] = None,
-               keep_open: bool = False) -> List:
+               keep_open: bool = False,
+               harvests: Optional[List] = None) -> List:
     """
     Checks this route's configured selectors against the LIVE portal.
 
@@ -658,6 +659,8 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
         if steps:
             findings.extend(doctor.check_step(page, steps[0]))
             checked.append(steps[0]["name"])
+            if harvests is not None:
+                harvests.extend(doctor.harvest_step(page, steps[0]))
 
         if walk and len(steps) > 1:
             logging.warning(
@@ -665,7 +668,8 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
                 "reach the later pages. No registration is created (it stops "
                 "before the committing step), but the form DOES advance.")
             findings.extend(
-                _walk_and_check(page, route, cfg, steps, checked))
+                _walk_and_check(page, route, cfg, steps, checked,
+                                harvests=harvests))
 
     finally:
         if keep_open:
@@ -686,7 +690,7 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
 
 
 def _walk_and_check(page, route: str, cfg: dict, steps: List[dict],
-                    checked: List[str]) -> List:
+                    checked: List[str], harvests: Optional[List] = None) -> List:
     """Advances through the pre-commit steps, probing each. Never commits."""
     from src.waitlist import doctor
     from src.waitlist.register import _await_page, _click, _tick_checkbox
@@ -708,6 +712,8 @@ def _walk_and_check(page, route: str, cfg: dict, steps: List[dict],
                 _await_page(page, step, 45000)
                 findings.extend(doctor.check_step(page, step))
                 checked.append(step["name"])
+                if harvests is not None:
+                    harvests.extend(doctor.harvest_step(page, step))
             except Exception as e:
                 findings.append(doctor.Finding(
                     step["name"], "page", doctor.Finding.MISSING, str(e)))
@@ -727,6 +733,8 @@ def _walk_and_check(page, route: str, cfg: dict, steps: List[dict],
             _await_page(page, step, 45000)
             findings.extend(doctor.check_step(page, step))
             checked.append(step["name"])
+            if harvests is not None:
+                harvests.extend(doctor.harvest_step(page, step))
             # Later steps usually need their fields filled before the submit
             # enables, so the walk stops here rather than faking data.
             logging.info(

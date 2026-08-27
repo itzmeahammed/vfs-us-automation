@@ -61,7 +61,17 @@ def _describe_posture(switches: SwitchState) -> str:
     if not switches.auto_trigger_enabled:
         return ("MANUAL — registration is enabled but the auto-trigger is off, "
                 "so runs happen only when you or the API start one.")
-    if switches.auto_trigger_dry_run or switches.dry_run:
+    # ONLY auto_trigger_dry_run governs an auto-triggered run. It is not ANDed
+    # with dry_run — register.py:474 picks one or the other:
+    #
+    #     dry_run = guards.dry_run() if force_dry_run is None else force_dry_run
+    #
+    # and the auto-trigger always passes force_dry_run=auto_trigger_dry_run.
+    # So `or dry_run` here was actively dangerous: with dry_run=true and
+    # auto_trigger_dry_run=false this reported "AUTO (DRY RUN) — nothing is
+    # committed" while the bot was submitting real registrations unattended.
+    # A posture line that under-states the risk is worse than none at all.
+    if switches.auto_trigger_dry_run:
         return ("AUTO (DRY RUN) — an opening waitlist fires a run that walks the "
                 "whole flow but stops before submitting. Nothing is committed.")
     return ("AUTO (LIVE) — an opening waitlist will REGISTER real clients "
@@ -73,8 +83,14 @@ def _describe_posture(switches: SwitchState) -> str:
     response_model=StatusResponse,
     dependencies=[Depends(require_token)],
 )
-async def get_status() -> StatusResponse:
-    """Everything an operator needs in one call."""
+def get_status() -> StatusResponse:
+    """Everything an operator needs in one call.
+
+    Declared `def`, not `async def`. This handler reads the journal, every
+    route config, and the client store — all synchronous file I/O. Inside an
+    `async def` that runs ON the event loop and blocks every other request for
+    its duration; FastAPI runs a sync handler in a threadpool instead.
+    """
     from src.waitlist import journal, store, validate
 
     switches = _switches()
@@ -85,6 +101,7 @@ async def get_status() -> StatusResponse:
         from src.utils.config_reader import get_config_section
         route_ids = sorted(get_config_section("vfs-url") or {})
     except Exception:                              # noqa: BLE001
+        log.exception("Could not read the route list from the bot config.")
         route_ids = []
 
     for route_id in route_ids:
@@ -100,11 +117,21 @@ async def get_status() -> StatusResponse:
                 "problems": [p.message for p in readiness.problems],
             })
         except Exception as exc:                   # noqa: BLE001
+            log.exception("Route %s: readiness check failed.", route_id)
             routes.append({"route": route_id, "ready": False, "combos": [],
                            "clients": 0, "problems": [str(exc)]})
 
+    # Anything this endpoint could not actually determine. THE POINT: every
+    # block below used to swallow its exception and fall back to a value that
+    # reads as healthy — no dangling entries, zero undelivered webhooks. On the
+    # one endpoint whose job is answering "is anything stuck?", a failure that
+    # looks identical to "all clear" is the worst possible default. Now a
+    # failure is reported as a degradation the caller can see.
+    degraded: List[str] = []
+
     # Dangling entries — the ones that need a human.
     dangling: List[DanglingEntry] = []
+    dangling_known = True
     try:
         for row in journal.dangling():
             dangling.append(DanglingEntry(
@@ -116,20 +143,39 @@ async def get_status() -> StatusResponse:
                 started_at=str(row.get("started_at") or ""),
             ))
     except Exception as exc:                       # noqa: BLE001
-        log.warning("Could not read the waitlist journal: %s", exc)
+        dangling_known = False
+        log.exception("Could not read the waitlist journal.")
+        degraded.append(
+            f"The waitlist journal could not be read ({exc}). Unresolved "
+            "registrations CANNOT be listed — treat this as 'unknown', not "
+            "'none', and check `python -m src.waitlist journal` directly."
+        )
 
     # Undelivered webhooks.
     try:
         from src.utils import webhook
         deadletters = webhook.deadletter_count()
         webhook_configured = webhook.is_configured()
-    except Exception:                              # noqa: BLE001
+    except Exception as exc:                       # noqa: BLE001
         deadletters, webhook_configured = 0, False
+        log.exception("Could not read webhook delivery state.")
+        degraded.append(
+            f"Webhook delivery state could not be read ({exc}). The "
+            "undelivered count of 0 is a placeholder, not a measurement."
+        )
 
     try:
         clients_total = len(store.list_ids())
-    except Exception:                              # noqa: BLE001
+    except Exception as exc:                       # noqa: BLE001
         clients_total = 0
+        log.exception("Could not count clients.")
+        degraded.append(f"The client store could not be listed ({exc}).")
+
+    if not route_ids:
+        degraded.append(
+            "No routes could be read from the bot config, so route readiness "
+            "is unknown rather than empty."
+        )
 
     return StatusResponse(
         posture=_describe_posture(switches),
@@ -137,9 +183,13 @@ async def get_status() -> StatusResponse:
         routes=routes,
         clients_total=clients_total,
         dangling=dangling,
-        needs_attention=len(dangling) > 0,
+        # A journal we could not read might well hold a dangling entry, so an
+        # unreadable journal ALSO demands attention. Reporting False here would
+        # be asserting a fact we do not have.
+        needs_attention=bool(dangling) or not dangling_known or bool(degraded),
         webhook_configured=webhook_configured,
         undelivered_webhooks=deadletters,
+        degraded=degraded,
     )
 
 
@@ -148,7 +198,7 @@ async def get_status() -> StatusResponse:
     response_model=List[DanglingEntry],
     dependencies=[Depends(require_token)],
 )
-async def get_dangling() -> List[DanglingEntry]:
+def get_dangling() -> List[DanglingEntry]:
     """Journal rows needing a human decision.
 
     Each of these BLOCKS its client from being registered again. That is
@@ -174,7 +224,7 @@ async def get_dangling() -> List[DanglingEntry]:
     "/status/resolve",
     dependencies=[Depends(require_token)],
 )
-async def resolve_entry(payload: ResolveRequest) -> Dict[str, Any]:
+def resolve_entry(payload: ResolveRequest) -> Dict[str, Any]:
     """Record what a human found on the VFS portal, unblocking the client.
 
     This is the API face of `python -m src.waitlist resolve`. Only 'success' or

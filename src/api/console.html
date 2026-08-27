@@ -1,0 +1,1183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VFS Waitlist Console</title>
+<style>
+  /* Single file, no CDN: the API serves this same-origin under a strict CSP,
+     so every byte has to be local. */
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --dim:#9aa3b2; --faint:#6b7383;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --info:#58a6ff;
+    --accent:#7c8cff;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#f6f7f9; --panel:#fff; --panel2:#f0f2f5; --line:#dfe3e9;
+      --text:#161a20; --dim:#5b6472; --faint:#8a93a2;
+      --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --info:#0969da;
+      --accent:#4b56d2;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}
+
+  header{
+    position:sticky; top:0; z-index:20; background:var(--panel);
+    border-bottom:1px solid var(--line); padding:10px 16px;
+    display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+  }
+  header h1{font-size:15px; margin:0; font-weight:650; letter-spacing:.2px}
+  .spacer{flex:1}
+  main{max-width:1200px; margin:0 auto; padding:16px}
+
+  .panel{
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:14px; margin-bottom:14px;
+  }
+  .panel h2{
+    font-size:12px; text-transform:uppercase; letter-spacing:.09em;
+    color:var(--dim); margin:0 0 10px; font-weight:600;
+  }
+  .grid{display:grid; gap:12px}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+
+  /* Posture banner: the single most important thing on the page. */
+  #posture{
+    border-radius:10px; padding:14px 16px; margin-bottom:14px;
+    border:1px solid var(--line); background:var(--panel);
+    display:flex; gap:14px; align-items:flex-start;
+  }
+  #posture .dot{
+    width:12px; height:12px; border-radius:50%; margin-top:5px; flex:none;
+    background:var(--faint);
+  }
+  #posture.parked  .dot{background:var(--info)}
+  #posture.manual  .dot{background:var(--ok)}
+  #posture.auto    .dot{background:var(--warn)}
+  #posture.live    .dot{background:var(--bad)}
+  #posture.err     .dot{background:var(--bad)}
+  #postureTitle{font-weight:700; font-size:15px; margin-bottom:2px}
+  #postureText{color:var(--dim); font-size:13px}
+
+  .stat{background:var(--panel2); border:1px solid var(--line);
+        border-radius:8px; padding:10px 12px}
+  .stat .k{font-size:11px; text-transform:uppercase; letter-spacing:.07em;
+           color:var(--faint)}
+  .stat .v{font-size:20px; font-weight:650; margin-top:2px}
+
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th,td{text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+        vertical-align:top}
+  th{font-size:11px; text-transform:uppercase; letter-spacing:.07em;
+     color:var(--faint); font-weight:600}
+  tbody tr:last-child td{border-bottom:none}
+  .scroll{overflow-x:auto}
+
+  .pill{
+    display:inline-block; padding:1px 8px; border-radius:999px;
+    font-size:11px; font-weight:650; border:1px solid transparent;
+    white-space:nowrap;
+  }
+  .pill.ok  {color:var(--ok);   border-color:var(--ok)}
+  .pill.bad {color:var(--bad);  border-color:var(--bad)}
+  .pill.warn{color:var(--warn); border-color:var(--warn)}
+  .pill.dim {color:var(--faint);border-color:var(--line)}
+  .pill.info{color:var(--info); border-color:var(--info)}
+
+  button{
+    background:var(--panel2); color:var(--text); border:1px solid var(--line);
+    border-radius:7px; padding:7px 12px; font:inherit; font-size:13px;
+    cursor:pointer;
+  }
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:disabled{opacity:.45; cursor:not-allowed}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  button.danger {border-color:var(--bad); color:var(--bad)}
+  button.sm{padding:3px 9px; font-size:12px}
+
+  input,select{
+    background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:7px; padding:7px 10px; font:inherit; font-size:13px; width:100%;
+  }
+  input:focus,select:focus{outline:none; border-color:var(--accent)}
+  label{display:block; font-size:12px; color:var(--dim); margin-bottom:4px}
+  .field{margin-bottom:10px}
+  .row{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+
+  .muted{color:var(--dim)}
+  .faint{color:var(--faint)}
+  .small{font-size:12px}
+  .empty{color:var(--faint); padding:14px; text-align:center; font-size:13px}
+
+  pre.log{
+    background:#000; color:#d7dae0; padding:11px; border-radius:8px;
+    max-height:340px; overflow:auto; font-size:12px; line-height:1.45;
+    white-space:pre-wrap; word-break:break-word; margin:0;
+  }
+  @media (prefers-color-scheme: light){
+    pre.log{background:#12151a; color:#e2e5ea}
+  }
+
+  /* Toasts */
+  #toasts{position:fixed; right:14px; bottom:14px; z-index:60;
+          display:flex; flex-direction:column; gap:8px; max-width:380px}
+  .toast{
+    background:var(--panel); border:1px solid var(--line); border-left-width:3px;
+    border-radius:8px; padding:10px 12px; font-size:13px;
+    box-shadow:0 6px 22px rgba(0,0,0,.28);
+  }
+  .toast.ok  {border-left-color:var(--ok)}
+  .toast.bad {border-left-color:var(--bad)}
+  .toast.warn{border-left-color:var(--warn)}
+  .toast.info{border-left-color:var(--info)}
+
+  dialog{
+    background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:12px; padding:0; max-width:680px; width:calc(100% - 32px);
+  }
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  dialog .head{padding:14px 16px; border-bottom:1px solid var(--line);
+               font-weight:650; display:flex; align-items:center}
+  dialog .body{padding:16px; max-height:70vh; overflow:auto}
+  dialog .foot{padding:12px 16px; border-top:1px solid var(--line);
+               display:flex; gap:8px; justify-content:flex-end}
+
+  .banner{
+    border:1px solid var(--warn); border-left-width:3px; border-radius:8px;
+    padding:10px 12px; margin-bottom:12px; font-size:13px; color:var(--text);
+    background:var(--panel2);
+  }
+  .banner.bad{border-color:var(--bad)}
+  .hide{display:none !important}
+  .tabs{display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:14px;
+        flex-wrap:wrap}
+  .tabs button{
+    background:none; border:none; border-bottom:2px solid transparent;
+    border-radius:0; padding:9px 13px; color:var(--dim); font-size:13px;
+  }
+  .tabs button.on{color:var(--text); border-bottom-color:var(--accent); font-weight:600}
+  .tabs button:hover{border-bottom-color:var(--line)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>VFS Waitlist Console</h1>
+  <span id="modeBadge" class="pill dim">operator</span>
+  <span class="spacer"></span>
+  <span id="lastSync" class="faint small"></span>
+  <button id="btnRefresh" class="sm">Refresh</button>
+  <button id="btnLock" class="sm">Lock</button>
+</header>
+
+<main>
+
+  <!-- ============ Sign-in gate ============ -->
+  <section id="gate" class="panel" style="max-width:520px;margin:48px auto">
+    <h2>Sign in</h2>
+    <div class="field">
+      <label for="tokenIn">API token</label>
+      <input id="tokenIn" type="password" placeholder="X-Webhook-Secret-Token"
+             autocomplete="current-password">
+    </div>
+    <div class="field">
+      <label for="modeIn">Open as</label>
+      <select id="modeIn">
+        <option value="operator">Operator — full control</option>
+        <option value="client">Client — one applicant only</option>
+      </select>
+    </div>
+    <div class="field hide" id="clientIdWrap">
+      <label for="clientIdIn">Client id</label>
+      <input id="clientIdIn" placeholder="e.g. ahmed-nld">
+    </div>
+    <div class="row">
+      <button id="btnLogin" class="primary">Connect</button>
+      <label class="row small muted" style="margin:0;gap:6px">
+        <input type="checkbox" id="rememberIn" style="width:auto">
+        Remember on this device
+      </label>
+    </div>
+    <p class="faint small" style="margin:12px 0 0">
+      The token is held in memory for this tab. "Remember" stores it in
+      <code>localStorage</code> — only do that on a machine you control.
+    </p>
+    <div id="gateErr" class="banner bad hide" style="margin-top:12px"></div>
+  </section>
+
+  <!-- ============ Console ============ -->
+  <div id="app" class="hide">
+
+    <div id="posture">
+      <div class="dot"></div>
+      <div>
+        <div id="postureTitle">Loading…</div>
+        <div id="postureText"></div>
+      </div>
+    </div>
+
+    <div id="alerts"></div>
+
+    <div class="tabs" id="tabs"></div>
+
+    <!-- ---- Overview ---- -->
+    <section data-tab="overview">
+      <div class="grid g3" style="margin-bottom:14px">
+        <div class="stat"><div class="k">Clients</div><div class="v" id="sClients">–</div></div>
+        <div class="stat"><div class="k">Routes ready</div><div class="v" id="sRoutes">–</div></div>
+        <div class="stat"><div class="k">Needs attention</div><div class="v" id="sStuck">–</div></div>
+        <div class="stat"><div class="k">Undelivered webhooks</div><div class="v" id="sHooks">–</div></div>
+      </div>
+
+      <div class="panel op-only">
+        <h2>Safety switches</h2>
+        <p class="faint small" style="margin:-4px 0 10px">
+          Read-only here by design. These are edited in
+          <code>config/config.local.ini</code> — a console that could flip them
+          remotely would be the single most dangerous button in the system.
+        </p>
+        <div class="scroll"><table id="tblSwitches"><tbody></tbody></table></div>
+      </div>
+
+      <div class="panel">
+        <h2>Recent activity</h2>
+        <div class="scroll"><table id="tblRecent">
+          <thead><tr><th>Started</th><th>Status</th><th>Route</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- ---- Routes ---- -->
+    <section data-tab="routes" class="hide">
+      <div class="panel">
+        <h2>Routes</h2>
+        <div class="scroll"><table id="tblRoutes">
+          <thead><tr>
+            <th>Route</th><th>Status</th><th>Clients</th>
+            <th>Combos</th><th>Blocked by</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- ---- Clients ---- -->
+    <section data-tab="clients" class="hide">
+      <div class="panel">
+        <h2 style="display:flex;align-items:center">
+          Clients
+          <span class="spacer"></span>
+          <button id="btnNewClient" class="sm primary op-only">New client</button>
+        </h2>
+        <div class="scroll"><table id="tblClients">
+          <thead><tr>
+            <th>Client</th><th>Route</th><th>Preference</th>
+            <th>State</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <p class="faint small" style="margin:10px 0 0">
+          <strong>Preference order, not a shopping list.</strong> A client gets
+          <em>one</em> waitlist entry per route — whichever combination opens
+          first. Listing two does not register for both.
+        </p>
+      </div>
+    </section>
+
+    <!-- ---- Jobs ---- -->
+    <section data-tab="jobs" class="hide">
+      <div class="panel op-only">
+        <h2>Trigger a run</h2>
+        <div class="grid g2">
+          <div class="field">
+            <label for="trigRoute">Route</label>
+            <select id="trigRoute"></select>
+          </div>
+          <div class="field">
+            <label for="trigClient">Client <span class="faint">(optional)</span></label>
+            <select id="trigClient"><option value="">All eligible</option></select>
+          </div>
+        </div>
+        <div class="row">
+          <button id="btnTrigger" class="primary">Start dry run</button>
+          <label class="row small" style="margin:0;gap:6px">
+            <input type="checkbox" id="trigLive" style="width:auto">
+            <span class="muted">Live run — really submit</span>
+          </label>
+        </div>
+        <div id="liveWarn" class="banner bad hide" style="margin:12px 0 0">
+          <strong>Live mode.</strong> This can submit a real registration to VFS
+          against a real account. It is still gated by
+          <code>register_enabled</code> and <code>dry_run</code> — but do not
+          rely on that as your safety net.
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Jobs</h2>
+        <div class="scroll"><table id="tblJobs">
+          <thead><tr>
+            <th>Started</th><th>Status</th><th>Route</th>
+            <th>Outcome</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- ---- My status (client mode) ---- -->
+    <section data-tab="me" class="hide">
+      <div class="panel">
+        <h2>Your application</h2>
+        <div id="meBody"><div class="empty">Loading…</div></div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<div id="toasts"></div>
+
+<dialog id="dlg">
+  <div class="head" id="dlgTitle"></div>
+  <div class="body" id="dlgBody"></div>
+  <div class="foot" id="dlgFoot"></div>
+</dialog>
+
+<script>
+"use strict";
+(function () {
+
+// ---------------------------------------------------------------- state
+var S = {
+  token: "",
+  mode: "operator",
+  clientId: "",
+  status: null,
+  clients: [],
+  jobs: [],
+  tab: "overview",
+  timer: null,
+  watching: null      // job id currently being polled
+};
+
+var $  = function (s, r) { return (r || document).querySelector(s); };
+var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+
+// Every string from the API is escaped before it touches innerHTML.
+// Client names and VFS error text are attacker-influenced in principle.
+function esc(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function toast(msg, kind, ms) {
+  var el = document.createElement("div");
+  el.className = "toast " + (kind || "info");
+  el.innerHTML = esc(msg);
+  $("#toasts").appendChild(el);
+  setTimeout(function () { el.remove(); }, ms || 5200);
+}
+
+function fmtTime(iso) {
+  if (!iso) return "—";
+  var d = new Date(iso);
+  if (isNaN(d)) return esc(iso);
+  var today = new Date().toDateString() === d.toDateString();
+  return today
+    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleString([], { month: "short", day: "numeric",
+                             hour: "2-digit", minute: "2-digit" });
+}
+
+// ---------------------------------------------------------------- transport
+function api(path, opts) {
+  opts = opts || {};
+  var headers = { "X-Webhook-Secret-Token": S.token };
+  if (opts.body) headers["Content-Type"] = "application/json";
+  if (opts.idem)  headers["Idempotency-Key"] = opts.idem;
+
+  return fetch(path, {
+    method: opts.method || "GET",
+    headers: headers,
+    body: opts.body ? JSON.stringify(opts.body) : undefined
+  }).then(function (res) {
+    return res.text().then(function (txt) {
+      var data = null;
+      try { data = txt ? JSON.parse(txt) : null; } catch (e) { data = { raw: txt }; }
+      if (!res.ok) {
+        var err = new Error(describeError(res.status, data));
+        err.status = res.status;
+        err.data = data;
+        throw err;
+      }
+      return data;
+    });
+  });
+}
+
+// Turn an API error into something a human can act on. The API returns
+// structured problems[] on 422 — flattening that to "Request failed" would
+// throw away the only part that says how to fix it.
+function describeError(status, data) {
+  if (data && Array.isArray(data.problems) && data.problems.length) {
+    return data.problems.map(function (p) {
+      return (p.field ? p.field + ": " : "") + (p.message || p.detail || "");
+    }).join(" · ");
+  }
+  var d = data && (data.detail || data.error);
+  if (typeof d === "string" && d) return d;
+  if (status === 401) return "Token rejected.";
+  if (status === 409) return "A job is already running (single-flight).";
+  if (status === 503) return "The run lock is held — the slot checker is busy.";
+  return "HTTP " + status;
+}
+
+// ---------------------------------------------------------------- session
+function saveSession(remember) {
+  var blob = JSON.stringify({ t: S.token, m: S.mode, c: S.clientId });
+  try {
+    sessionStorage.setItem("vfs.sess", blob);
+    if (remember) localStorage.setItem("vfs.sess", blob);
+    else localStorage.removeItem("vfs.sess");
+  } catch (e) { /* private mode — memory only, still works */ }
+}
+
+function loadSession() {
+  var blob = null;
+  try {
+    blob = sessionStorage.getItem("vfs.sess") || localStorage.getItem("vfs.sess");
+  } catch (e) { return false; }
+  if (!blob) return false;
+  try {
+    var o = JSON.parse(blob);
+    S.token = o.t || ""; S.mode = o.m || "operator"; S.clientId = o.c || "";
+    return !!S.token;
+  } catch (e) { return false; }
+}
+
+function lock() {
+  S.token = ""; S.status = null; S.clients = []; S.jobs = [];
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  try { sessionStorage.removeItem("vfs.sess"); localStorage.removeItem("vfs.sess"); } catch (e) {}
+  $("#app").classList.add("hide");
+  $("#gate").classList.remove("hide");
+  $("#tokenIn").value = "";
+}
+
+// ---------------------------------------------------------------- tabs
+var TABS = {
+  operator: [["overview","Overview"],["routes","Routes"],
+             ["clients","Clients"],["jobs","Jobs"]],
+  client:   [["me","My application"]]
+};
+
+function buildTabs() {
+  var host = $("#tabs");
+  host.innerHTML = "";
+  TABS[S.mode].forEach(function (t) {
+    var b = document.createElement("button");
+    b.textContent = t[1];
+    b.dataset.go = t[0];
+    b.className = (t[0] === S.tab) ? "on" : "";
+    b.onclick = function () { showTab(t[0]); };
+    host.appendChild(b);
+  });
+  host.classList.toggle("hide", TABS[S.mode].length < 2);
+}
+
+function showTab(name) {
+  S.tab = name;
+  $$("#tabs button").forEach(function (b) {
+    b.classList.toggle("on", b.dataset.go === name);
+  });
+  $$("section[data-tab]").forEach(function (s) {
+    s.classList.toggle("hide", s.dataset.tab !== name);
+  });
+}
+
+// ---------------------------------------------------------------- render
+function postureClass(p) {
+  var t = (p || "").toUpperCase();
+  if (t.indexOf("PARKED") === 0) return "parked";
+  if (t.indexOf("AUTO") === 0) return t.indexOf("LIVE") > -1 ? "live" : "auto";
+  if (t.indexOf("MANUAL") === 0) return "manual";
+  return "";
+}
+
+function renderPosture(st) {
+  var box = $("#posture");
+  var full = st.posture || "";
+  // The API sends "HEADLINE — explanation"; split so the headline can be big.
+  var i = full.indexOf("—");
+  var head = i > -1 ? full.slice(0, i).trim() : full;
+  var rest = i > -1 ? full.slice(i + 1).trim() : "";
+  box.className = postureClass(head);
+  $("#postureTitle").textContent = head || "Unknown";
+  $("#postureText").textContent = rest;
+}
+
+function renderAlerts(st) {
+  var host = $("#alerts");
+  host.innerHTML = "";
+
+  // Dangling entries are the one thing that genuinely needs a human: a submit
+  // may or may not have landed on VFS, and retrying could double-register.
+  if (st.needs_attention && (st.dangling || []).length) {
+    var d = document.createElement("div");
+    d.className = "banner bad";
+    d.innerHTML =
+      "<strong>" + st.dangling.length + " registration(s) need a human.</strong> " +
+      "A submit is unresolved — it may already exist on VFS. " +
+      "<em>Do not retry automatically.</em> Check the account, then run " +
+      "<code>python -m src.waitlist resolve …</code><br>" +
+      st.dangling.map(function (r) {
+        return "· " + esc(r.route) + " / " + esc(r.combo) + " / " +
+               esc(r.registrant_id) + " — " + esc(r.status);
+      }).join("<br>");
+    host.appendChild(d);
+  }
+
+  (st.degraded || []).forEach(function (msg) {
+    var d = document.createElement("div");
+    d.className = "banner";
+    d.textContent = msg;
+    host.appendChild(d);
+  });
+
+  if (st.undelivered_webhooks > 0) {
+    var w = document.createElement("div");
+    w.className = "banner";
+    w.innerHTML = "<strong>" + st.undelivered_webhooks +
+      " webhook(s) undelivered.</strong> Your app did not receive them — " +
+      "they are queued in <code>state/webhook_deadletter.jsonl</code>.";
+    host.appendChild(w);
+  }
+}
+
+function renderOverview(st) {
+  $("#sClients").textContent = st.clients_total != null ? st.clients_total : "–";
+  var ready = (st.routes || []).filter(function (r) { return r.ready; }).length;
+  $("#sRoutes").textContent = ready + " / " + (st.routes || []).length;
+
+  var stuck = (st.dangling || []).length;
+  var eS = $("#sStuck");
+  eS.textContent = stuck;
+  eS.style.color = stuck ? "var(--bad)" : "";
+
+  var eH = $("#sHooks");
+  eH.textContent = st.undelivered_webhooks || 0;
+  eH.style.color = st.undelivered_webhooks ? "var(--warn)" : "";
+
+  var sw = st.switches || {};
+  var EXPLAIN = {
+    register_enabled:
+      "Master kill switch. While false, nothing can ever be submitted.",
+    dry_run:
+      "Walk the whole flow but stop before the committing click.",
+    auto_trigger_enabled:
+      "Let the slot checker fire a waitlist run by itself.",
+    auto_trigger_dry_run:
+      "When auto-triggered, stop before committing.",
+    max_per_run: "Registrations one invocation may commit.",
+    max_per_day: "Registrations per calendar day, across all runs."
+  };
+  // Green is not always 'on': for a kill switch, false is the SAFE state, so
+  // colour by risk rather than by truthiness.
+  var RISKY_WHEN_TRUE  = { register_enabled:1, auto_trigger_enabled:1 };
+  var RISKY_WHEN_FALSE = { dry_run:1, auto_trigger_dry_run:1 };
+
+  var rows = Object.keys(sw).map(function (k) {
+    var v = sw[k], pill;
+    if (typeof v === "boolean") {
+      var risky = (v && RISKY_WHEN_TRUE[k]) || (!v && RISKY_WHEN_FALSE[k]);
+      pill = '<span class="pill ' + (risky ? "warn" : "dim") + '">' +
+             (v ? "true" : "false") + "</span>";
+    } else {
+      pill = '<span class="pill info">' + esc(v) + "</span>";
+    }
+    return "<tr><td class='mono'>" + esc(k) + "</td><td>" + pill +
+           "</td><td class='muted small'>" + esc(EXPLAIN[k] || "") + "</td></tr>";
+  });
+  $("#tblSwitches tbody").innerHTML = rows.join("");
+
+  var recent = S.jobs.slice(0, 6);
+  $("#tblRecent tbody").innerHTML = recent.length
+    ? recent.map(function (j) {
+        return "<tr><td>" + fmtTime(j.started_at) + "</td><td>" +
+          jobPill(j) + "</td><td class='mono small'>" +
+          esc((j.payload && j.payload.route) || "—") + "</td>" +
+          "<td><button class='sm' data-job='" + esc(j.job_id) + "'>View</button></td></tr>";
+      }).join("")
+    : "<tr><td colspan='4' class='empty'>No runs yet.</td></tr>";
+}
+
+function jobPill(j) {
+  var s = j.status;
+  if (s === "running")          return '<span class="pill info">running</span>';
+  if (s === "succeeded")        return '<span class="pill ok">succeeded</span>';
+  if (s === "slots_available")  return '<span class="pill ok">slots available</span>';
+  if (s === "failed")           return '<span class="pill bad">failed</span>';
+  if (s === "cancelled")        return '<span class="pill dim">cancelled</span>';
+  return '<span class="pill dim">' + esc(s) + "</span>";
+}
+
+function renderRoutes(st) {
+  var rows = (st.routes || []).map(function (r) {
+    var pill = r.ready
+      ? '<span class="pill ok">ready</span>'
+      : '<span class="pill dim">not ready</span>';
+    // A route being "not ready" is usually deliberate, so show WHY rather
+    // than leaving the operator to guess.
+    var why = (r.problems || []).length
+      ? esc(r.problems.join(" · "))
+      : (r.ready ? "" : "no clients waiting");
+    return "<tr><td class='mono'>" + esc(r.route) + "</td><td>" + pill +
+      "</td><td>" + (r.clients || 0) + "</td><td class='small muted'>" +
+      (r.combos || []).map(esc).join("<br>") + "</td><td class='small faint'>" +
+      why + "</td><td>" +
+      (r.ready ? "<button class='sm op-only' data-run='" + esc(r.route) +
+                 "'>Dry run</button>" : "") +
+      "</td></tr>";
+  });
+  $("#tblRoutes tbody").innerHTML = rows.length
+    ? rows.join("") : "<tr><td colspan='6' class='empty'>No routes.</td></tr>";
+  applyMode();
+}
+
+function renderClients() {
+  var rows = S.clients.map(function (c) {
+    var state = c.enabled
+      ? '<span class="pill ok">armed</span>'
+      : '<span class="pill dim">parked</span>';
+    var combos = (c.combos || []).map(function (x, i) {
+      return "<div class='small'>" + (i + 1) + ". " + esc(x) + "</div>";
+    }).join("");
+    return "<tr><td class='mono'>" + esc(c.client_id) + "</td><td class='mono'>" +
+      esc(c.route) + "</td><td>" + combos + "</td><td>" + state + "</td><td>" +
+      "<div class='row'>" +
+      "<button class='sm' data-view='" + esc(c.client_id) + "'>View</button>" +
+      "<button class='sm op-only' data-toggle='" + esc(c.client_id) + "'>" +
+        (c.enabled ? "Park" : "Arm") + "</button>" +
+      "<button class='sm danger op-only' data-del='" + esc(c.client_id) + "'>Delete</button>" +
+      "</div></td></tr>";
+  });
+  $("#tblClients tbody").innerHTML = rows.length
+    ? rows.join("") : "<tr><td colspan='5' class='empty'>No clients yet.</td></tr>";
+  applyMode();
+}
+
+function renderJobs() {
+  var rows = S.jobs.map(function (j) {
+    var out = j.needs_attention
+      ? '<span class="pill bad">needs attention</span>'
+      : esc(j.outcome || "—");
+    return "<tr><td>" + fmtTime(j.started_at) + "</td><td>" + jobPill(j) +
+      "</td><td class='mono small'>" + esc((j.payload && j.payload.route) || "—") +
+      "</td><td class='small'>" + out + "</td><td>" +
+      "<div class='row'>" +
+      "<button class='sm' data-job='" + esc(j.job_id) + "'>Details</button>" +
+      (j.status === "running"
+        ? "<button class='sm danger op-only' data-cancel='" + esc(j.job_id) + "'>Cancel</button>"
+        : "") +
+      "</div></td></tr>";
+  });
+  $("#tblJobs tbody").innerHTML = rows.length
+    ? rows.join("") : "<tr><td colspan='5' class='empty'>No jobs yet.</td></tr>";
+  applyMode();
+}
+
+// ------- client mode: one applicant, plain language, no machinery ---------
+function renderMe() {
+  var host = $("#meBody");
+  var c = S.clients[0];
+  if (!c) {
+    host.innerHTML = "<div class='empty'>No application found for <code>" +
+      esc(S.clientId) + "</code>.</div>";
+    return;
+  }
+  var route = (S.status && (S.status.routes || []).filter(function (r) {
+    return r.route === c.route;
+  })[0]) || {};
+
+  var headline, detail, pill;
+  if (!c.enabled) {
+    pill = '<span class="pill dim">not active</span>';
+    headline = "Your application is not active yet.";
+    detail = "We have your details. You will be added to the waitlist once " +
+             "your application is activated.";
+  } else if (!route.ready) {
+    pill = '<span class="pill warn">waiting to open</span>';
+    headline = "You are in the queue.";
+    detail = "The waitlist for this route is not open right now. We check " +
+             "continuously and will register you automatically the moment it opens.";
+  } else {
+    pill = '<span class="pill ok">active</span>';
+    headline = "You are in the queue.";
+    detail = "We are watching this route continuously. As soon as a waitlist " +
+             "opens you will be registered automatically, and you will be notified.";
+  }
+
+  host.innerHTML =
+    "<div class='row' style='gap:10px;margin-bottom:10px'>" +
+      "<div style='font-size:16px;font-weight:650'>" + esc(headline) + "</div>" + pill +
+    "</div>" +
+    "<p class='muted' style='margin:0 0 16px'>" + esc(detail) + "</p>" +
+    "<div class='grid g2'>" +
+      "<div class='stat'><div class='k'>Applicant</div><div class='v' style='font-size:15px'>" +
+        esc([c.first_name, c.last_name].filter(Boolean).join(" ") || c.client_id) +
+      "</div></div>" +
+      "<div class='stat'><div class='k'>Destination</div><div class='v' style='font-size:15px'>" +
+        esc(c.route) + "</div></div>" +
+    "</div>" +
+    "<div class='panel' style='margin:14px 0 0;background:var(--panel2)'>" +
+      "<h2>Your preference</h2>" +
+      (c.combos || []).map(function (x, i) {
+        return "<div>" + (i + 1) + ". " + esc(x) + "</div>";
+      }).join("") +
+      "<p class='faint small' style='margin:10px 0 0'>" +
+        "You will be placed on <strong>one</strong> waitlist — whichever of " +
+        "these opens first. We never hold two places for one trip." +
+      "</p>" +
+    "</div>";
+}
+
+// ---------------------------------------------------------------- modals
+function modal(title, bodyHtml, buttons) {
+  $("#dlgTitle").textContent = title;
+  $("#dlgBody").innerHTML = bodyHtml;
+  var foot = $("#dlgFoot");
+  foot.innerHTML = "";
+  (buttons || [{ label: "Close" }]).forEach(function (b) {
+    var el = document.createElement("button");
+    el.textContent = b.label;
+    if (b.cls) el.className = b.cls;
+    el.onclick = function () {
+      if (b.act) { if (b.act() === false) return; }
+      $("#dlg").close();
+    };
+    foot.appendChild(el);
+  });
+  $("#dlg").showModal();
+}
+
+function viewJob(id) {
+  api("/jobs/" + encodeURIComponent(id)).then(function (j) {
+    var res = (j.results || []).length
+      ? "<table><thead><tr><th>Client</th><th>Combination</th><th>Status</th>" +
+        "<th>Reason</th></tr></thead><tbody>" +
+        j.results.map(function (r) {
+          return "<tr><td class='mono small'>" + esc(r.registrant_id) +
+            "</td><td class='small'>" + esc(r.combo) + "</td><td>" +
+            '<span class="pill ' +
+              (r.status === "success" ? "ok" : r.status === "failed" ? "bad" : "dim") +
+              '">' + esc(r.status) + "</span></td><td class='small muted'>" +
+            esc(r.reason || "") + "</td></tr>";
+        }).join("") + "</tbody></table>"
+      : "<p class='faint small'>No per-client results recorded.</p>";
+
+    var attn = j.needs_attention
+      ? "<div class='banner bad'><strong>Needs a human.</strong> A submit is " +
+        "unresolved — it may already exist on VFS. Check the account before " +
+        "retrying anything.</div>"
+      : "";
+
+    modal("Job " + id,
+      attn +
+      "<div class='grid g2' style='margin-bottom:12px'>" +
+        kv("Status", j.status) + kv("Outcome", j.outcome || "—") +
+        kv("Exit code", j.exit_code == null ? "—" : j.exit_code) +
+        kv("Started", fmtTime(j.started_at)) +
+        kv("Finished", fmtTime(j.finished_at)) +
+        kv("PID", j.pid || "—") +
+      "</div>" +
+      "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase'>Results</h2>" +
+      res +
+      "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase;margin-top:14px'>Log</h2>" +
+      "<pre class='log' id='jobLog'>loading…</pre>");
+
+    api("/jobs/" + encodeURIComponent(id) + "/logs")
+      .then(function (d) {
+        var el = $("#jobLog");
+        if (!el) return;
+        var text = typeof d === "string" ? d : (d.log || d.content || d.lines || "");
+        if (Array.isArray(text)) text = text.join("\n");
+        el.textContent = text || "(empty)";
+        el.scrollTop = el.scrollHeight;
+      })
+      .catch(function (e) {
+        var el = $("#jobLog");
+        if (el) el.textContent = "Could not load log: " + e.message;
+      });
+  }).catch(function (e) { toast(e.message, "bad"); });
+}
+
+function kv(k, v) {
+  return "<div class='stat'><div class='k'>" + esc(k) +
+         "</div><div class='v' style='font-size:14px'>" + esc(v) + "</div></div>";
+}
+
+function viewClient(id) {
+  api("/clients/" + encodeURIComponent(id)).then(function (d) {
+    var c = d.client || {};
+    var problems = (d.problems || []).length
+      ? "<div class='banner bad'><strong>Not runnable.</strong><br>" +
+        d.problems.map(function (p) {
+          return "· " + esc((p.field ? p.field + ": " : "") + (p.message || p.detail || ""));
+        }).join("<br>") + "</div>"
+      : "<div class='banner' style='border-color:var(--ok)'>" +
+        "This client would run right now.</div>";
+
+    var fields = Object.keys(c).filter(function (k) {
+      return k !== "combos" && k !== "client_id";
+    }).map(function (k) {
+      var v = c[k];
+      if (typeof v === "boolean") v = v ? "yes" : "no";
+      return "<tr><td class='mono small'>" + esc(k) +
+             "</td><td class='small'>" + esc(v) + "</td></tr>";
+    }).join("");
+
+    modal("Client " + id,
+      problems +
+      "<p class='faint small'>Passwords are never returned by the API, and " +
+      "identity fields are masked. <code>has_account_password</code> only " +
+      "reports whether one is stored.</p>" +
+      "<div class='scroll'><table><tbody>" + fields + "</tbody></table></div>");
+  }).catch(function (e) { toast(e.message, "bad"); });
+}
+
+// ---------------------------------------------------------------- actions
+function trigger(route, clientId, live) {
+  if (!route) { toast("Pick a route first.", "warn"); return; }
+  var body = { route: route, dry_run: !live, reason: "console" };
+  if (clientId) body.registrant = clientId;
+
+  var go = function () {
+    // A unique key per click: a retry of THIS click reuses the job rather than
+    // starting a second registration run.
+    var idem = "console-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
+    api("/trigger/waitlist", { method: "POST", body: body, idem: idem })
+      .then(function (r) {
+        var id = r.job && r.job.job_id;
+        toast((live ? "Live run" : "Dry run") + " started.", "ok");
+        S.watching = id;
+        refresh();
+        if (id) viewJob(id);
+      })
+      .catch(function (e) { toast(e.message, "bad", 8000); });
+  };
+
+  if (live) {
+    modal("Start a LIVE run?",
+      "<div class='banner bad'><strong>This can submit a real registration " +
+      "to VFS.</strong> It will use the client's real account and may consume " +
+      "a real waitlist place.</div>" +
+      "<p>Route <code>" + esc(route) + "</code>" +
+      (clientId ? ", client <code>" + esc(clientId) + "</code>" :
+                  ", <strong>all eligible clients</strong>") + ".</p>",
+      [{ label: "Cancel" },
+       { label: "Yes, run live", cls: "danger", act: go }]);
+  } else { go(); }
+}
+
+function toggleClient(id, enable) {
+  api("/clients/" + encodeURIComponent(id) + (enable ? "/enable" : "/disable"),
+      { method: "POST" })
+    .then(function (r) { toast(r.message || "Updated.", "ok"); refresh(); })
+    .catch(function (e) {
+      // enable() refuses a client that would not run — surface the reason,
+      // because "failed" alone is useless here.
+      toast(e.message, "bad", 9000);
+    });
+}
+
+function deleteClient(id) {
+  modal("Delete " + id + "?",
+    "<p>This removes the client file permanently. Any waitlist entry already " +
+    "registered on VFS is <strong>not</strong> cancelled by this.</p>",
+    [{ label: "Cancel" },
+     { label: "Delete", cls: "danger", act: function () {
+        api("/clients/" + encodeURIComponent(id), { method: "DELETE" })
+          .then(function () { toast("Deleted.", "ok"); refresh(); })
+          .catch(function (e) { toast(e.message, "bad"); });
+     }}]);
+}
+
+function newClient() {
+  var routes = (S.status && S.status.routes || []).filter(function (r) { return r.ready; });
+  var opts = routes.map(function (r) {
+    return "<option value='" + esc(r.route) + "'>" + esc(r.route) + "</option>";
+  }).join("");
+
+  modal("New client",
+    "<div class='field'><label>Client id</label>" +
+      "<input id='nc_id' placeholder='e.g. u10432-che'></div>" +
+    "<div class='field'><label>Route</label>" +
+      "<select id='nc_route'>" + opts + "</select></div>" +
+    "<div class='field'><label>Combination</label>" +
+      "<select id='nc_combo'></select></div>" +
+    "<div class='grid g2'>" +
+      f("nc_first", "First name") + f("nc_last", "Last name") +
+      f("nc_nat", "Nationality") + f("nc_pass", "Passport number") +
+      f("nc_email", "Email") + f("nc_phone", "Phone (no country code)") +
+      f("nc_cc", "Phone country code", "971") +
+      f("nc_acct", "VFS account email") +
+    "</div>" +
+    "<div class='field'><label>VFS account password</label>" +
+      "<input id='nc_pw' type='password'></div>" +
+    "<div class='field'><label>Address line 1</label><input id='nc_a1'></div>" +
+    "<div class='field'><label>Address line 2</label><input id='nc_a2'></div>" +
+    "<p class='faint small'>Created <strong>parked</strong>. Arming is a " +
+    "separate, deliberate step.</p>",
+    [{ label: "Cancel" },
+     { label: "Create", cls: "primary", act: function () {
+        var v = function (id) { var e = $("#" + id); return e ? e.value.trim() : ""; };
+        var body = {
+          client_id: v("nc_id"), route: v("nc_route"),
+          combos: [v("nc_combo")], enabled: false,
+          account: v("nc_acct"), account_password: v("nc_pw"),
+          first_name: v("nc_first"), last_name: v("nc_last"),
+          nationality: v("nc_nat"), passport_number: v("nc_pass"),
+          phone_country_code: v("nc_cc"), phone_number: v("nc_phone"),
+          email: v("nc_email"),
+          address_line_1: v("nc_a1"), address_line_2: v("nc_a2")
+        };
+        api("/clients", { method: "POST", body: body })
+          .then(function (r) { toast(r.message || "Created.", "ok", 8000); refresh(); })
+          .catch(function (e) { toast(e.message, "bad", 10000); });
+     }}]);
+
+  var syncCombos = function () {
+    var r = routes.filter(function (x) { return x.route === $("#nc_route").value; })[0];
+    $("#nc_combo").innerHTML = ((r && r.combos) || []).map(function (c) {
+      return "<option value='" + esc(c) + "'>" + esc(c) + "</option>";
+    }).join("");
+  };
+  $("#nc_route").onchange = syncCombos;
+  syncCombos();
+
+  function f(id, label, val) {
+    return "<div class='field'><label>" + esc(label) + "</label>" +
+           "<input id='" + id + "' value='" + esc(val || "") + "'></div>";
+  }
+}
+
+// ---------------------------------------------------------------- refresh
+function refresh() {
+  var jobs = api("/jobs").then(function (d) {
+    S.jobs = (d && d.jobs) || [];
+  }).catch(function () { S.jobs = []; });
+
+  var clientsUrl = (S.mode === "client")
+    ? "/clients/" + encodeURIComponent(S.clientId)
+    : "/clients";
+
+  var clients = api(clientsUrl).then(function (d) {
+    if (S.mode === "client") {
+      // Detail endpoint returns one object; normalise to the list shape so
+      // the rest of the code has a single contract to reason about.
+      var c = d.client || {};
+      c.client_id = d.client_id || S.clientId;
+      S.clients = [c];
+    } else {
+      S.clients = (d && d.clients) || [];
+    }
+  }).catch(function (e) {
+    S.clients = [];
+    if (e.status === 404 && S.mode === "client") {
+      toast("No application found for " + S.clientId, "warn");
+    }
+  });
+
+  return api("/status").then(function (st) {
+    S.status = st;
+    return Promise.all([jobs, clients]);
+  }).then(function () {
+    if (S.mode === "client") {
+      // No posture banner in client mode. It names internal config keys
+      // ("[waitlist] register_enabled is false") and describes system-wide
+      // state — operator information that means nothing to an applicant and
+      // reads as "this service is switched off".
+      $("#posture").classList.add("hide");
+      $("#alerts").innerHTML = "";
+      renderMe();
+    } else {
+      $("#posture").classList.remove("hide");
+      renderPosture(S.status);
+      renderAlerts(S.status);
+      renderOverview(S.status);
+      renderRoutes(S.status);
+      renderClients();
+      renderJobs();
+      fillTriggerSelects();
+    }
+
+    $("#lastSync").textContent = "synced " +
+      new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    // Poll faster while a job is in flight, then settle back down.
+    //
+    // Each refresh costs THREE requests (/status, /jobs, /clients) and the API
+    // allows 20 per minute per IP. So the floor is 9s, not "as fast as feels
+    // responsive": a 5s poll is 36 req/min and rate-limits the console against
+    // itself, which surfaces as "Cannot reach the API — Too many requests".
+    // 12s leaves headroom for the operator clicking around at the same time.
+    var running = S.jobs.some(function (j) { return j.status === "running"; });
+    setPolling(running ? 12000 : 45000);
+  }).catch(function (e) {
+    if (e.status === 401) { toast("Token rejected — signing out.", "bad"); lock(); return; }
+
+    // A 429 is self-inflicted, not an outage: we polled our way through the
+    // per-IP budget. Saying "Cannot reach the API" would send you looking at
+    // the tunnel and the server, neither of which is wrong. Back off instead
+    // and keep the last-known data on screen.
+    if (e.status === 429) {
+      setPolling(60000);
+      $("#lastSync").textContent = "rate limited — backing off";
+      return;
+    }
+
+    $("#posture").className = "err";
+    $("#postureTitle").textContent = "Cannot reach the API";
+    $("#postureText").textContent = e.message;
+  });
+}
+
+var pollMs = 0;
+function setPolling(ms) {
+  if (ms === pollMs) return;
+  pollMs = ms;
+  if (S.timer) clearInterval(S.timer);
+  S.timer = setInterval(refresh, ms);
+}
+
+function fillTriggerSelects() {
+  var ready = (S.status.routes || []).filter(function (r) { return r.ready; });
+  var sel = $("#trigRoute");
+  var keep = sel.value;
+  sel.innerHTML = ready.map(function (r) {
+    return "<option value='" + esc(r.route) + "'>" + esc(r.route) + "</option>";
+  }).join("") || "<option value=''>No ready routes</option>";
+  if (keep) sel.value = keep;
+
+  var cs = $("#trigClient");
+  var keepC = cs.value;
+  cs.innerHTML = "<option value=''>All eligible</option>" +
+    S.clients.filter(function (c) { return c.route === sel.value; })
+      .map(function (c) {
+        return "<option value='" + esc(c.client_id) + "'>" + esc(c.client_id) +
+               (c.enabled ? "" : " (parked)") + "</option>";
+      }).join("");
+  if (keepC) cs.value = keepC;
+}
+
+// ---------------------------------------------------------------- mode
+function applyMode() {
+  var op = S.mode === "operator";
+  $$(".op-only").forEach(function (el) { el.classList.toggle("hide", !op); });
+  var badge = $("#modeBadge");
+  badge.textContent = op ? "operator" : "client · " + S.clientId;
+  badge.className = "pill " + (op ? "info" : "dim");
+}
+
+// ---------------------------------------------------------------- boot
+function start() {
+  $("#gate").classList.add("hide");
+  $("#app").classList.remove("hide");
+  S.tab = TABS[S.mode][0][0];
+  buildTabs();
+  showTab(S.tab);
+  applyMode();
+  refresh();
+}
+
+$("#modeIn").onchange = function () {
+  $("#clientIdWrap").classList.toggle("hide", this.value !== "client");
+};
+
+$("#btnLogin").onclick = function () {
+  var t = $("#tokenIn").value.trim();
+  var m = $("#modeIn").value;
+  var c = $("#clientIdIn").value.trim();
+  var err = $("#gateErr");
+  err.classList.add("hide");
+
+  if (!t) { err.textContent = "Enter the API token."; err.classList.remove("hide"); return; }
+  if (m === "client" && !c) {
+    err.textContent = "Client mode needs a client id.";
+    err.classList.remove("hide"); return;
+  }
+
+  S.token = t; S.mode = m; S.clientId = c;
+  this.disabled = true;
+
+  // Verify before showing the console, so a bad token fails here rather than
+  // as a wall of errors behind a UI that looks like it worked.
+  api("/status").then(function () {
+    saveSession($("#rememberIn").checked);
+    start();
+  }).catch(function (e) {
+    S.token = "";
+    err.textContent = e.status === 401
+      ? "Token rejected."
+      : "Could not reach the API: " + e.message;
+    err.classList.remove("hide");
+  }).then(function () { $("#btnLogin").disabled = false; });
+};
+
+$("#tokenIn").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") $("#btnLogin").click();
+});
+
+$("#btnRefresh").onclick = function () { refresh(); };
+$("#btnLock").onclick = lock;
+$("#btnNewClient").onclick = newClient;
+$("#trigLive").onchange = function () {
+  $("#liveWarn").classList.toggle("hide", !this.checked);
+  $("#btnTrigger").textContent = this.checked ? "Start LIVE run" : "Start dry run";
+  $("#btnTrigger").className = this.checked ? "danger" : "primary";
+};
+$("#trigRoute").onchange = fillTriggerSelects;
+$("#btnTrigger").onclick = function () {
+  trigger($("#trigRoute").value, $("#trigClient").value, $("#trigLive").checked);
+};
+
+// One delegated listener: rows are re-rendered constantly, so per-button
+// handlers would leak and go stale.
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.job)    viewJob(b.dataset.job);
+  if (b.dataset.view)   viewClient(b.dataset.view);
+  if (b.dataset.run)    trigger(b.dataset.run, "", false);
+  if (b.dataset.del)    deleteClient(b.dataset.del);
+  if (b.dataset.toggle) {
+    var c = S.clients.filter(function (x) { return x.client_id === b.dataset.toggle; })[0];
+    toggleClient(b.dataset.toggle, !(c && c.enabled));
+  }
+  if (b.dataset.cancel) {
+    api("/jobs/" + encodeURIComponent(b.dataset.cancel) + "/cancel", { method: "POST" })
+      .then(function () { toast("Cancelled.", "ok"); refresh(); })
+      .catch(function (err) { toast(err.message, "bad"); });
+  }
+});
+
+// Resume a remembered session.
+if (loadSession()) {
+  api("/status").then(start).catch(function () { lock(); });
+}
+
+})();
+</script>
+</body>
+</html>

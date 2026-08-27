@@ -258,6 +258,19 @@ def _confirm(page, confirmation: Dict[str, Any], timeout_ms: int) -> bool:
 # Step execution                                                               #
 # --------------------------------------------------------------------------- #
 
+class _DryRunStop(Exception):
+    """A dry run reached a submit it will not click, so the walk is over.
+
+    Control flow, not an error: it carries the step name so the caller can say
+    how far the rehearsal got. Deliberately private and caught in this module —
+    it must never surface as a failure to the runner.
+    """
+
+    def __init__(self, step_name: str):
+        super().__init__(f"dry run stopped at step '{step_name}'")
+        self.step_name = step_name
+
+
 def _run_step(page, step: Dict[str, Any], context: Dict[str, Any],
               result: WaitlistResult, dry_run: bool) -> None:
     """Runs ONE pre-commit step: gate the page, fill the fields, submit."""
@@ -282,8 +295,17 @@ def _run_step(page, step: Dict[str, Any], context: Dict[str, Any],
     _screenshot(page, result, f"waitlist_{name}_filled", step)
 
     if dry_run:
+        # Raised, not returned. Returning let the caller's loop advance to the
+        # NEXT step, which then waited 120s for a navigation that could not
+        # happen — because this step deliberately never submitted. Every dry run
+        # therefore ended in a timeout and reported 'failed', which made Stage 2
+        # useless: it could not tell "the form is filled correctly" from "the
+        # portal broke".
+        #
+        # A dry run's job ends at the first submit it declines to click, so say
+        # so and unwind, rather than pretending there is a further step to walk.
         logging.info(f"  [dry-run] would submit step '{name}' — stopping here.")
-        return
+        raise _DryRunStop(name)
 
     _await_enabled(page, submit, timeout_ms)
     _click(page, submit, f"Step '{name}' submit", timeout_ms)
@@ -496,6 +518,17 @@ def register(page, route: str, combo: str, registrant, account: str = "",
 
         if dry_run and result.status != Status.DRY_RUN:
             result.finish(Status.DRY_RUN, "dry run — stopped before submit")
+
+    except _DryRunStop as e:
+        # The expected end of a dry run: the form was reached and filled, and we
+        # declined to submit. Caught ahead of the error handlers below so it is
+        # never misreported as a failure.
+        result.finish(
+            Status.DRY_RUN,
+            f"dry run — filled and stopped at '{e.step_name}' without submitting")
+        journal.update_status(result)
+        logging.info(f"Dry run complete: reached '{e.step_name}', nothing submitted.")
+        return result
 
     except WaitlistCommittedError as e:
         # Committed and ambiguous: record 'unknown' so the triple stays blocked

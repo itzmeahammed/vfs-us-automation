@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.waitlist.errors import WaitlistConfigError
@@ -43,6 +44,20 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 # Keys we refuse to persist: they are transport-level, not client data.
 _STRIP_KEYS = frozenset({"_id"})
+
+# Timestamps the STORE owns. A caller may send them — a web app round-tripping
+# a client it just read will — but they are always overwritten from the clock
+# here, never trusted from input. Otherwise "when was this created?" becomes
+# whatever the caller last claimed, and the audit trail is worth nothing.
+CREATED_AT = "created_at"
+UPDATED_AT = "updated_at"
+ENABLED_AT = "enabled_at"
+_TIMESTAMP_KEYS = frozenset({CREATED_AT, UPDATED_AT, ENABLED_AT})
+
+
+def _now() -> str:
+    """UTC, ISO 8601, second precision — the format every timestamp here uses."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class ClientExistsError(WaitlistConfigError):
@@ -118,7 +133,18 @@ def create(registrant_id: str, data: Dict[str, Any]) -> str:
         raise ClientExistsError(
             f"Client '{rid}' already exists. Use update() to change it, or pick "
             "a different id.")
-    _atomic_write(path, _clean(data))
+
+    payload = _clean(data)
+    stamp = _now()
+    payload[CREATED_AT] = stamp
+    payload[UPDATED_AT] = stamp
+    # A client created already armed was armed NOW; one created parked has
+    # never been armed, so the field stays absent rather than being back-dated
+    # by the next edit.
+    if payload.get("enabled"):
+        payload[ENABLED_AT] = stamp
+
+    _atomic_write(path, payload)
     log.info("Created client file for '%s' (%d field(s)).", rid, len(data))
     return path
 
@@ -140,11 +166,44 @@ def update(registrant_id: str, data: Dict[str, Any], *,
         raise ClientNotFoundError(f"No client '{rid}' to update.")
 
     payload = _clean(data)
+
+    with open(path, "r", encoding="utf-8") as fh:
+        existing = json.load(fh)
+
+    # The store owns the timestamps, so whatever the caller sent is discarded
+    # before merging. A web app that GETs a client and PUTs it back would
+    # otherwise write its own stale values straight over ours.
+    for key in _TIMESTAMP_KEYS:
+        payload.pop(key, None)
+
+    was_enabled = bool(existing.get("enabled"))
+
     if merge:
-        with open(path, "r", encoding="utf-8") as fh:
-            existing = json.load(fh)
         existing.update(payload)
         payload = existing
+    else:
+        # merge=False is a REPLACE (true PUT), which is exactly how created_at
+        # would get lost: the caller cannot send it, and nothing else carries
+        # it forward. Creation time is a fact about the client, not a field of
+        # the current document, so it survives the replace.
+        if existing.get(CREATED_AT):
+            payload[CREATED_AT] = existing[CREATED_AT]
+        if existing.get(ENABLED_AT):
+            payload[ENABLED_AT] = existing[ENABLED_AT]
+
+    stamp = _now()
+    payload[UPDATED_AT] = stamp
+    payload.setdefault(CREATED_AT, stamp)   # pre-timestamp file being touched
+
+    # enabled_at marks the last ARMING, not every edit while armed — so it moves
+    # only on a false -> true transition. Disabling clears it: a parked client
+    # has no "armed since", and leaving a stale one reads as though it were
+    # still live.
+    now_enabled = bool(payload.get("enabled"))
+    if now_enabled and not was_enabled:
+        payload[ENABLED_AT] = stamp
+    elif not now_enabled:
+        payload.pop(ENABLED_AT, None)
 
     _atomic_write(path, payload)
     log.info("Updated client file for '%s' (merge=%s).", rid, merge)
@@ -205,3 +264,44 @@ def list_ids(route: Optional[str] = None) -> List[str]:
                 continue
         ids.append(rid)
     return ids
+
+
+def backfill_timestamps(stamp: Optional[str] = None) -> List[str]:
+    """Give pre-timestamp client files a created_at/updated_at.
+
+    Clients written before the store kept timestamps have none, which would
+    force every consumer to handle null forever — sorting a list by "newest"
+    breaks, and a UI has to render a blank column. Stamping them once removes
+    that special case permanently.
+
+    The value is deliberately TODAY rather than the file's mtime: mtime records
+    the last EDIT, not the creation, so it would look precise while being wrong.
+    A single honest "backfilled on this date" is easier to reason about than
+    four different plausible-looking lies. Fields already present are never
+    overwritten.
+
+    Returns the ids that were changed.
+    """
+    stamp = stamp or _now()
+    changed: List[str] = []
+    for rid in list_ids():
+        try:
+            data = get_raw(rid)
+        except Exception:                              # noqa: BLE001
+            continue                                   # unreadable: leave alone
+        needs_enabled_at = bool(data.get("enabled")) and not data.get(ENABLED_AT)
+        if data.get(CREATED_AT) and data.get(UPDATED_AT) and not needs_enabled_at:
+            continue
+        data.setdefault(CREATED_AT, stamp)
+        data.setdefault(UPDATED_AT, stamp)
+        # An already-armed client has no arming date to recover, but leaving it
+        # blank would render as "never armed" next to enabled=true — a
+        # contradiction. It gets the migration stamp, same as the others.
+        if needs_enabled_at:
+            data[ENABLED_AT] = stamp
+        _atomic_write(path_for(rid), data)
+        changed.append(rid)
+    if changed:
+        log.info("Backfilled timestamps for %d client(s): %s",
+                 len(changed), ", ".join(changed))
+    return changed

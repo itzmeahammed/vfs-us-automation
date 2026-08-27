@@ -243,3 +243,268 @@ def unreachable_steps(route: str, checked: List[str]) -> List[str]:
                 if s.get("name") not in checked and not s.get("disabled")]
     except WaitlistConfigError:
         return []
+
+
+# --------------------------------------------------------------------------- #
+# Harvesting dropdown options                                                  #
+# --------------------------------------------------------------------------- #
+#
+# WHY THIS EXISTS
+# ---------------
+# A route config says `"widget": "mat-select"` — a dropdown — but not WHICH
+# values it accepts. That gap is where wrong data comes from: four client files
+# in this repo disagree about what a country is even called ("India", "Belize",
+# "Lebanese"), because everyone guessed. A guess is only found wrong minutes
+# into a live run, when get_by_role("option", name="Lebanese") matches nothing
+# on a portal whose actual entry is "Lebanon" — after a login, a Turnstile
+# solve and a committed form step.
+#
+# So the lists are READ OFF THE PORTAL rather than typed from memory, and
+# written back into the route config with the date they were observed. The API
+# then serves them (options_status="known"), a web app renders a real dropdown,
+# and POST /clients rejects anything else — all of it derived from one
+# observation instead of four people's recollections.
+#
+# This rides along with `--walk` on purpose. Reaching /your-details costs a
+# login, a Turnstile solve, a checkbox tick and a submit; that page visit is
+# already happening, so harvesting there is nearly free. A standalone command
+# would pay the whole cost again for the same three dropdowns.
+
+#: How long to wait for an overlay's options to render after opening it.
+OPTION_TIMEOUT_MS = 8000
+
+#: Below this, a country-sized dropdown is assumed to be lazily rendered rather
+#: than genuinely short — see _looks_truncated().
+SMALL_LIST = 25
+
+
+class Harvest:
+    """One dropdown's observed options, or why they could not be trusted."""
+
+    def __init__(self, step: str, name: str, options: List[str],
+                 skipped: str = ""):
+        self.step = step
+        self.name = name
+        self.options = options
+        self.skipped = skipped          # non-empty => do NOT write this one
+
+    @property
+    def usable(self) -> bool:
+        return not self.skipped and bool(self.options)
+
+    def line(self) -> str:
+        if self.skipped:
+            return f"  · {self.name} — not harvested: {self.skipped}"
+        return f"  ✓ {self.name} — {len(self.options)} option(s)"
+
+
+def _looks_truncated(page, options: List[str]) -> str:
+    """Is this list plausibly INCOMPLETE? Returns a reason, or "" if it looks whole.
+
+    The failure this guards is the dangerous one. Some VFS country dropdowns are
+    searchable and render only a slice until you type; capturing that slice and
+    writing it as the authoritative list would flip the field to
+    options_status="known" and start REJECTING valid countries — worse than
+    never harvesting, because it looks validated.
+
+    We cannot prove completeness, so we look for the two tells of a lazy list
+    and refuse on either. Refusing costs nothing (the field simply stays
+    "unknown"); writing a partial list costs a broken form.
+    """
+    # A search box inside the overlay means the list filters as you type, so
+    # what is rendered now is not the whole set.
+    for probe in ("input[type='search']", ".mat-select-search input",
+                  "input[placeholder*='Search' i]", "input[matinput]"):
+        try:
+            if page.locator(f".cdk-overlay-pane {probe}").count() > 0:
+                return ("the overlay has a search box, so it renders only part "
+                        "of the list — harvest is not trustworthy here")
+        except Exception:
+            pass
+
+    # A cdk VIRTUAL scroll viewport renders only the visible window.
+    try:
+        if page.locator(".cdk-overlay-pane cdk-virtual-scroll-viewport").count() > 0:
+            return ("the overlay uses virtual scrolling, so only the visible "
+                    "options are in the DOM")
+    except Exception:
+        pass
+
+    return ""
+
+
+def harvest_select(page, spec: Dict[str, Any], step_name: str) -> Harvest:
+    """Opens one mat-select, reads its options, closes it. Changes nothing.
+
+    Opening a dropdown and pressing Escape leaves no value selected and no form
+    state touched, which is what keeps doctor read-only even while harvesting.
+    """
+    name = spec.get("name") or spec.get("label") or "?"
+
+    try:
+        trigger, _ = fields._locator(page, spec, "mat-select")
+        trigger.wait_for(state="visible", timeout=PROBE_TIMEOUT_MS)
+        trigger.scroll_into_view_if_needed(timeout=5000)
+        trigger.click(timeout=PROBE_TIMEOUT_MS)
+    except Exception as e:
+        return Harvest(step_name, name, [], f"could not open the dropdown ({e})")
+
+    try:
+        turnstile.wait_for_loader(page)
+        page.get_by_role("option").first.wait_for(
+            state="visible", timeout=OPTION_TIMEOUT_MS)
+        # Options live in a cdk overlay at the END of <body>, not inside the
+        # field block, so they are read globally by role — exactly how fields.py
+        # picks one when filling.
+        raw = page.get_by_role("option").all_text_contents()
+        options = [t.strip() for t in raw if t and t.strip()]
+    except Exception as e:
+        options, reason = [], f"no options appeared ({e})"
+        _close_overlay(page)
+        return Harvest(step_name, name, [], reason)
+
+    truncated = _looks_truncated(page, options)
+    _close_overlay(page)
+
+    if truncated:
+        return Harvest(step_name, name, [], truncated)
+    if not options:
+        return Harvest(step_name, name, [], "the overlay rendered no options")
+
+    # Duplicates would be a sign we scraped something other than one list.
+    if len(set(options)) != len(options):
+        seen, deduped = set(), []
+        for opt in options:
+            if opt not in seen:
+                seen.add(opt)
+                deduped.append(opt)
+        options = deduped
+
+    return Harvest(step_name, name, options)
+
+
+def _close_overlay(page) -> None:
+    """Dismisses an open overlay so it cannot swallow the next click."""
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+
+def harvest_step(page, step: Dict[str, Any]) -> List[Harvest]:
+    """Every mat-select on the CURRENT page, in config order."""
+    out = []
+    for spec in step.get("fields") or []:
+        if spec.get("disabled"):
+            continue
+        if (spec.get("widget") or "").strip().lower() != "mat-select":
+            continue
+        out.append(harvest_select(page, spec, step.get("name", "?")))
+    return out
+
+
+def apply_harvest(route: str, harvests: List[Harvest],
+                  captured_at: str) -> List[str]:
+    """Writes observed option lists back into config/waitlist/<ROUTE>.json.
+
+    Only the route's OWN file is touched, and only the two option keys on the
+    fields that were harvested — every comment, every other key and the file's
+    ordering survive, because those comments are the documentation for why each
+    selector looks the way it does.
+
+    One cosmetic caveat: the file is re-serialised with json.dump, so the BLANK
+    LINES that separate blocks by hand are lost (the "_comment" keys themselves,
+    and their order, are not). That is why the write is opt-in behind --harvest
+    rather than something a plain --walk does: a health check should not reflow
+    a file you are reading.
+
+    A field is matched by its "name" within its step, so a route that inherits
+    a step from _default.json but has no field of its own for it is left alone
+    rather than having one grafted in: the write is an UPDATE of something the
+    route already declares, never a new declaration.
+
+    Returns a human-readable list of what changed.
+    """
+    import json
+    import os
+
+    path = os.path.join(waitlist_config.WAITLIST_DIR, f"{route}.json")
+    if not os.path.isfile(path):
+        raise WaitlistConfigError(
+            f"Cannot write options: {path} does not exist. A route must have "
+            "its own config file before its dropdowns can be harvested.")
+
+    with open(path, "r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+
+    by_step: Dict[str, Dict[str, Harvest]] = {}
+    for harvest in harvests:
+        if harvest.usable:
+            by_step.setdefault(harvest.step, {})[harvest.name] = harvest
+
+    changes: List[str] = []
+    for step in raw.get("steps") or []:
+        wanted = by_step.get(step.get("name"))
+        if not wanted:
+            continue
+        for spec in step.get("fields") or []:
+            harvest = wanted.get(spec.get("name"))
+            if harvest is None:
+                continue
+            before = spec.get("options")
+            if before == harvest.options:
+                changes.append(f"{harvest.name}: unchanged "
+                               f"({len(harvest.options)} options)")
+                # Still refresh the date — it records when we last CONFIRMED it.
+                spec["options_captured_at"] = captured_at
+                continue
+            spec["options"] = harvest.options
+            spec["options_captured_at"] = captured_at
+            if before:
+                changes.append(
+                    f"{harvest.name}: {len(before)} -> {len(harvest.options)} "
+                    "options (CHANGED — the portal's list moved)")
+            else:
+                changes.append(f"{harvest.name}: {len(harvest.options)} "
+                               "options (new)")
+
+    if changes:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(raw, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        waitlist_config.clear_cache()
+
+    return changes
+
+
+def harvest_report(harvests: List[Harvest], changes: List[str],
+                   wrote: bool) -> str:
+    """Renders what was observed, and what (if anything) was written."""
+    lines = ["", "Dropdown options:"]
+    if not harvests:
+        lines.append("  (no mat-select fields on the pages reached)")
+        return "\n".join(lines)
+
+    lines.extend(h.line() for h in harvests)
+
+    skipped = [h for h in harvests if h.skipped]
+    if not wrote:
+        lines.append("")
+        lines.append("  Nothing written — re-run with --harvest to save these "
+                     "into the route config.")
+    elif changes:
+        lines.append("")
+        lines.append("  Written:")
+        lines.extend(f"    {c}" for c in changes)
+    else:
+        lines.append("")
+        lines.append("  Nothing to write.")
+
+    if skipped:
+        lines.append("")
+        lines.append("  A skipped list stays options_status=\"unknown\": the "
+                     "form renders free text and no value is rejected. That is "
+                     "deliberate — a partial list would look authoritative and "
+                     "reject valid entries.")
+    return "\n".join(lines)

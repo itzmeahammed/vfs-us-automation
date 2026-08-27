@@ -379,28 +379,87 @@ def test_unknown_client_is_404(api):
     assert api.post("/clients/nope/enable", headers=HEADERS).status_code == 404
 
 
-def test_update_without_enabled_preserves_the_armed_state(api):
-    """Regression: PUT silently DISARMED an enabled client.
+def test_patch_without_enabled_preserves_the_armed_state(api):
+    """Regression: a partial update must never silently DISARM a client.
 
     `enabled` defaults to False on the request model, so an update that does not
-    mention it looked identical to one asking to park the client. A client you
-    had armed went quiet, with nothing to tell you — the run then failed with
-    'Client is disabled', long after the PUT that caused it.
+    mention it once looked identical to one asking to park the client. A client
+    you had armed went quiet, with nothing to tell you — the run then failed
+    with 'Client is disabled', long after the update that caused it.
+
+    PATCH is now the endpoint for "change one field": it applies only the keys
+    actually sent, so an unmentioned `enabled` keeps its current value.
     """
     api.post("/clients", json=_client_payload(), headers=HEADERS)
     assert api.post("/clients/test-client-che/enable",
                     headers=HEADERS).json()["enabled"] is True
 
-    body = _client_payload(first_name="UPDATED")
-    body.pop("enabled", None)          # caller simply does not mention it
-    updated = api.put("/clients/test-client-che", json=body, headers=HEADERS)
+    updated = api.patch("/clients/test-client-che",
+                        json={"first_name": "UPDATED"}, headers=HEADERS)
 
     assert updated.status_code == 200
-    assert updated.json()["enabled"] is True, "PUT silently disarmed the client"
+    assert updated.json()["enabled"] is True, "PATCH silently disarmed the client"
     stored = json.loads(
         (api.registrant_dir / "test-client-che.json").read_text(encoding="utf-8"))
     assert stored["enabled"] is True
     assert stored["first_name"] == "UPDATED"
+
+
+def test_patch_changes_only_the_fields_sent(api):
+    """Everything the caller did not mention survives untouched."""
+    api.post("/clients", json=_client_payload(), headers=HEADERS)
+    before = json.loads(
+        (api.registrant_dir / "test-client-che.json").read_text(encoding="utf-8"))
+
+    assert api.patch("/clients/test-client-che",
+                     json={"first_name": "ONLYTHIS"},
+                     headers=HEADERS).status_code == 200
+
+    after = json.loads(
+        (api.registrant_dir / "test-client-che.json").read_text(encoding="utf-8"))
+    assert after["first_name"] == "ONLYTHIS"
+    for key, value in before.items():
+        if key != "first_name":
+            assert after[key] == value, f"PATCH altered {key!r}"
+
+
+def test_empty_patch_is_rejected(api):
+    """A patch that changes nothing is a caller bug, not a no-op success."""
+    api.post("/clients", json=_client_payload(), headers=HEADERS)
+    assert api.patch("/clients/test-client-che", json={},
+                     headers=HEADERS).status_code == 422
+
+
+def test_put_replaces_and_removes_omitted_fields(api):
+    """PUT is a REPLACE: what you do not send is deleted.
+
+    This is the only way to remove a field — dropping `account` so the client
+    falls back to the shared one, for instance — which merge semantics cannot
+    express. It is also why PATCH exists: PUT is the wrong tool for editing one
+    field, and the message says which fields it dropped.
+    """
+    payload = _client_payload()
+    payload["account"] = "pinned@example.com"
+    payload["account_password"] = "s3cret-value-long"
+    api.post("/clients", json=payload, headers=HEADERS)
+
+    stored = json.loads(
+        (api.registrant_dir / "test-client-che.json").read_text(encoding="utf-8"))
+    assert stored["account"] == "pinned@example.com"
+
+    replacement = _client_payload(first_name="REPLACED")
+    replacement.pop("account", None)
+    replacement.pop("account_password", None)
+    response = api.put("/clients/test-client-che", json=replacement,
+                       headers=HEADERS)
+
+    assert response.status_code == 200
+    stored = json.loads(
+        (api.registrant_dir / "test-client-che.json").read_text(encoding="utf-8"))
+    assert "account" not in stored, "PUT should have removed the omitted field"
+    assert "account_password" not in stored
+    assert stored["first_name"] == "REPLACED"
+    assert "account" in response.json()["message"]
 
 
 def test_update_can_still_park_explicitly(api):
