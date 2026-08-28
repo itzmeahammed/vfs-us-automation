@@ -25,6 +25,7 @@ The roster comes from the client files themselves: every config/registrants/
 """
 
 import logging
+import time
 from typing import Dict, List, Optional
 
 from src.settings import settings
@@ -113,6 +114,135 @@ def _report_usage(bot, proxy_url, label: str) -> None:
             logging.info("Egress was the local IP — no proxy bytes billed.")
     except Exception as e:
         logging.debug(f"Could not report data usage: {e}")
+
+
+def _record_usage(proxy_url) -> None:
+    """Bills this run's proxy bytes against the SHARED daily budget.
+
+    The slot checker and the waitlist spend from the same metered proxy, so they
+    must debit the same ledger — otherwise a waitlist run is invisible to the
+    cap and the checker's own accounting is wrong by however much waitlisting
+    used. supervisor.run_all_routes() does exactly this per route; a waitlist
+    invocation is a single "route", so it records once on the way out.
+
+    Only proxied runs are billed. On the local IP there is no metered upstream,
+    so there is nothing to charge (and recording 0.0 would still rewrite the
+    ledger file for no reason).
+
+    record() also fires the one-shot 60%/100% Telegram alerts, which is why this
+    is called even when the run failed: the bytes were spent either way, and a
+    failing run that burns the cap is precisely the case worth alerting on.
+
+    Best-effort — a metering failure must never mask the outcome of the run.
+    """
+    if not proxy_url:
+        return
+    try:
+        from src.utils import bandwidth_budget, proxy_forwarder
+        spent = proxy_forwarder.session_mb()
+        if spent <= 0:
+            return
+        total = bandwidth_budget.record(spent)
+        cap = bandwidth_budget.cap_mb()
+        if cap > 0:
+            logging.info(
+                f"Daily proxy data: {total:.1f} / {cap:.0f} MB "
+                f"({bandwidth_budget.percent_used():.0f}%) — "
+                f"{bandwidth_budget.remaining_mb():.1f} MB left today.")
+    except Exception as e:
+        logging.debug(f"Could not record proxy usage against the daily cap: {e}")
+
+
+def _check_budget() -> None:
+    """Refuses to START a run when today's proxy allowance is already spent.
+
+    Checked BEFORE the browser launches, mirroring supervisor.run_all_routes():
+    once the cap is gone the next run would just add to the overspend. A run
+    already in flight is never killed mid-way — the bytes are spent, and a
+    half-driven registration is worse than a slightly-over-cap day.
+
+    Raises WaitlistConfigError so it surfaces as a clean refusal rather than a
+    traceback; it is a configuration//budget state, not a bug.
+    """
+    try:
+        from src.utils import bandwidth_budget
+        if not bandwidth_budget.is_exhausted():
+            return
+        used, cap = bandwidth_budget.used_mb(), bandwidth_budget.cap_mb()
+    except WaitlistConfigError:
+        raise
+    except Exception as e:
+        logging.debug(f"Could not read the daily proxy budget: {e}")
+        return
+    raise WaitlistConfigError(
+        f"Daily proxy data cap spent ({used:.1f} of {cap:.0f} MB) — refusing to "
+        "start. Resets at midnight, or "
+        "'python -m src.utils.bandwidth_budget reset' to resume sooner.")
+
+
+def _assert_account_healthy(email: str, route: str) -> None:
+    """Refuses to log in with an account the circuit breaker has benched.
+
+    The waitlist keeps its OWN account pool (nothing is read from
+    credentials.local.ini), but account_health is keyed on (email, route) and is
+    about the ACCOUNT, not about which subsystem is driving it. A VFS portal that
+    has locked an account does not care that this login came from the waitlist —
+    signing in again during a hard cooldown is exactly the hammering the breaker
+    exists to stop, and it puts the client's existing waitlist entries at risk.
+
+    Read-only here: the run is refused rather than the bench being extended, so
+    a waitlist attempt can never deepen a cooldown the slot checker is serving.
+
+    Raises WaitlistConfigError — a clean refusal, not a traceback.
+    """
+    try:
+        from src.utils import account_health
+        disabled = account_health.is_disabled(email)
+        benched = account_health.is_benched(email, route)
+        until = account_health.benched_until(email, route) if benched else 0
+    except Exception as e:
+        # Never let a health-file problem block a registration the user asked
+        # for; the breaker is a safety net, not a gate of last resort.
+        logging.debug(f"Could not read account health: {e}")
+        return
+
+    if disabled:
+        raise WaitlistConfigError(
+            f"Account {accounts.mask(email)} is DISABLED (wrong credentials or "
+            "unauthorised) — refusing to sign in. Fix the account, then: "
+            f"python -m src.utils.account_health clear {email}")
+    if benched:
+        mins = max(1, int((until - time.time()) / 60))
+        raise WaitlistConfigError(
+            f"Account {accounts.mask(email)} is benched on {route} for another "
+            f"~{mins} min by the circuit breaker (a block or repeated failures). "
+            "Signing in now risks the account. Wait for it to clear, or "
+            f"python -m src.utils.account_health clear {email}")
+
+
+def _record_account_outcome(email: str, route: str, ok: bool,
+                            reason: str = "") -> None:
+    """Feeds this run's result back into the shared circuit breaker.
+
+    Without this the waitlist is a blind spot: it could fail login ten times in a
+    row and the breaker would never bench the account, because only the
+    supervisor was reporting. Both subsystems drive the same VFS accounts, so
+    both must report.
+
+    A success clears the account's strike count for the route, exactly as a
+    successful slot check does.
+
+    Best-effort: the run's own outcome has already been decided and journalled by
+    the time this is called, and must not be disturbed by a bookkeeping failure.
+    """
+    try:
+        from src.utils import account_health
+        if ok:
+            account_health.record_success(email, route)
+        else:
+            account_health.record_failure(email, route, reason or "waitlist run failed")
+    except Exception as e:
+        logging.debug(f"Could not record account health: {e}")
 
 
 def _reset_usage() -> None:
@@ -287,6 +417,10 @@ def run_registration(source: str, dest: str,
         f"Egress: {proxy_pool.label(proxy_url) if proxy_url else 'local IP'} "
         f"({how}) — pass --proxy-url \"\" to force local.")
 
+    _assert_account_healthy(resolved.email, route)
+    if proxy_url:
+        _check_budget()
+
     url = get_config_value("vfs-url", route)
     if not url:
         raise WaitlistConfigError(f"No login URL for {route} in config/vfs_urls.ini.")
@@ -295,6 +429,37 @@ def run_registration(source: str, dest: str,
     committed_this_run = 0
     bot = None      # bound inside the try; needed by _report_usage in finally
 
+    # Global run lock — taken AFTER validation (so a bad config still fails fast
+    # without queueing behind another run) but BEFORE Chrome starts.
+    #
+    # This is what makes auto-triggering safe. journal.py documents that the
+    # append-only journal assumes exactly ONE writer; the scheduled slot check,
+    # an auto-triggered registration and a manual run are three potential
+    # writers. Two at once can double-register a client — a real appointment
+    # slot — and would also collide on the fixed Chrome debugging port.
+    #
+    # on_busy="raise" (unlike the supervisor's "skip"): a registration is
+    # deliberate, so the caller must be TOLD it did not happen, not silently
+    # given an empty result list.
+    from src.utils import runlock
+    with runlock.acquire("waitlist-run", timeout=runlock.DEFAULT_TIMEOUT_SECONDS):
+        return _run_registration_locked(
+            route=route, source=source, dest=dest, plan=plan, url=url,
+            resolved=resolved, account=account, proxy_url=proxy_url,
+            force_dry_run=force_dry_run, keep_open=keep_open,
+            results=results, committed_this_run=committed_this_run, bot=bot,
+        )
+
+
+def _run_registration_locked(*, route, source, dest, plan, url, resolved,
+                             account, proxy_url, force_dry_run, keep_open,
+                             results, committed_this_run,
+                             bot) -> List[WaitlistResult]:
+    """The browser-driving half of run_registration, holding the run lock.
+
+    Split out purely so the lock's scope is explicit and covers every line that
+    touches Chrome or the journal. See run_registration for the contract.
+    """
     _reset_usage()
     chrome = ChromeProcess(port=settings().retry.cdp_port, url=url,
                            proxy=proxy_url, profile_key=resolved.email)
@@ -393,7 +558,18 @@ def run_registration(source: str, dest: str,
         # Report usage BEFORE closing Chrome: the counters live on the bot and
         # the forwarder, but reading them after teardown risks a half-torn-down
         # state. Reported on failure too — a run that died still cost MB.
+        # Feed the shared circuit breaker. "Reached the portal" is the signal,
+        # NOT "every client registered": a combination with no waitlist on offer
+        # is a perfectly healthy run, and striking the account for it would bench
+        # it for a VFS state that has nothing to do with the account. `bot` is
+        # only bound once _login_and_reach_appointment_page() has returned, so it
+        # is exactly the "did we get in?" flag — and it stays None when login
+        # threw, which is the case worth counting.
+        _record_account_outcome(
+            resolved.email, route, ok=bot is not None,
+            reason="waitlist run failed before reaching the portal")
         _report_usage(bot, proxy_url, "run")
+        _record_usage(proxy_url)
         chrome.close()
 
     return results
@@ -403,7 +579,8 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
                registrant_id: Optional[str] = None, walk: bool = False,
                email: Optional[str] = None, password: Optional[str] = None,
                proxy: Optional[str] = None,
-               keep_open: bool = False) -> List:
+               keep_open: bool = False,
+               harvests: Optional[List] = None) -> List:
     """
     Checks this route's configured selectors against the LIVE portal.
 
@@ -443,6 +620,9 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
         f"Egress: {proxy_pool.label(proxy_url) if proxy_url else 'local IP'} "
         f"({how}) — pass --proxy-url \"\" to force local.")
 
+    if proxy_url:
+        _check_budget()
+
     url = get_config_value("vfs-url", route)
     if not url:
         raise WaitlistConfigError(f"No login URL for {route} in config/vfs_urls.ini.")
@@ -479,6 +659,8 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
         if steps:
             findings.extend(doctor.check_step(page, steps[0]))
             checked.append(steps[0]["name"])
+            if harvests is not None:
+                harvests.extend(doctor.harvest_step(page, steps[0]))
 
         if walk and len(steps) > 1:
             logging.warning(
@@ -486,7 +668,8 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
                 "reach the later pages. No registration is created (it stops "
                 "before the committing step), but the form DOES advance.")
             findings.extend(
-                _walk_and_check(page, route, cfg, steps, checked))
+                _walk_and_check(page, route, cfg, steps, checked,
+                                harvests=harvests))
 
     finally:
         if keep_open:
@@ -495,6 +678,7 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
             except EOFError:
                 pass
         _report_usage(bot, proxy_url, "check")
+        _record_usage(proxy_url)
         chrome.close()
 
     missed = [s for s in doctor.unreachable_steps(route, checked)]
@@ -506,7 +690,7 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
 
 
 def _walk_and_check(page, route: str, cfg: dict, steps: List[dict],
-                    checked: List[str]) -> List:
+                    checked: List[str], harvests: Optional[List] = None) -> List:
     """Advances through the pre-commit steps, probing each. Never commits."""
     from src.waitlist import doctor
     from src.waitlist.register import _await_page, _click, _tick_checkbox
@@ -528,6 +712,8 @@ def _walk_and_check(page, route: str, cfg: dict, steps: List[dict],
                 _await_page(page, step, 45000)
                 findings.extend(doctor.check_step(page, step))
                 checked.append(step["name"])
+                if harvests is not None:
+                    harvests.extend(doctor.harvest_step(page, step))
             except Exception as e:
                 findings.append(doctor.Finding(
                     step["name"], "page", doctor.Finding.MISSING, str(e)))
@@ -547,6 +733,8 @@ def _walk_and_check(page, route: str, cfg: dict, steps: List[dict],
             _await_page(page, step, 45000)
             findings.extend(doctor.check_step(page, step))
             checked.append(step["name"])
+            if harvests is not None:
+                harvests.extend(doctor.harvest_step(page, step))
             # Later steps usually need their fields filled before the submit
             # enables, so the walk stops here rather than faking data.
             logging.info(

@@ -1,0 +1,113 @@
+# Enforced at the ngrok EDGE, before a request ever reaches this machine.
+#
+# This is a second layer, not the security boundary. The real boundary is the
+# X-Webhook-Secret-Token check in src/api/security.py: the edge only checks that
+# a token header is PRESENT, because the ngrok config is a file on disk and the
+# secret does not belong in it.
+#
+# Run with:
+#   ngrok start vfs-webhook --config <repo>/ngrok/ngrok.yml
+#                           --config %LOCALAPPDATA%\ngrok\ngrok.yml
+
+# THE FREE-TIER INTERSTITIAL CANNOT BE FIXED HERE. Do not try again.
+#
+# ngrok shows an HTML warning page (ERR_NGROK_6024) to browser-looking requests
+# and skips it when `ngrok-skip-browser-warning` is present. But that decision
+# happens BEFORE traffic policy runs, and it keys on the INBOUND User-Agent.
+#
+# Verified: an `add-headers` action adding the header changes the request going
+# UPSTREAM, and the interstitial still fires. `ngrok start` also has no inbound
+# header-rewrite flag. The only real fixes are a paid plan or a reserved domain.
+#
+# So the browser cannot load /console over a free tunnel directly. The console
+# handles this itself — see the interstitial notice in src/api/console.html.
+on_http_request:
+  # 1) Only paths this API actually serves. Everything else is 404'd at the
+  #    edge, so a scanner probing /admin or /.env never spawns a Python request.
+  #
+  #    /console is listed ONLY if you want the admin UI reachable remotely.
+  #    Comment that line out to publish the API without the UI — the server-side
+  #    switch (VFSAPI_ENABLE_CONSOLE) is the other half of the same decision.
+  #
+  #    /docs, /redoc and /openapi.json publish a COMPLETE machine-readable map
+  #    of this API: 14 paths, every request field, every response shape. That is
+  #    a real cost — it turns "guess the endpoints" into "read the manual" for
+  #    anyone who finds the URL. They are listed here because they were asked
+  #    for explicitly; the shared token is what actually protects the data.
+  #    Delete these three lines to close them again (and unset
+  #    VFSAPI_ENABLE_DOCS, which is the other half of the decision).
+  - expressions:
+      - >-
+        !(req.url.path == '/health'
+          || req.url.path == '/console'
+          || req.url.path == '/docs'
+          || req.url.path == '/redoc'
+          || req.url.path == '/openapi.json'
+          || req.url.path.startsWith('/trigger/')
+          || req.url.path.startsWith('/jobs')
+          || req.url.path.startsWith('/clients')
+          || req.url.path.startsWith('/routes')
+          || req.url.path.startsWith('/status'))
+    actions:
+      - type: custom-response
+        config:
+          status_code: 404
+          headers:
+            content-type: application/json
+          body: '{"error":"not_found"}'
+
+  # 2) Require the secret header on everything except /health and /console.
+  #    Presence only — the edge cannot compare the value safely.
+  #
+  #    /console is exempt of necessity, not convenience: a browser loading a
+  #    page cannot attach a custom header, and the token is precisely what the
+  #    user is about to type in. Requiring it here would 401 the sign-in page
+  #    and leave nowhere to authenticate.
+  #
+  #    That is safe because the page is markup only — it holds no data and no
+  #    secret. Every request it then makes DOES carry the header and is checked
+  #    by both this rule and, in constant time, by src/api/security.py.
+  #    /docs and /redoc are exempt for the same reason — a browser cannot
+  #    attach the header on a page load, and Swagger UI's own Authorize box is
+  #    where you supply the token. /openapi.json is exempt because Swagger UI
+  #    fetches it before you have authorized.
+  #
+  #    NOTE the asymmetry: exempting /openapi.json publishes the schema to
+  #    anyone with the URL. That is the cost of remote /docs; the endpoints it
+  #    describes still require the token.
+  - expressions:
+      - "req.url.path != '/health'"
+      - "req.url.path != '/console'"
+      - "req.url.path != '/docs'"
+      - "req.url.path != '/redoc'"
+      - "req.url.path != '/openapi.json'"
+      - "!('x-webhook-secret-token' in req.headers)"
+    actions:
+      - type: custom-response
+        config:
+          status_code: 401
+          headers:
+            content-type: application/json
+          body: '{"error":"unauthorized"}'
+
+  # 3) Only the verbs the API uses.
+  - expressions:
+      - "!(req.method in ['GET','POST','PUT','DELETE'])"
+    actions:
+      - type: custom-response
+        config:
+          status_code: 405
+          headers:
+            content-type: application/json
+          body: '{"error":"method_not_allowed"}'
+
+  # 4) Body cap at the edge, mirroring the API's own 64 KB limit.
+  - expressions:
+      - "req.content_length > 65536"
+    actions:
+      - type: custom-response
+        config:
+          status_code: 413
+          headers:
+            content-type: application/json
+          body: '{"error":"payload_too_large"}'

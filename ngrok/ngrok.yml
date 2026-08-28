@@ -1,0 +1,84 @@
+# Tunnel definition for the local trigger API. NO SECRETS LIVE HERE.
+#
+# The authtoken deliberately stays in ngrok's own global config
+# (the ngrok.yml under %LOCALAPPDATA%, written by `ngrok config add-authtoken`),
+# so this file is safe to track in git while the credential is not. ngrok merges
+# multiple --config files; start_tunnel.ps1 passes both.
+#
+# Schema v3 - needs agent 3.5+. `ngrok version` must NOT report 3.3.x (the build
+# winget ships): it rejects this with "unknown version '3'" and has no
+# traffic_policy support at all. start_tunnel.ps1 prefers the C:\ngrok install
+# for exactly this reason.
+#
+# THE TRAFFIC POLICY BELOW IS GENERATED - do not hand-edit it here.
+# Edit ngrok/traffic-policy.yml (the readable copy, with comments) and run
+#   python ngrok/build_config.py
+#
+# Why inline: `ngrok start` has no --traffic-policy-file flag (that one is on
+# `ngrok http`), and a `traffic_policy: {file: ...}` key under `endpoints:` is
+# rejected by the server as ERR_NGROK_9026 - it reads the filename as the
+# policy body.
+version: "3"
+
+endpoints:
+  - name: vfs-webhook
+    # Free tier assigns a random *.ngrok-free.dev name that CHANGES on every
+    # restart. With a reserved domain, uncomment:
+    # url: https://your-reserved-name.ngrok-free.app
+    upstream:
+      # Loopback upstream: the API binds 127.0.0.1 only, and the tunnel is the
+      # single public edge.
+      url: http://127.0.0.1:8000
+    traffic_policy:
+      on_http_request:
+        - expressions:
+            - >-
+              !(req.url.path == '/health'
+                || req.url.path == '/console'
+                || req.url.path == '/docs'
+                || req.url.path == '/redoc'
+                || req.url.path == '/openapi.json'
+                || req.url.path.startsWith('/trigger/')
+                || req.url.path.startsWith('/jobs')
+                || req.url.path.startsWith('/clients')
+                || req.url.path.startsWith('/routes')
+                || req.url.path.startsWith('/status'))
+          actions:
+            - type: custom-response
+              config:
+                status_code: 404
+                headers:
+                  content-type: application/json
+                body: '{"error":"not_found"}'
+        - expressions:
+            - "req.url.path != '/health'"
+            - "req.url.path != '/console'"
+            - "req.url.path != '/docs'"
+            - "req.url.path != '/redoc'"
+            - "req.url.path != '/openapi.json'"
+            - "!('x-webhook-secret-token' in req.headers)"
+          actions:
+            - type: custom-response
+              config:
+                status_code: 401
+                headers:
+                  content-type: application/json
+                body: '{"error":"unauthorized"}'
+        - expressions:
+            - "!(req.method in ['GET','POST','PUT','DELETE'])"
+          actions:
+            - type: custom-response
+              config:
+                status_code: 405
+                headers:
+                  content-type: application/json
+                body: '{"error":"method_not_allowed"}'
+        - expressions:
+            - "req.content_length > 65536"
+          actions:
+            - type: custom-response
+              config:
+                status_code: 413
+                headers:
+                  content-type: application/json
+                body: '{"error":"payload_too_large"}'

@@ -1,0 +1,11 @@
+# Dependencies for the local webhook API (src/api) ONLY.
+# The bot itself does not need these — install them only on the machine that
+# runs the webhook listener:  pip install -r requirements-api.txt
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+# pydantic-settings is already a bot dependency; pinned here too so this file
+# stands alone on a machine that only runs the API.
+pydantic-settings>=2.0,<3
+# Multipart parsing for document uploads (POST /clients/{id}/documents).
+# FastAPI raises at import time if a route declares UploadFile without it.
+python-multipart>=0.0.7

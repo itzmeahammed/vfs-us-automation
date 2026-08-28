@@ -207,6 +207,12 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
     combo_errors = _combo_errors(slots)
     disabled = [label for label, message in slots if message == "DISABLED"]
     waitlist_count = waitlist.count_waitlist(slots)
+    # WHICH combos are on waitlist, not just how many. The auto-trigger needs
+    # the labels to find the clients waiting on them; a bare count cannot.
+    # These are result_label() strings — NOT the labels clients use in their
+    # combos[] (see waitlist/autotrigger.resolve_combo_label).
+    waitlist_labels = [label for label, message in slots
+                       if waitlist.is_waitlist(message)]
 
     # Slots grouped by visa type (the last label segment, e.g. 'Tourism'), so
     # the summary can say 'Tourism: 2 slot(s)' instead of just a total.
@@ -235,6 +241,7 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
         "combo_errors": combo_errors, "disabled": disabled,
         "slot_types": slot_types, "account": account, "proxy": proxy,
         "waitlist": waitlist_count,
+        "waitlist_combos": waitlist_labels,
         # OK/SKIPPED/PAUSED are not failures for the exit code; PAUSED means we
         # deliberately held off (all accounts cooling) — not an error.
         "ok": status in ("OK", "SKIPPED", "PAUSED"),
@@ -642,6 +649,21 @@ def run_all_routes() -> bool:
             logging.exception(f"Route {source}-{dest} crashed unexpectedly: {e}")
             outcome = _outcome(source, dest, "FAILED", _max_attempts(), error=str(e))
         outcomes.append(outcome)
+
+        # ---- Auto-trigger hook (Phase 3) -------------------------------
+        # Fired HERE, not inside slot_check: the route's browser is closed by
+        # now, so a waitlist run can open its own Chrome on its own account
+        # without colliding. Gated behind [waitlist] auto_trigger_enabled
+        # (default false) and never allowed to fail the slot-check run.
+        if outcome.get("waitlist_combos"):
+            try:
+                from src.waitlist import autotrigger
+                autotrigger.handle_waitlist_opened(
+                    f"{source}-{dest}", outcome["waitlist_combos"])
+            except Exception as e:
+                logging.exception(
+                    f"Auto-trigger failed for {source}-{dest} (non-fatal): {e}")
+
         # Bill this route against the daily budget. session_mb() only moves when
         # a forwarder stops (which run() has already done by now), so the delta
         # is exactly what this route cost — including its retries and IP probes.
@@ -789,19 +811,35 @@ def main() -> None:
     if not connectivity.require_internet_or_log():
         sys.exit(3)
 
-    if args.source_country_code and args.destination_country_code:
-        outcome = run(
-            args.source_country_code, args.destination_country_code,
-            force_email=args.email, force_password=args.password,
-            force_proxy=args.proxy_url, keep_open=args.keep_open,
-        )
-        _send_run_summary([outcome])
-        ok = outcome["ok"]
-    else:
-        if args.email or args.proxy_url or args.keep_open:
-            logging.warning("--email / --proxy-url / --keep-open only apply with "
-                            "-sc/-dc (one route); ignored.")
-        ok = run_all_routes()
+    # Global run lock. run_task.ps1 / run_ec2.sh already skip an overlapping
+    # TICK, but they cannot see a waitlist run started by the API or by hand —
+    # and two browser-driving runs at once collide on the Chrome debugging port
+    # and can interleave writes to the append-only waitlist journal. Taking the
+    # SAME lock here makes every entry point mutually exclusive.
+    #
+    # on_busy="skip" + exit 0 mirrors the scheduler's existing behaviour: an
+    # overlapping tick is normal operation, not a failure to alert on.
+    from src.utils import runlock
+    with runlock.acquire("slot-check", timeout=0, on_busy="skip") as lock:
+        if not lock.held:
+            logging.info(
+                "Another run (slot check or waitlist) is already in progress — "
+                "skipping this tick.")
+            sys.exit(0)
+
+        if args.source_country_code and args.destination_country_code:
+            outcome = run(
+                args.source_country_code, args.destination_country_code,
+                force_email=args.email, force_password=args.password,
+                force_proxy=args.proxy_url, keep_open=args.keep_open,
+            )
+            _send_run_summary([outcome])
+            ok = outcome["ok"]
+        else:
+            if args.email or args.proxy_url or args.keep_open:
+                logging.warning("--email / --proxy-url / --keep-open only apply with "
+                                "-sc/-dc (one route); ignored.")
+            ok = run_all_routes()
     sys.exit(0 if ok else 1)
 
 

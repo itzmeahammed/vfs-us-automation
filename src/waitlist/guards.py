@@ -8,6 +8,7 @@ The gates, in the order they run (cheapest and most decisive first):
   4. client wants this combo the combo is listed in the client's "combos"
   5. dangling journal entry  a previous attempt needs a human first
   6. already registered      dedup on (route, combo, client)
+ 6b. one entry per route     a client already waitlisted on this route is done
   7. per-run cap             max_per_run
   8. per-day cap             max_per_day
 
@@ -15,6 +16,10 @@ Gates 1-4 are INDEPENDENT opt-ins: registration needs the master switch on, the
 route configured, the client enabled, AND that exact combination listed in their
 file. Creating a client file is therefore the act that arms registration for that
 person — which is why the master switch and dry_run sit above it.
+
+Gate 6b is why a client's "combos" list is a PREFERENCE ORDER rather than a list
+to register for all of: one person wants one appointment, so the first committed
+entry on a route ends their run for that route.
 
 Every gate returns a reason string rather than raising, so the caller can report
 precisely why nothing happened. `check()` bundles them.
@@ -126,6 +131,37 @@ def check(route: str, combo: str, registrant,
                 f"already registered on {when}"
                 + (f" (ref {reference})" if reference else ""),
             )
+
+    # 6b — ONE REGISTRATION PER CLIENT, PER ROUTE.
+    #
+    # Gate 5/6 above only blocks the exact (route, combo, client) triple, so a
+    # client listing two combos on one route would register for BOTH. That is
+    # never right: one person wants ONE appointment. Two entries hold two slots
+    # for one need, deny one to somebody else, and risk VFS voiding both as
+    # duplicates.
+    #
+    # So `combos` is a PREFERENCE ORDER — "I'll take whichever opens first" —
+    # and the first committed entry ends this client's run on this route, in
+    # this run and in every future one, until it is resolved or cancelled.
+    #
+    # Note this deliberately fires AFTER the checks above, so a client blocked
+    # by their own dangling entry still gets that more specific message.
+    held = journal.blocking_entry_for_route(route, registrant.id)
+    if held and journal._normalise(held.get("combo")) != journal._normalise(combo):
+        when = held.get("finished_at") or held.get("started_at")
+        reference = held.get("vfs_reference")
+        return GuardVerdict(
+            False,
+            f"{registrant.id} already holds a {route} waitlist entry for "
+            f"'{held.get('combo')}'"
+            + (f" (ref {reference})" if reference else "")
+            + f" from {when}. One client gets ONE appointment per route — the "
+            "\"combos\" list is a preference order, not a list to register for "
+            "all of. Cancel that entry on the portal and resolve it "
+            f"(python -m src.waitlist resolve --route {route} "
+            f"--combo \"{held.get('combo')}\" --registrant {registrant.id} "
+            "--status failed) to free this client for a different combination.",
+        )
 
     # 7 — per-run cap.
     if attempted_this_run >= cfg.max_per_run:

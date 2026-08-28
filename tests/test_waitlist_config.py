@@ -246,10 +246,20 @@ class DwellOrderingTests(unittest.TestCase):
         self.assertEqual(self.events, ["await_page", "fill", "submit"])
 
     def test_dry_run_waits_but_never_submits(self):
+        """A dry run still waits and fills — it just refuses to submit.
+
+        It now signals that refusal by raising _DryRunStop instead of returning.
+        Returning let the caller advance to the NEXT step, which then waited out
+        its full timeout for a navigation that could not happen, so every dry run
+        ended as 'failed'. The assertions below (dwell happens, submit does not)
+        are the actual contract and are unchanged.
+        """
         result = WaitlistResult("AE-CHE", "c", "p", Status.PENDING)
-        self.register._run_step(
-            self._Page(), self._step(settle_seconds=30, dwell_seconds=20),
-            {}, result, dry_run=True)
+        with self.assertRaises(self.register._DryRunStop) as caught:
+            self.register._run_step(
+                self._Page(), self._step(settle_seconds=30, dwell_seconds=20),
+                {}, result, dry_run=True)
+        self.assertEqual(caught.exception.step_name, "your_details")
         self.assertIn("wait:settle_seconds=30", self.events)
         self.assertNotIn("submit", self.events)
 

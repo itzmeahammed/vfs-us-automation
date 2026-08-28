@@ -1,0 +1,162 @@
+{
+  "description": "UAE -> Czech Republic waitlist registration. Same four pages as Switzerland/Netherlands: tick the waitlist checkbox on Appointment Details and Continue; fill 'Your Details' (/your-details) and Save; Continue past the summary; accept the consents on /review-pay and Confirm. The Confirm click is the point of no return.",
+  "extends": "_default",
+  "enabled": true,
+  "_comment_enabled": "OFF pending a real walk. Every selector here came from CAPTURED PORTAL HTML — the Your Details form and its Save button, the opened Gender overlay, and the review-pay consents and Confirm button — and each was verified offline to resolve to exactly one correct element. Three things remain UNCONFIRMED and are each flagged at their field: (1) \"dwell_seconds\", copied from AE-CHE because this portal's countdown container rendered empty at capture time; (2) the passport-expiry INPUT format; (3) the confirmation page's success wording. Run `python -m src.waitlist doctor --route AE-CZE --walk`, then a dry run, before flipping this to true. Note the slot-check side is already live: AE-CZE is uncommented in config/vfs_urls.ini and config/routes/AE-CZE.json carries four combinations (Abu Dhabi/Dubai x Business/Tourism, the Business rows disabled), so this file plus [waitlist] register_enabled and the per-client opt-ins are what gate registration.",
+  "checkbox": "mat-checkbox[formcontrolname='agreeToWaitlist']",
+  "_comment_checkbox": "PINNED — the captured HTML binds formcontrolname=\"agreeToWaitlist\", same as AE-DEU and AE-ITA. That is a stable anchor that survives the page gaining controls, so it beats detect.locate()'s fallback scan (which is what unpinned AE-CHE/AE-NLD have to rely on). Its label reads 'I accept the Waitlist.' and its only id is positional (mat-mdc-checkbox-0), which is exactly why the control name is used instead. NOTE a sibling <a target=\"_blank\"> to the waitlist T&Cs sits immediately after the checkbox, OUTSIDE the <mat-checkbox> — so unlike the review-pay consents, the label itself carries no link and is safe to click.",
+  "steps": [
+    {
+      "name": "your_details",
+      "_comment_selectors": "Fields come from real captured HTML. Addressed by visible LABEL because this portal renders <app-dynamic-form>/<app-dynamic-control> with NO formcontrolname on the inputs and only positional ids (mat-input-3..8, mat-select-3..4) allocated in DOM order — they shift whenever VFS adds or reorders a field. The one exception is Passport Expiry Date, which has a genuine id and is pinned by selector; see its comment.",
+      "_comment_form_shape": "The form declares ~30 <app-dynamic-control> blocks but most render EMPTY (just <!----> placeholders) — only 8 controls are actually present, in this DOM order: First Name, Last Name, Gender, Current Nationality, Passport Number, Passport Expiry Date, Contact number (split into two inputs), Email. A horizontal rule separates the passport block from the contact block. The empty blocks are harmless: label filtering only matches blocks that contain the caption text.",
+      "_comment_dwell": "NOT CONFIRMED for this portal. The captured page has an empty <div id=\"mintime\"> — that is the container VFS renders its 'Please wait N seconds before saving your details and continuing' countdown into, and it was empty at capture time (either the timer had finished or it populates later). 32s is carried over from AE-CHE's observed 30s countdown + 2s margin. It costs half a minute per run and is harmless if there is no timer; drop it once a walk proves the Save click lands immediately. Do NOT rely on the button's enabled state alone: on this portal family Save ENABLES BEFORE the timer expires and clicking early silently does nothing.",
+      "dwell_seconds": 32,
+      "timeout_ms": 120000,
+      "fields": [
+        {
+          "name": "first_name",
+          "label": "First Name",
+          "widget": "text",
+          "value": "{{first_name|upper}}",
+          "required": true,
+          "_comment": "input#mat-input-3, maxlength 60, placeholder 'Enter your first name'. Carries appuppercase + class 'text-uppercase' — VFS upper-cases it anyway; doing it here keeps what we send identical to what is stored."
+        },
+        {
+          "name": "last_name",
+          "label": "Last Name",
+          "widget": "text",
+          "value": "{{last_name|upper}}",
+          "required": true,
+          "_comment": "input#mat-input-4, maxlength 60, placeholder 'Please enter last name.'"
+        },
+        {
+          "name": "gender",
+          "label": "Gender",
+          "widget": "mat-select",
+          "value": "{{gender}}",
+          "required": true,
+          "exact": true,
+          "options": [
+            "Female",
+            "Male",
+            "Not Specified",
+            "Others / Transgender"
+          ],
+          "options_captured_at": "2026-08-25",
+          "_comment": "mat-select#mat-select-3, rendered by <app-dropdown>. Options render in a cdk overlay appended to the END of <body>, not inside this block, so they are matched globally by role=option. NOT present on AE-CHE — a client file for this route must carry \"gender\" (ahmed-nld.json already does).",
+          "_comment_options": "OBSERVED, not guessed: read from the opened overlay (#mat-select-3-panel) in DOM order. Transcribed by hand from a captured page rather than by `doctor --walk --harvest`, which is why the date is a plain day and not a timestamp. The API serves these as \"options\" with options_status=\"known\", so a web app renders a real dropdown AND POST /clients rejects any other value. Re-harvest if VFS changes the list.",
+          "_comment_exact": "\"exact\": true IS LOAD-BEARING — do not remove it. Option matching is normally a case-insensitive SUBSTRING and takes .first, and 'Male' is a substring of 'Female' which renders FIRST here. Without exact matching, a client whose gender is 'Male' would silently be registered as FEMALE. Note Playwright's exact matching still trims surrounding whitespace, so it matches the option's ' Male ' as rendered — the value in the client file is written without padding."
+        },
+        {
+          "name": "nationality",
+          "label": "Current Nationality",
+          "widget": "mat-select",
+          "value": "{{nationality}}",
+          "required": true,
+          "_comment": "mat-select#mat-select-4. Matched as a case-insensitive substring against the option text.",
+          "_comment_options": "NOT HARVESTED YET — deliberately no \"options\" key. This dropdown carries ~200 country entries and nobody has read them off the live page, so the API reports options_status=\"unknown\": a web app renders free text with a warning, and POST /clients cannot check the value. Populate it with `doctor --route AE-CZE --walk --harvest`, never by hand — the exact strings are VFS's own and guessing between 'Lebanon' and 'Lebanese' is precisely the error this mechanism exists to catch. Note existing client files disagree already ('Lebanese' in u10432-che.json, 'Belize' in trav-nook-ae-cze-cb9115.json), which is the symptom.",
+          "_comment_exact": "No \"exact\": true here, unlike gender — substring matching is currently what makes a partial country name work at all. Once the list is harvested, add it so 'India' cannot silently match 'British Indian Ocean Territory'."
+        },
+        {
+          "name": "passport_number",
+          "label": "Passport Number",
+          "widget": "text",
+          "value": "{{passport_number|upper}}",
+          "required": true,
+          "_comment": "input#mat-input-5, maxlength 30. Note 'Passport Number' is NOT a substring of 'Passport Expiry Date', so the two blocks do not collide under has_text filtering."
+        },
+        {
+          "name": "passport_expiry",
+          "selector": "input#passportExpirtyDate",
+          "widget": "date",
+          "value": "{{passport_expiry|date:%d/%m/%Y}}",
+          "required": true,
+          "_comment_selector": "PINNED BY ID, the only field here that can be. This is an ngbDatepicker (<app-ngb-datepicker>), not a Material input, and VFS gave it a real id — 'passportExpirtyDate', WITH THAT TYPO ('Expirty', not 'Expiry'). Do not 'fix' the spelling: it is what the portal emits. A genuine id beats a label match, so it is used directly.",
+          "_comment_format": "INPUT FORMAT STILL UNVERIFIED. The placeholder only says 'Please select the date'. dd/mm/yyyy is this portal family's usual input format and is what AE-CHE-style routes send. Note the captured review-pay page ECHOES the stored value back as '05-07-2030' (dd-MM-yyyy, hyphens) — but that is the portal's own DISPLAY formatting on a different page, NOT proof of what this input accepts, so it is deliberately not copied here. Confirm during the walk and change the |date: filter if the field rejects dd/mm/yyyy. The client file stores passport_expiry as ISO (e.g. 2030-06-30) and this filter reformats it.",
+          "_comment_widget": "The 'date' widget TYPES into the input and then presses Escape to dismiss the calendar overlay, rather than driving the picker. If this portal turns out to reject typed input and require clicking through the calendar, that needs a new 'datepicker' widget in fields.py — not a change here."
+        },
+        {
+          "name": "phone_country_code",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 0,
+          "value": "{{phone_country_code|digits}}",
+          "required": true,
+          "_comment": "Split phone field, identical in shape to AE-CHE/AE-NLD: both inputs sit under ONE 'Contact number' caption, so index 0 = country code (input#mat-input-6, maxlength 3, placeholder '44') and index 1 = the number. |digits strips any leading '+'.",
+          "_comment_wrapper": "This block's <app-dynamic-control> wraps a 'd-block' div rather than the usual 'row align-items-end', but label filtering scopes on the wrapper element itself, so the difference does not matter."
+        },
+        {
+          "name": "phone_number",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 1,
+          "value": "{{phone_number|digits}}",
+          "required": true,
+          "_comment": "input#mat-input-7, minlength 7, maxlength 15, placeholder '012345648382'."
+        },
+        {
+          "name": "email",
+          "label": "Email",
+          "widget": "text",
+          "value": "{{email}}",
+          "required": true,
+          "_comment": "input#mat-input-8, type=email, minlength 4, maxlength 50. Oddly it also carries appuppercase + 'text-uppercase' like the name fields, but the value is sent as stored — the portal's own display casing is not our concern."
+        }
+      ],
+      "_comment_no_address": "Switzerland's address_line_1/address_line_2 are deliberately ABSENT — the captured Czech form ends at Email, same as the Netherlands. Every other rendered control is accounted for above.",
+      "submit": {
+        "role": "button",
+        "name": "Save"
+      },
+      "_comment_submit": "Confirmed in the captured HTML. Buttons are plain <button> with a <span class='mdc-button__label'> — no id, no formcontrolname — so get_by_role(name=...) matches that span's text. THREE buttons share the row: Cancel, Save, and a hidden Update (its wrapper div carries hidden=\"\"). role+name picks Save and avoids both."
+    },
+    {
+      "name": "details_summary",
+      "_comment": "Inherited from _default and NOT captured. After Save the URL stays on /your-details and only the content swaps to a summary, so \"wait_for_text\" (_default's loose 'Summary') is what distinguishes this step from the form before it — the URL cannot. You reported 'same continue button on step-2', which matches _default's { role: button, name: Continue }. TODO — confirm the heading text during the walk; AE-CHE tightened it to 'Your Details Summary'. Set \"remove\": true if this portal has no summary page."
+    },
+    {
+      "name": "review_pay",
+      "_comment_page": "MAPPED FROM CAPTURED HTML. THREE consent checkboxes render here, in this DOM order, and unlike other portals in this family their ids are sequential and NOT duplicated (mat-mdc-checkbox-1/-2/-3). They are still addressed by WORDING rather than id or index, because ids on this page family have been seen duplicated elsewhere and positions shift whenever VFS adds a consent. All three wordings were verified unique against the capture.",
+      "_comment_marketing_consent": "DELIBERATELY NOT TICKED: mat-mdc-checkbox-2, 'Yes, I agree to receive future communication on optional value added services offered by VFS Global' (its native input carries value=\"To receive marketing information\"). It is OPTIONAL marketing opt-in, not a registration requirement — Confirm enables without it. Signing a client up for VFS marketing is not ours to consent to on their behalf, so it is omitted entirely rather than listed with \"value\": false. If a client ever wants it, add it as a field with \"value\": true.",
+      "commits": true,
+      "_comment_commits": "THE POINT OF NO RETURN — inherited from _default, restated here so it is visible while editing this step. Confirm submits the registration; everything after it is read-only in register.py, no retries ever.",
+      "scroll_to_bottom": true,
+      "_comment_scroll": "CONFIRMED NEEDED: the consents and Confirm sit below the Review summary, the applicant accordion and the full fees table on this page.",
+      "fields": [
+        {
+          "name": "accept_terms",
+          "label": "I accept the",
+          "widget": "checkbox",
+          "value": true,
+          "required": true,
+          "_comment": "mat-mdc-checkbox-1, the Terms and Conditions consent (native input value=\"VAS T&Cs\"). Verified UNIQUE on this page — unlike AE-CHE, where 'I accept the' matched two boxes and needed an index — so no \"index\" is set and this keeps working if VFS reorders the consents.",
+          "_comment_link": "Its <label> wraps an <a target=\"_blank\"> to /are/en/cze/termsandconditions, so clicking the label's CENTRE would open the T&Cs in a new tab instead of ticking. fields.py's click ladder targets the native <input> first with force=True, which is exactly the case this handles. Contrast the step-1 waitlist checkbox, whose link sits OUTSIDE the control."
+        },
+        {
+          "name": "agree_waitlist",
+          "label": "Yes, I agree for waitlist confirmation",
+          "widget": "checkbox",
+          "value": true,
+          "required": true,
+          "_comment": "mat-mdc-checkbox-3 — the consent that actually matters, and the only one of the three with no link in its label. Wording verified UNIQUE, so it is matched in full and index-free. (The single word 'waitlist' also resolves uniquely here, but the full sentence is used so an added future consent mentioning waitlists cannot make it ambiguous.)"
+        }
+      ],
+      "submit": {
+        "role": "button",
+        "name": "Confirm"
+      },
+      "_comment_submit": "CONFIRMED: <button id=\"trigger\"> whose accessible name is 'Confirm', matched by role+name and verified to resolve to exactly one element (the sibling is 'Go Back'). It renders with disabled=\"true\" until the required consents are ticked; register.py polls for it to enable before clicking. NOTE the id is 'trigger' and the button carries an 'ot-submit-button' class with a hidden #inputEmail beside it — OneTrust-ish plumbing — which is why the stable accessible NAME is used rather than that id."
+    }
+  ],
+  "confirmation": {
+    "_comment": "NOT CAPTURED — inherited from _default. Expect /are/en/cze/confirmation.",
+    "url_contains": "confirmation",
+    "success_text": [
+      "waitlisted"
+    ],
+    "_comment_success_text": "TODO — deliberately left at _default's loose match until the real headline is seen, then tighten it the way AE-CHE did ('your appointment is waitlisted'). A bare 'waitlist' also appears in the page disclaimer and in 'notified once your waitlist status is updated', and matching those would report success on a page that merely mentions waitlists.",
+    "reference_pattern": "\\b([A-Z]{4}\\d{9,})\\b",
+    "_comment_reference": "Inherited: four letters + 9-plus digits, e.g. Switzerland's SWDB79918334684. TODO — check the Czech reference has the same shape. If nothing matches the run still SUCCEEDS (the reference is journalled as null); success_text is what decides the outcome."
+  }
+}

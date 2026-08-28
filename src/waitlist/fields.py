@@ -584,10 +584,23 @@ def fill_all(page, specs: List[Dict[str, Any]], context: Dict[str, Any],
 
 
 def templates_in(specs: List[Dict[str, Any]], where: str = "") -> List[tuple]:
-    """(where, template) pairs for every field value — for pre-flight validation."""
+    """(where, template) pairs for every field value — for pre-flight validation.
+
+    "if_present" fields are EXCLUDED. Their data is optional by definition: at
+    fill time an absent control is probed for and skipped (see _exists), so a
+    client with no `address_line_1` registers perfectly well on the renders that
+    do not ask for one.
+
+    Including them made pre-flight demand data the portal may never request —
+    /clients rejected a client as invalid for omitting a field the readiness
+    endpoint had just reported as optional. Validation must not be stricter than
+    the thing it is validating for.
+    """
     out = []
     for spec in specs or []:
         if spec.get("disabled") or spec.get("value") is None:
+            continue
+        if spec.get("if_present"):
             continue
         out.append((f"{where} field {_label(spec)}".strip(), spec["value"]))
     return out
