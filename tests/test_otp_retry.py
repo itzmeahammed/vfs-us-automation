@@ -2,7 +2,8 @@
 
 Proves a transient OCR misread (e.g. a 7-digit answer for a 6-digit OTP) is
 recovered in-place by a second read, instead of raising and forcing a browser
-relaunch — and that expected_len is passed through to the reader.
+relaunch — that expected_len is passed through to the reader, and that retries
+vary the prompt style while feeding already-rejected codes back to the model.
 
 Run: python -m unittest tests.test_otp_retry
 """
@@ -28,8 +29,11 @@ class TestExtractCodeRetry(unittest.TestCase):
     def _patch(self, replies):
         seq = iter(replies)
 
-        def fake(image, mime="image/png", expected_len=None, temperature=0.0):
-            self.calls.append({"expected_len": expected_len, "temperature": temperature})
+        def fake(image, mime="image/png", expected_len=None, temperature=0.0,
+                 rejected=None, style=0):
+            self.calls.append({"expected_len": expected_len,
+                               "temperature": temperature,
+                               "rejected": set(rejected or []), "style": style})
             return next(seq)
 
         otp_service.otp_openai.read_otp_image = fake
@@ -40,10 +44,13 @@ class TestExtractCodeRetry(unittest.TestCase):
         code = otp_service.extract_code(_fake_mail(), otp_len=6, read_attempts=3)
         self.assertEqual(code, "414212")
         self.assertEqual(len(self.calls), 2, "should stop as soon as it succeeds")
-        # The digit count is handed to the model, and retries vary temperature.
+        # The digit count is handed to the model, and retries vary the PROMPT
+        # (style), not the temperature — on a short digit read the argmax barely
+        # moves with temperature, so the old ladder just repeated the misread.
         self.assertEqual(self.calls[0]["expected_len"], 6)
         self.assertEqual(self.calls[0]["temperature"], 0.0)
-        self.assertGreater(self.calls[1]["temperature"], 0.0)
+        self.assertEqual(self.calls[1]["temperature"], 0.0)
+        self.assertNotEqual(self.calls[0]["style"], self.calls[1]["style"])
 
     def test_gives_up_after_all_attempts(self):
         self._patch(["4142127", "9999999", "1234567"])
@@ -60,6 +67,9 @@ class TestExtractCodeRetry(unittest.TestCase):
         )
         self.assertEqual(code, "596915")
         self.assertEqual(len(self.calls), 2)
+        # The rejected code is NAMED in the prompt, so the model is told which
+        # reading was wrong instead of being re-asked the identical question.
+        self.assertIn("596916", self.calls[0]["rejected"])
 
     def test_body_code_skips_openai(self):
         self._patch(["should-not-be-called"])

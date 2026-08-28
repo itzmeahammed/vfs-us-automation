@@ -77,6 +77,10 @@ _INFRA_EXC_NAMES = (
     # VFS silently refused the login and re-showed the form. Matching is by
     # exact class name, not isinstance, so this subclass needs its own entry.
     "LoginBouncedError",
+    # Our vision reader lost to VFS's anti-OCR OTP image (three decoy digit
+    # rows, recoloured glyphs, overlay noise). That is our OCR failing, not the
+    # account misbehaving — three unlucky reads must not bench a healthy account.
+    "OtpReadError",
     "ConnectionResetError", "ConnectionRefusedError", "ConnectionAbortedError",
     "ConnectionError", "TimeoutError",
 )
@@ -442,7 +446,17 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             # WITHOUT an attempt 2.
             logging.error(f"{route}: OTP verification failed [{account}] — not "
                           f"retrying (no attempt 2). {e}")
-            benched = account_health.record_failure(email, route, f"OtpVerificationError: {e}")
+            # Only charge the ACCOUNT for failures plausibly its own. An
+            # OtpReadError is our vision reader losing to VFS's anti-OCR image —
+            # infra, not account health — so it costs no strike, the same rule
+            # the generic retry paths already apply via _is_infra_error.
+            if _is_infra_error(e):
+                logging.info(f"{route}: not striking {account} — OTP reader "
+                             "failure (infra), not the account's fault.")
+                benched = False
+            else:
+                benched = account_health.record_failure(
+                    email, route, f"OtpVerificationError: {e}")
             note = (f"\nAccount {account} benched {account_health.soft_cooldown_hours()}h "
                     "(too many consecutive failures).") if benched else ""
             _alert_failure(source, dest, f"OTP verification failed: {e}{note}",

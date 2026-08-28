@@ -19,6 +19,7 @@ from src.vfs_bot.errors import (
     EmailNotRegisteredError,
     InvalidCredentialsError,
     LoginBouncedError,
+    OtpReadError,
     OtpVerificationError,
     TurnstileRejectedError,
 )
@@ -246,7 +247,7 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
             code = greece_otp.extract_code(mail, otp_len)
         except Exception as e:
             diagnostics.take_final_screenshot(page, "otp_read_failed")
-            raise OtpVerificationError(f"Could not read the OTP: {e}") from e
+            raise OtpReadError(f"Could not read the OTP: {e}") from e
         try:
             otp_input = page.locator(otp_selector).first
         except Exception:
@@ -281,7 +282,7 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
             )
         except Exception as e:
             diagnostics.take_final_screenshot(page, "otp_read_failed")
-            raise OtpVerificationError(f"Could not read the OTP: {e}") from e
+            raise OtpReadError(f"Could not read the OTP: {e}") from e
 
         if attempt > 1:
             logging.info(
