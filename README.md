@@ -16,6 +16,43 @@ its own.
 
 ---
 
+## The three parts, and where to read about each
+
+This repo is no longer only a slot checker. It is three systems sharing one
+browser stack, account pool and proxy pool:
+
+| Part | What it does | Status | Start here |
+|---|---|---|---|
+| **Slot checker** | Reads the earliest slot, reports to Telegram. Books nothing. | ✅ production | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| **Waitlist registration** | Puts a client on a VFS waitlist when no slot exists. | ✅ works live | [SYSTEM_GUIDE.md](SYSTEM_GUIDE.md), [addClient_Steps.md](addClient_Steps.md) |
+| **Post-invitation booking** | Sees the "slots available" email, books the appointment. | 🔶 foundations only | [PHASES.md](PHASES.md) |
+
+### Documentation map
+
+**Understanding the system**
+- [PHASES.md](PHASES.md) — one page: the whole waitlist → booking pipeline
+- [SYSTEM_GUIDE.md](SYSTEM_GUIDE.md) — a guided tour following one client end to end
+- [GLOSSARY.md](GLOSSARY.md) — the four safety switches and how they combine
+- [BOOKING_DESIGN.md](BOOKING_DESIGN.md) — why the booking half is shaped as it is
+
+**Doing the work**
+- [TASKS.md](TASKS.md) — **what to do next**, and what is blocked
+- [MEMORY.md](MEMORY.md) — settled facts and decisions; read before re-deriving
+- [keepInMind.md](keepInMind.md) — operating the inbox watcher
+- [addClient_Steps.md](addClient_Steps.md) — registering a new client
+
+**Running it**
+- [COMMANDS.md](COMMANDS.md) — Windows · [EC2_COMMANDS.md](EC2_COMMANDS.md) — Linux/EC2
+- [MANUAL_TEST_RUNBOOK.md](MANUAL_TEST_RUNBOOK.md) — verifying the flow safely
+- [API_REFERENCE.md](API_REFERENCE.md) · [API_TUNNEL_SETUP.md](API_TUNNEL_SETUP.md) — the local trigger API
+
+**Open work, written up but not started**
+- [OTP_RELAY_TASKS.md](OTP_RELAY_TASKS.md) — the Telegram OTP relay that blocks AE-ITA
+- [DOCUMENT_STORAGE_TASKS.md](DOCUMENT_STORAGE_TASKS.md) — passport-scan handling (built; §7 and §9 open)
+- [WAITLIST_TASKS.md](WAITLIST_TASKS.md) · [WAITLIST_AUTOMATION_TASKS.md](WAITLIST_AUTOMATION_TASKS.md) — mostly done, some open items
+
+---
+
 ## What it does
 
 For each configured route, in one run:

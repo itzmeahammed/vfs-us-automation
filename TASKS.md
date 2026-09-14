@@ -176,6 +176,26 @@ pattern for testing a CLI already exists in this repo.
 
 ---
 
+### Open security items (moved from DOCUMENT_STORAGE_TASKS.md, 2026-09-14)
+
+Two verification items that live nowhere else. Both are about the control that
+does the real work in the chosen design — full-disk encryption — and neither has
+been confirmed:
+
+- [ ] **BitLocker on the C: volume.** `manage-bde -status C:` in an ELEVATED
+      shell. Windows 11 Pro often has BitLocker available but switched off, and
+      the document-storage design leans on it rather than on app-level crypto.
+- [ ] **EC2 root/EBS volume encrypted.** EBS is **not** encrypted by default and
+      cannot be enabled in place: snapshot, copy with encryption, reattach. Also
+      switch on *EBS encryption by default* for the region so it cannot recur.
+
+Confirmed already done while auditing (the doc listed these as open):
+`scripts/pre-commit` rejects staged images (it blocked a PNG during this
+session), `.gitignore` covers png/jpg/jpeg/pdf under `config/registrants/`, and
+`documents.delete_for()` is wired into the journal, the API and the CLI.
+
+---
+
 ### Still outstanding
 
 - [ ] **THE BLOCKER: HTML selectors for the 5–6 pages after `Book Now`.**

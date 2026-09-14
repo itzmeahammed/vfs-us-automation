@@ -92,6 +92,14 @@ pkill -f "vfs-malta-slot-checker"; pkill -f google-chrome; pkill -f xvfb-run; rm
 **Pause the bot** (stop future runs): `crontab -e`, put `#` at the start of the line.
 **Resume:** remove the `#`.
 
+**Verifying cron works without waiting an hour.** Temporarily change the schedule
+to `* * * * *` (every minute), then `tail -f app.log` — it fires within ~60s.
+**Change it back afterwards.** This tests the *scheduler*; running `run_ec2.sh`
+by hand only tests the script, which is the half that was already working.
+
+The `flock` lockfile makes this safe: if a run is still going when the next
+minute ticks, the second is skipped rather than stacked.
+
 ---
 
 ## 5. URLs / routes

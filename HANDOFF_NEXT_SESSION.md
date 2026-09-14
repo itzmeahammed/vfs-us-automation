@@ -15,7 +15,13 @@ in order — they are current and were written for exactly this handoff:
 **Where things stand:** registration onto the waitlist works in production. The
 email watcher (`src/inbox/`) is built and running against real mailboxes. The
 booking foundations (`src/booking/` — lifecycle, identity, config loader) are
-built and tested but drive nothing yet. 937 tests pass.
+built and tested but drive nothing yet. **1155 tests pass, 0 failures**
+(measured 2026-09-14; coverage: inbox 91%, waitlist 59%, booking 55%).
+
+**Before you trust a green suite:** install `requirements-api.txt` AND `httpx`
+and `pytest-cov`. Without them 56 API tests report as collection ERRORS, not
+failures, and the suite reads green while they never run. That is exactly how a
+422 regression in `src/api/clients.py` stayed hidden.
 
 **There is already a read-only probe:** `python -m src.booking probe -sc AE -dc GRC
 --email X --password Y --keep-open`. It logs in, reads the dashboard, matches a

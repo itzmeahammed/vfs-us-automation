@@ -1,9 +1,14 @@
 # Commands cheat-sheet
 
 Practical commands for running and monitoring the VFS slot checker on **Windows**.
+For the EC2 box see [EC2_COMMANDS.md](EC2_COMMANDS.md); for the waitlist and
+booking commands see [PHASES.md](PHASES.md).
+
+> Absorbed `quickCommands.md` (2026-09-14) — every command in it already
+> appeared here, usually with more context. One sheet per platform.
 
 - Run all commands in **PowerShell** from the project root:
-  `c:\Users\ASRAB\Documents\VFS\vfs-malta-slot-checker`
+  `c:\Users\Universal\Documents\mufaddal\vfs-malta-slot-checker`
 - Scheduled task name: **`VFS Slot Checker`** (fires at **:29** and **:59** every hour).
 - Logs (project root): `app.log` (detailed), `task_runner.log` (per-tick history),
   `task_stderr.log` (early-crash safety net).
@@ -155,6 +160,35 @@ Stop-ScheduledTask    -TaskName "VFS Slot Checker"     # kill an in-progress run
 Unregister-ScheduledTask -TaskName "VFS Slot Checker" -Confirm:$false   # remove it
 ```
 
+## Run a route with a SPECIFIC account
+
+```powershell
+& .venv\Scripts\python.exe -m src.supervisor -sc AE -dc FRA --email osama@travnook.com
+```
+
+Forces that account and **bypasses its cooldown/bench**. The password is looked
+up from `credentials.local.ini`; add `--password <pw>` only if it is not there.
+
+---
+
+## Open a URL manually in Chrome via a proxy (and count MB)
+
+```powershell
+& .venv\Scripts\python.exe open_with_proxy.py "https://visa.vfsglobal.com/are/en/fra/login"
+```
+
+Opens the URL in a **visible** Chrome through a proxy IP (auto-rotating each
+run), prints the egress IP, and leaves the browser open so **you** drive it.
+Press **Enter** in the terminal to close it — it then prints the billed proxy MB,
+total and per-host. Pin a specific IP with `--index N` (0-based into
+`proxylist.txt`).
+
+Useful for capturing DOM by hand: it is how the booking pages get walked without
+spending a metered automated run. See also `python -m src.booking probe
+--keep-open`, which does the same thing already logged in.
+
+---
+
 ## Account health / circuit breaker
 
 Accounts that get blocked or keep failing are automatically **benched** (skipped
@@ -280,7 +314,7 @@ Remove-Item Env:VFS_BOT_CONFIG_PATH
   until you fix it and flag it healthy. A 429001/429202 block **benches it**
   for the configured cooldown. An unregistered email just **skips** that portal.
 - Run from a normal PowerShell (Win key → type PowerShell → Enter), starting with
-  `cd "c:\Users\ASRAB\Documents\VFS\vfs-malta-slot-checker"`.
+  `cd "c:\Users\Universal\Documents\mufaddal\vfs-malta-slot-checker"`.
 
 ---
 

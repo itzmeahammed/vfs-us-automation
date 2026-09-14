@@ -1,6 +1,12 @@
 # Passport Document Storage — Findings & Plan
 
 **Status:** ✅ IMPLEMENTED (`src/waitlist/documents.py`, 37 tests).
+
+> **Audited 2026-09-14.** This is now a FINDINGS record, not a task list — the
+> research is why `documents.py` looks the way it does. The checkboxes were
+> stale: §3, §6 and §8 were done but still showed unticked. What remains open is
+> §7 (screenshots can capture the bio page) and §9 (the consent note); the two
+> disk-encryption checks moved to TASKS.md, where open work lives.
 **Blocks:** `AE-ITA` waitlist (its "Your Details" step uploads a passport bio
 page instead of typing fields).
 
@@ -46,11 +52,11 @@ for identification. Same folder, materially larger blast radius.
 
 ## Verify before implementing
 
-- [ ] **BitLocker on the C: volume.** Needs an elevated shell:
+- [ ] **BitLocker on the C: volume.** *(tracked in TASKS.md)* Needs an elevated shell:
       `manage-bde -status C:`. Many Windows 11 Pro installs have BitLocker
       available but not switched on. This is the control doing the real work in
       the recommended setup, so it matters that it is actually enabled.
-- [ ] **EC2 root/EBS volume encrypted.** EBS is **not** encrypted by default and
+- [ ] **EC2 root/EBS volume encrypted.** *(tracked in TASKS.md)* EBS is **not** encrypted by default and
       cannot be enabled in place — an unencrypted volume must be snapshotted,
       copied with encryption, and reattached. Also switch on *EBS encryption by
       default* for the region so it never recurs.
@@ -107,8 +113,9 @@ The journal already records the moment a document stops being needed. When a row
 flips to `success`, delete that client's document. Small change, no new
 subsystem.
 
-- [ ] `journal.update_status()` → on `success`, `documents.delete_for(client)`
-- [ ] Never delete on `pending` or `unknown` — those may need a retry, and a
+- [x] `journal.update_status()` → on `success`, `documents.delete_for(client)`
+      (`src/waitlist/journal.py`, best-effort so cleanup cannot fail a good run)
+- [x] Never delete on `pending` or `unknown` — those may need a retry, and a
       human may still be reconciling them
 
 ### 4. ✅ Backstop retention sweep
@@ -139,11 +146,13 @@ would be cargo cult that also wears the disk.
 `.gitignore` is a weak control: it only stops *untracked* files, and does nothing
 once something has been committed once.
 
-- [ ] Documents live outside the repo (then git cannot see them at all)
-- [ ] Plus a **pre-commit hook** rejecting staged `*.png|jpg|jpeg|pdf` under the
-      repo. Advisory and bypassable with `--no-verify`, which is the right weight
-      for a single operator.
-- [ ] Belt and braces: add those extensions to `.gitignore` too
+- [x] Documents live outside the repo (then git cannot see them at all)
+- [x] **Pre-commit hook** rejecting staged `*.png|jpg|jpeg|pdf`. Lives at
+      `scripts/pre-commit` with `core.hooksPath=scripts`, so it is version
+      controlled and shared rather than a local-only file. Advisory and
+      bypassable with `--no-verify`, the right weight for a single operator.
+      **Verified working 2026-09-14** — it blocked a screenshot mid-session.
+- [x] Belt and braces: those extensions are in `.gitignore` too
 
 ### 7. Two things specific to this codebase
 
