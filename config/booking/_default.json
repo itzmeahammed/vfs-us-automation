@@ -1,0 +1,111 @@
+{
+  "_comment": "SHARED BASE for booking configs. A route inherits it with \"extends\": \"_default\" and overrides only what its portal does differently. Steps merge BY NAME, exactly like config/waitlist/_default.json: repeat a name to override just the keys you list, add a new name to append, use \"before\"/\"after\" to position it, or \"remove\": true to drop one.",
+
+  "_comment_status": "SKELETON, NOT PROVEN. Unlike config/waitlist/_default.json — which was extracted from a route already proven end to end — this describes pages nobody has yet walked in a browser with devtools open. The dashboard step is grounded in a real screenshot; every step after it is a REASONED GUESS whose selectors are placeholders.",
+
+  "_comment_real_flow": "WHAT THE USER REPORTS FROM WALKING IT MANUALLY (2026-09-02): after clicking 'Book Now' there are FIVE OR SIX steps — select a date, select a payment method, skip some optional pages — and then payment, which OPENS IN A NEW WINDOW OR TAB. Only after payment completes is the booking confirmed. The step list below has four steps and no payment step, so it is KNOWN to be wrong in shape as well as in selectors. Rewrite it against the real selectors rather than patching it.",
+
+  "enabled": false,
+  "_comment_enabled": "OFF in the base so inheriting it can never by itself arm a route. Each route must set \"enabled\": true deliberately, and only after its steps have been walked.",
+
+  "identity": {
+    "_comment": "HOW SURE WE MUST BE BEFORE BOOKING. These defaults are the strict ones: getting this wrong books one client's appointment under another's passport — unrecoverable, and it costs a real person a real slot. Missing an invitation is merely a bad day. Loosen nothing here without a specific reason.",
+
+    "min_confidence": "exact",
+    "_comment_min_confidence": "'exact' = the reference numbers match, or every normalised name token matches. Nothing weaker may select a row for booking.",
+
+    "require_unique_match": true,
+    "_comment_require_unique": "If two candidates tie at the best confidence, book NEITHER. Reachable whenever one account holds several clients, which is normal for Greece and the Netherlands.",
+
+    "verify_on_detail_page": true,
+    "_comment_verify": "Click-then-check. Opening a row commits nothing, so a wrong click is free PROVIDED it is detected — this is that detection, and it must run before the committing step.",
+
+    "on_ambiguous": "abort"
+  },
+
+  "steps": [
+    {
+      "name": "dashboard_resume",
+      "type": "dashboard_resume",
+      "url_contains": "dashboard",
+
+      "_comment": "GROUNDED IN A REAL SCREENSHOT (2026-09-02). The dashboard lists one card per active application, each showing a Group Reference Number and the applicant name, with an action link on the right. A waitlisted row that has been invited also shows 'Waitlist Status: SLOTS AVAILABLE' and a 'Book Now' link, where an ordinary row shows 'Manage Appointment'.",
+
+      "row": {
+        "_comment": "How to read one card. Selectors are UNVERIFIED — the screenshot shows the text but not the DOM. Confirm them with --keep-open before enabling any route.",
+        "container": "app-appointment-card, .application-card, mat-card",
+        "reference_pattern": "Group Reference Number\\s*-\\s*([A-Z0-9-]+)",
+        "name_label": "Applicants:",
+        "open": { "role": "link", "name": "Book Now" }
+      },
+
+      "_comment_open": "'Book Now' rather than 'Manage Appointment' on purpose: only an INVITED row offers it, so the link doubles as a state check. A row without it is not bookable, whatever the email said.",
+
+      "_comment_waitlist_status": "'Waitlist Status: SLOTS AVAILABLE' is the same fact the invitation email carries, visible on the portal itself. That is the polling fallback: a client whose email was missed, unparseable or delivered elsewhere can still be found here."
+    },
+
+    {
+      "name": "verify_identity",
+      "type": "identity_assert",
+
+      "_comment": "THE SAFETY GATE. Everything before this is reversible; the committing step is ahead. If this cannot confirm the opened application belongs to the expected client, the run aborts — it never proceeds on a maybe.",
+
+      "assert_any_of": [
+        { "field": "reference", "value": "{{journal.vfs_reference}}" },
+        { "field": "passport_number", "value": "{{passport_number}}" },
+        { "field": "applicant_name", "value": "{{first_name}} {{last_name}}" }
+      ],
+
+      "_comment_any_of": "ANY ONE agreeing field is enough, because portals show different things — but a field present on both sides that DISAGREES is fatal. Silence is tolerated; contradiction is not. Listing three alternatives lets one config serve portals that show a reference, a passport, or only a name.",
+
+      "on_mismatch": "abort"
+    },
+
+    {
+      "name": "appointment_details",
+      "type": "form",
+      "url_contains": "application-detail",
+
+      "_comment": "UNVERIFIED. The booking flow probably re-uses the same Appointment Details page the slot check already reads, but with the centre/category prefilled from the waitlist entry. Confirm before enabling.",
+
+      "fields": [],
+      "_comment_fields": "Empty by design: the field list is the biggest difference between portals, so every route declares its own. Address fields by their visible LABEL — VFS's <app-dynamic-form> emits no formcontrolname and only positional ids that shift whenever a field is added.",
+
+      "submit": { "role": "button", "name": "Continue" }
+    },
+
+    {
+      "name": "select_slot",
+      "type": "slot_pick",
+      "commits": true,
+
+      "_comment_commits": "PROVISIONAL — this flag almost certainly belongs on the PAYMENT step, not here. Confirmed 2026-09-02: selecting a slot reserves NOTHING. The slot stays in the public pool while the remaining steps are walked, and the booking is confirmed only when payment completes. So picking a date commits nothing and abandoning afterwards costs only the attempt. It carries \"commits\" today purely because config.py requires exactly one committing step and the payment step does not exist yet. MOVE IT when the payment step is added.",
+
+      "_comment_no_hold": "There is NO reservation window. Abandoning mid-flow is safe — the client keeps their waitlist entry and their invitation and may retry — but another applicant may take the slot at any moment. That makes speed a PERFORMANCE concern, not a safety one, and makes 'slot taken by someone else' (BookingStatus.SLOT_GONE) a normal, expected, non-alarming outcome.",
+
+      "strategy": "earliest",
+      "_comment_strategy": "'earliest' takes the first offered slot. Alternatives (a date window, preferred days) belong here as configuration once a real calendar has been seen.",
+
+      "calendar": {
+        "_comment": "UNVERIFIED — no booking calendar has been inspected yet.",
+        "container": "mat-calendar, .calendar",
+        "available_day": "button.mat-calendar-body-cell:not([disabled])",
+        "next_month": { "role": "button", "name": "Next month" }
+      },
+
+      "submit": { "role": "button", "name": "Continue" }
+    },
+
+    {
+      "name": "confirmation",
+      "type": "confirm",
+      "url_contains": "confirmation",
+
+      "_comment": "Read-only. Captures the appointment reference so the booking can be found again on the portal, and so the journal row records something verifiable.",
+
+      "success_text": ["appointment", "confirmed"],
+      "reference_pattern": "\\b([A-Z]{2,4}\\d{9,})\\b",
+      "_comment_reference": "Deliberately loose. Three real formats exist — GRC127086415238, ITD125298020335, SWDB79923880977 — and a hand-recorded WL-77231 also appears in the journal. A pattern tuned to one silently misses the others."
+    }
+  ]
+}

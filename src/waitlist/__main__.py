@@ -155,6 +155,19 @@ def _check_client(cfg, route: str, person) -> int:
         print(f"    ✗ {e}")
         return 1
 
+    # Where the INVITATION will land. VFS sends "slots available" to the email
+    # typed into the waitlist form, while the inbox watcher reads ACCOUNT
+    # mailboxes — so a mismatch means the invitation arrives somewhere nothing
+    # is watching, silently, and the 36-48h window closes unnoticed. Compared
+    # against the RESOLVED account, which is what the run will really use.
+    from src.waitlist.validate import check_invitation_email
+
+    for warning in check_invitation_email(
+            {"email": person.get("email"), "account": resolved.email}):
+        print(f"    ⚠️  {warning.message}")
+        if warning.hint:
+            print(f"        {warning.hint}")
+
     # Every combo must exist in the route's slot-check definitions, or the run
     # cannot select its dropdowns.
     from src.utils.route_schema import get_route_schema

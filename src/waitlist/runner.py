@@ -570,7 +570,7 @@ def _run_registration_locked(*, route, source, dest, plan, url, resolved,
             reason="waitlist run failed before reaching the portal")
         _report_usage(bot, proxy_url, "run")
         _record_usage(proxy_url)
-        chrome.close()
+        shutdown(bot, chrome)
 
     return results
 
@@ -679,7 +679,7 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
                 pass
         _report_usage(bot, proxy_url, "check")
         _record_usage(proxy_url)
-        chrome.close()
+        shutdown(bot, chrome)
 
     missed = [s for s in doctor.unreachable_steps(route, checked)]
     if missed:
@@ -749,12 +749,87 @@ def _walk_and_check(page, route: str, cfg: dict, steps: List[dict],
     return findings
 
 
+def shutdown(bot, chrome) -> None:
+    """Tears the browser down in the ONE order that does not raise EPIPE.
+
+    Playwright's Node driver talks to Python over a pipe. Killing Chrome while
+    that driver is still connected leaves it writing into a socket whose far end
+    has gone, and Node reports it as an unhandled
+
+        Error: EPIPE: broken pipe, write ... at PipeTransport.send
+
+    after the run has otherwise finished — noisy, alarming, and unrelated to
+    whatever the run actually did.
+
+    _login() starts a Playwright instance and stashes it on the bot (it must
+    outlive that function, so it cannot be closed there). This is where it gets
+    stopped, BEFORE Chrome is killed:
+
+        1. playwright.stop()   the driver disconnects cleanly
+        2. chrome.close()      the process tree goes
+
+    Both steps are best-effort and independent: a failure to stop the driver
+    must never prevent Chrome being killed, because a surviving Chrome holds the
+    CDP port and the next run cannot start.
+    """
+    playwright = getattr(bot, "_playwright", None)
+    if playwright is not None:
+        try:
+            playwright.stop()
+        except Exception as e:
+            logging.debug(f"Playwright driver did not stop cleanly: {e}")
+        finally:
+            try:
+                bot._playwright = None
+            except Exception:
+                pass
+
+    try:
+        chrome.close()
+    except Exception as e:
+        logging.warning(f"Chrome did not close cleanly: {e}")
+
+
+def _login_and_reach_dashboard(bot, url: str):
+    """Runs the login flow and returns the page ON THE DASHBOARD.
+
+    The dashboard is where EXISTING applications are listed — one card per
+    waitlist entry, each carrying its Group Reference Number and applicant name.
+    Anything that needs to find an application a client already holds wants to
+    stop here.
+
+    Contrast `_login_and_reach_appointment_page`, which goes one click further
+    to "Start New Booking" because registration is about creating something new.
+    Doing that here would be actively wrong: it navigates AWAY from the page we
+    came for, then has to navigate back — a wasted page load and several seconds
+    of metered proxy traffic, to end up where login had already left us.
+
+    The split costs one line (`start_booking` is simply not called) and keeps the
+    registration and slot-check paths completely untouched.
+    """
+    return _login(bot, url, reach_booking=False)
+
+
 def _login_and_reach_appointment_page(bot, url: str):
     """Runs the existing login flow and returns the page on Appointment Details.
 
+    Registration's entry point, and its behaviour is unchanged: it goes one click
+    past the dashboard to "Start New Booking", which is where a NEW application
+    is created. Callers that want to read EXISTING applications should use
+    `_login_and_reach_dashboard` instead.
+    """
+    return _login(bot, url, reach_booking=True)
+
+
+def _login(bot, url: str, reach_booking: bool):
+    """The shared login gauntlet. Stops at the dashboard, or one click past it.
+
     Rather than duplicating the Cloudflare/OTP gauntlet, this drives VfsBot's own
-    methods in the same order run() does, stopping at the appointment page
-    instead of running the slot check.
+    methods in the same order run() does, stopping short of the slot check.
+
+    `reach_booking` is the ONLY difference between the two callers:
+        False -> the dashboard, listing existing applications
+        True  -> Appointment Details, for creating a new one
 
     The credential was already resolved and injected by the caller via
     set_credential(), so _resolve_credential() returns THAT account rather than
@@ -793,14 +868,22 @@ def _login_and_reach_appointment_page(bot, url: str):
     bot._check_blocked(page)
     bot.pre_login_steps(page)
 
-    # authenticate() + start_booking(), NOT login() — login() also runs the full
-    # slot check over every combination in config/routes/<ROUTE>.json, which is
-    # wrong here on three counts: it burns ~20s per combination the client never
-    # asked for, it fires the "waitlist available" Telegram notice, and it leaves
-    # the dropdowns on the LAST combo so we re-select ours immediately after.
-    # This runner needs exactly one thing: an authenticated session sitting on
-    # Appointment Details, ready for the client's own combination.
+    # authenticate(), NOT login() — login() also runs the full slot check over
+    # every combination in config/routes/<ROUTE>.json, which is wrong here on
+    # three counts: it burns ~20s per combination nobody asked for, it fires the
+    # "waitlist available" Telegram notice, and it leaves the dropdowns on the
+    # LAST combo so a caller re-selects immediately after.
+    #
+    # authenticate() returns with the browser ON THE DASHBOARD.
     bot.authenticate(page, email, password)
+
+    if not reach_booking:
+        # Stop here. The dashboard lists the applications this account already
+        # holds — one card per waitlist entry, each with its Group Reference
+        # Number and applicant name. Clicking onward would navigate away from
+        # exactly the page a reader came for.
+        return page
+
     # await_page=True: run_slot_check() normally performs this wait, and we are
     # deliberately not calling it — without this the dropdowns could be driven
     # before Appointment Details has rendered.

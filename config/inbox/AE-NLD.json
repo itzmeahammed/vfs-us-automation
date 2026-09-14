@@ -1,0 +1,33 @@
+{
+  "_comment": "UAE -> Netherlands email matchers. Built from a REAL invitation email (2026-09-02). Identical in shape to Greece, which is the point: the third country needed no new patterns, only its own validity window.",
+  "extends": "_default",
+  "matchers": [
+    {
+      "name": "waitlist_invitation",
+      "from_contains": [
+        "vfshelpline.com",
+        "vfsglobal.com"
+      ],
+      "validity_hours": 36,
+      "_comment_validity": "36 hours, like Greece. Two of the three countries seen so far say 36 and only Italy says 48 — so the base's 48 is now the odd one out, and every new route should be checked rather than assumed.",
+      "body_contains": [
+        "/are/en/nld/"
+      ],
+      "_comment_body": "THE COUNTRY DISCRIMINATOR, and it is load-bearing. Every country's mail shares the same subject and near-identical wording, so without it one country's email matches another's matcher (routes are tried in sorted order) and inherits the wrong validity window — silently applying the wrong deadline. The portal URL is the only part of the message that names the country unambiguously."
+    },
+    {
+      "name": "waitlist_confirmation",
+      "from_contains": [
+        "vfshelpline.com",
+        "vfsglobal.com"
+      ],
+      "body_contains": [
+        "/are/en/nld/"
+      ],
+      "_comment_body": "THE COUNTRY DISCRIMINATOR, and it is load-bearing. Every country's mail shares the same subject and near-identical wording, so without it one country's email matches another's matcher (routes are tried in sorted order) and inherits the wrong validity window — silently applying the wrong deadline. The portal URL is the only part of the message that names the country unambiguously."
+    }
+  ],
+  "_comment_observed_invitation": "Subject: 'Slots available for booking an appointment'. Body: 'Dear AISSAR AHMED ALI ABBAAS, Appointment slots for your travel from UAE to Netherlands for the Tourist Purpose visa category are now available for booking. We request you to Click Here https://services.vfsglobal.com/are/en/nld/login ... valid for 36 hours...'",
+  "_comment_category": "'for the Tourist Purpose visa category' — a TWO-WORD category, where Greece's is one word ('General'). The base pattern is non-greedy up to the first 'visa', so it captures the whole phrase either way.",
+  "_comment_label_trap": "The category in this email will NOT equal the combo label a client file uses. src/waitlist/autotrigger.py documents exactly this for AE-NLD: a client's combos[] says 'Dubai - Tourist Visa' while the route's own label is 'Netherlands Visa application center- Dubai - Tourist Visa - Tourist Purpose'. When something eventually matches an email's category to a combo, it must go through autotrigger.resolve_combo_label() and not compare the strings directly — a naive match works for other routes and silently matches NOTHING here."
+}

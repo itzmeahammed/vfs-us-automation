@@ -1,0 +1,115 @@
+{
+  "_comment": "UAE -> Switzerland booking flow. THE FIRST ROUTE BUILT FROM REAL DOM rather than guesswork — every selector below was captured from a live invited account (switzerland_booking/switzerland.html, 2026-09-03). Where the base config guesses, this file states.",
+
+  "extends": "_default",
+
+  "enabled": false,
+  "_comment_enabled": "Still OFF. The steps below are real as far as /che/services, but nothing past it has been seen — no review page, no payment. A route is armed only once its WHOLE flow is known, because the committing step is what decides whether a run can be abandoned safely.",
+
+  "_comment_why_che_first": "Switzerland needs no OTP (only AE-GRC sets \"otp\": true in config/routes/), so a probe here exercises the booking flow without also depending on OTP mail arriving. Fewer moving parts while the selectors are being proven.",
+
+  "steps": [
+    {
+      "name": "dashboard_resume",
+      "row": {
+        "reference_pattern": "Group Reference Number\\s*-\\s*(SWDB\\d+)",
+        "_comment_reference": "Switzerland's references are SWDB + digits (SWDB80857698379, SWDB79923880977) — a FOUR-letter prefix, where Greece and Italy use three. The base keeps a loose pattern for routes whose format is unknown; this one is exact.",
+
+        "open": { "role": "button", "name": "Book Now" },
+        "_comment_open": "REAL DOM: <span class=\"c-brand-orange text-decoration-underline cursor-pointer\"> Book Now </span> — a SPAN, not an <a> or <button>. get_by_role(\"button\") still matches it because the accessible name is what is matched, and dom_utils' click ladder (normal -> force -> JS) handles a span that ignores a plain click. Pin \"selector\": \"span.c-brand-orange.cursor-pointer\" only if the role lookup ever picks the wrong element.",
+
+        "_comment_status": "The same row carries 'Waitlist Status: SLOTS AVAILABLE'. That text — not the presence of the button — is what the probe treats as 'invited'."
+      }
+    },
+
+    {
+      "name": "verify_identity",
+      "_comment": "Inherited unchanged. The reference read off the card is compared against the one stored at registration; Switzerland's SWDB numbers are already in the journal from real registrations, so this join works today."
+    },
+
+    {
+      "name": "appointment_details",
+      "remove": true,
+      "_comment": "REMOVED. The base assumes booking re-visits an Appointment Details form; Switzerland does not. 'Book Now' goes straight to /che/book-appointment, which is the calendar. Confirmed from the real flow."
+    },
+
+    {
+      "name": "select_slot",
+      "type": "slot_pick",
+      "commits": true,
+      "url_contains": "book-appointment",
+
+      "_comment": "https://visa.vfsglobal.com/are/en/che/book-appointment — the calendar AND the time-slot table on one page. Both are chosen here, then Continue.",
+
+      "appointment_type": {
+        "_comment": "'Pick an Appointment Type' offers a single radio labelled 'Choose a slot', already selected in the captured page. Declared so a portal offering several types can name which one; left as the visible label rather than an id, which is positional here.",
+        "label": "Choose a slot",
+        "if_present": true
+      },
+
+      "calendar": {
+        "_comment": "FullCalendar (the fullcalendar.io library), NOT Angular Material. So none of the mat-calendar selectors in the base apply.",
+
+        "container": "full-calendar",
+        "month_title": ".fc-toolbar-title",
+        "next_month": "button.fc-next-button",
+        "prev_month": "button.fc-prev-button",
+
+        "available_day": "td.fc-daygrid-day.date-availiable",
+        "_comment_available_day": "*** date-availiable IS SPELLED WITH THREE i's IN VFS'S OWN MARKUP. *** It is their typo, not one here, and it must be matched verbatim — 'correcting' it to date-available matches nothing and the run finds no slots at all. The inner <div class=\"fc-event-title\">availiable</div> carries the same misspelling.",
+
+        "day_date_attribute": "data-date",
+        "_comment_date_attribute": "Every cell carries data-date=\"2026-09-07\". That is an EXACT date selector — far better than clicking a day number, which is ambiguous across months and breaks on the greyed-out leading/trailing cells that show no date at all.",
+
+        "_comment_unavailable": "An unavailable day is a plain td.fc-daygrid-day with no date-availiable class and no event child. Days outside the month carry fc-day-disabled and no data-date."
+      },
+
+      "time_slots": {
+        "_comment": "A table below the calendar, populated after a date is clicked. REAL DOM: <table class=\"table ba-slot-table\">, one <tr> per time.",
+
+        "container": "table.ba-slot-table",
+        "row": "tr.hidden-item",
+        "_comment_row": "The class reads 'hidden-item' but these are the VISIBLE slot rows in the captured page — presumably an Angular animation class. Do not filter them out on the name.",
+
+        "time_cell": "td[id^='tv']",
+        "_comment_time": "td id='tv0' -> 11:15, 'tv1' -> 11:30, 'tv2' -> 11:45. The id index is the row number, and the text is the time.",
+
+        "select": "label.ba-slot-radio-label",
+        "_comment_select": "The <input type=\"radio\" class=\"ba-slot-radio\"> is tabindex=-1 and visually replaced by its label, so the LABEL is what must be clicked. Clicking the input directly is intercepted.",
+
+        "strategy": "earliest",
+        "_comment_strategy": "Take the first offered time. The slot is NOT held while the remaining steps run, so speed matters more than preference — a competitor may take it at any moment."
+      },
+
+      "submit": { "role": "button", "name": "Continue" },
+      "_comment_submit": "<button mat-raised-button> with <span class=\"mdc-button__label\"> Continue </span>. It is DISABLED until both a date and a time are chosen (disabled=\"true\" in the captured page, before selection), so the flow must wait for it to enable rather than clicking blind.",
+
+      "_comment_commits": "PROVISIONAL, and it is almost certainly wrong. Selecting a slot reserves NOTHING — the booking is confirmed only when payment completes. This flag sits here solely because config.py requires exactly one committing step and the payment step does not exist yet. MOVE IT to payment once that page is captured."
+    },
+
+    {
+      "name": "services",
+      "type": "form",
+      "after": "select_slot",
+      "url_contains": "services",
+
+      "_comment": "https://visa.vfsglobal.com/are/en/che/services — an optional add-on services page. NOTHING TO DO on it for Switzerland: scroll to the bottom and Continue.",
+
+      "fields": [],
+      "scroll_to_bottom": true,
+      "_comment_scroll": "The Continue button sits below the fold. Without scrolling, the click misses.",
+
+      "submit": { "role": "button", "name": "Continue" }
+    },
+
+    {
+      "name": "confirmation",
+      "remove": true,
+      "_comment": "REMOVED for now — NOT because Switzerland has no confirmation, but because nothing past /che/services has been captured. The base's confirmation step is a guess, and a guessed step at the END of a flow is the most dangerous kind: it would read some other page as success. Better to have the run stop at a page it does not recognise. Re-add it with real selectors once the pages after Continue are known."
+    }
+  ],
+
+  "_comment_flow_so_far": "Dashboard 'Book Now' -> /che/book-appointment (pick date, pick time, Continue) -> /che/services (scroll, Continue) -> ??? -> payment (new window/tab) -> confirmed. The '???' is the gap: the user reports 5-6 steps in total, and only two are captured.",
+
+  "_comment_next": "To finish this route: walk on from /che/services with --keep-open and capture each remaining page's DOM. Then move \"commits\" to the payment step and set \"enabled\": true."
+}

@@ -613,6 +613,67 @@ def check_templates(route: str, data: Dict[str, Any],
     return problems
 
 
+def check_invitation_email(data: Dict[str, Any]) -> List[Problem]:
+    """Warn when the form's "email" differs from the VFS account address.
+
+    WHY THIS MATTERS, AND WHY IT IS EASY TO MISS
+    --------------------------------------------
+    VFS sends the "Slots available for booking" invitation to the EMAIL TYPED
+    INTO THE WAITLIST FORM on /your-details — not to the account the
+    registration was made under. Those are separate fields in a client file and
+    nothing has ever forced them to agree.
+
+    The inbox watcher reads ACCOUNT mailboxes (src/inbox/watcher.py:
+    mailbox_accounts). So when they differ, the invitation lands in a mailbox
+    nobody is watching, whose password we do not have, and the client's booking
+    window closes unnoticed.
+
+    The failure is completely silent: no error, no missing row, no exception —
+    just an email that never arrives anywhere we look. That is precisely the
+    class of problem worth catching at validation time.
+
+    A WARNING, NOT AN ERROR
+    -----------------------
+    Deliberately non-blocking. A client may legitimately want confirmations at
+    their own address, and existing clients were created before this rule
+    existed — 4 of the 5 in this repo currently differ. Refusing them outright
+    would break working registrations to enforce a preference. The warning says
+    what will happen; the operator decides.
+
+    The alternative — silently rewriting the client's email to the account
+    address — was rejected: it changes data the client supplied, and the person
+    who typed it deserves to be told rather than overruled.
+    """
+    problems: List[Problem] = []
+
+    email = str(data.get("email") or "").strip().lower()
+    account = str(data.get("account") or "").strip().lower()
+
+    # No account set means the shared [waitlist] account is used, and the client
+    # file cannot know which that is. Nothing to compare.
+    if not email or not account:
+        return problems
+
+    if email != account:
+        problems.append(Problem(
+            field="email",
+            severity=WARNING,
+            message=(
+                f"The form email ({email}) differs from the VFS account "
+                f"({account}). VFS sends the 'slots available' invitation to "
+                f"the form email, and the inbox watcher only reads ACCOUNT "
+                f"mailboxes — so this client's invitation would arrive "
+                f"somewhere nothing is watching."),
+            hint=(
+                f"Set \"email\" to {account} so the invitation lands in a "
+                f"mailbox the watcher reads. Keep them different only if you "
+                f"will check {email} by hand — the booking window is 36-48 "
+                f"hours."),
+        ))
+
+    return problems
+
+
 def precheck_client(registrant_id: str, data: Dict[str, Any]) -> List[Problem]:
     """Full browser-free pre-flight for one client payload.
 
@@ -624,6 +685,11 @@ def precheck_client(registrant_id: str, data: Dict[str, Any]) -> List[Problem]:
     Returns every problem found. An empty list means this client would run.
     """
     problems = validate_payload(registrant_id, data)
+
+    # Independent of the route and of any config loading, so it runs before the
+    # early return below — a client with a bad route still deserves to be told
+    # their invitation would go somewhere unwatched.
+    problems.extend(check_invitation_email(data))
 
     route = str(data.get("route") or "").strip().upper()
     if not route or not _ROUTE_RE.match(route):

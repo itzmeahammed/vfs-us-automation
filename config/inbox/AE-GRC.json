@@ -1,0 +1,35 @@
+{
+  "_comment": "UAE -> Greece email matchers. Built from a REAL invitation email (2026-09-02). The body wording is identical to Italy's apart from the country, the category and the validity window — which is why _default carries the shared patterns and this file only states the differences.",
+  "extends": "_default",
+  "matchers": [
+    {
+      "name": "waitlist_invitation",
+      "from_contains": [
+        "vfshelpline.com",
+        "vfsglobal.com"
+      ],
+      "body_contains": [
+        "/are/en/grc/"
+      ],
+      "validity_hours": 36,
+      "_comment_body": "THE COUNTRY DISCRIMINATOR, and it is load-bearing. Every country's invitation has the same subject and near-identical wording, so without this an Italian email matches Greece's matcher (routes are tried in sorted order, and AE-GRC sorts first) and inherits Greece's 36-hour window instead of Italy's 48 — silently applying the wrong deadline. The portal URL in the body is the only part of the message that names the country unambiguously.",
+      "_comment_validity": "36 HOURS, NOT 48. Greece's email says 'This link will only be valid for 36 hours'; Italy's says 48. This is the single most important per-route override in the file — inheriting Italy's 48 would have the system believe a window was still open 12 hours after it had closed, and act on an invitation that can no longer be used.",
+      "_comment_sender": "info.GreeceUAE@vfshelpline.com appears in the signature, but the ACTUAL sender is donotreply@ on the same domain (measured across 123 real messages). Pin the domain, never the signature address."
+    },
+    {
+      "name": "waitlist_confirmation",
+      "from_contains": [
+        "vfshelpline.com",
+        "vfsglobal.com"
+      ],
+      "body_contains": [
+        "/are/en/grc/"
+      ],
+      "_comment_body": "THE COUNTRY DISCRIMINATOR, and it is load-bearing. Every country's mail shares the same subject and near-identical wording, so without it one country's email matches another's matcher (routes are tried in sorted order) and inherits the wrong validity window — silently applying the wrong deadline. The portal URL is the only part of the message that names the country unambiguously."
+    }
+  ],
+  "_comment_reference_format": "Greece's Unique Reference Number is GRC127086415238 — CONFIRMED to be the same value the dashboard shows as 'Group Reference Number'. That equality is what makes exact identity resolution possible: the confirmation email supplies the reference, and the dashboard row can then be selected by it rather than by matching a name.",
+  "_comment_observed_invitation": "Subject: 'Slots available for booking an appointment'. Body: 'Dear EMAN SAMIR MOHAMED IBRAHIM, Appointment slots for your travel from UAE to Greece for the General visa category are now available for booking. We request you to Click Here https://services.vfsglobal.com/are/en/grc/login ... This link will only be valid for 36 hours...'",
+  "_comment_category": "Greece's category reads 'for the General visa category' — a SINGLE 'visa', where Italy's reads 'for the Tourist visa visa category' with the word doubled. The base pattern stops at the first 'visa' precisely so it captures 'General' and 'Tourist' correctly from both shapes.",
+  "_comment_multi_client": "Greece accounts hold SEVERAL clients, and VFS sends one invitation per client naming that client. So an invitation here identifies a person; it does not merely say 'something on this account is bookable'. Contrast config/inbox/AE-ITA.json, where one-client-per-account makes the name redundant."
+}

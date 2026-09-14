@@ -1,0 +1,29 @@
+{
+  "_comment": "UAE -> Greece booking flow. The most complete route, because Greece is the one whose dashboard has actually been seen (screenshot, 2026-09-02) and whose reference format is confirmed to match the confirmation email.",
+
+  "extends": "_default",
+
+  "enabled": false,
+  "_comment_enabled": "STILL OFF. The dashboard step is grounded in a real screenshot, but the pages AFTER it have never been walked. Enabling this route before TASKS.md Phase 0 is done would run a flow whose committing step is a guess.",
+
+  "identity": {
+    "_comment": "Greece accounts hold SEVERAL clients — the screenshot shows three applications side by side — and VFS sends one invitation per client. So identity resolution here does real work, unlike Italy where one-client-per-account makes it trivial. The base's strict defaults are exactly right and are not relaxed."
+  },
+
+  "steps": [
+    {
+      "name": "dashboard_resume",
+      "row": {
+        "reference_pattern": "Group Reference Number\\s*-\\s*(GRC\\d+)",
+        "_comment": "Narrowed to the GRC prefix for this route. Confirmed real values: GRC127086415238, GRC127086482266, GRC127086557919 — a 3-letter country prefix followed by digits. The base keeps the loose pattern for routes whose format is not yet known."
+      },
+      "_comment": "Everything else — the container, the name label, the 'Book Now' link — is inherited. The screenshot shows Greece's dashboard is the standard VFS layout, so there is nothing route-specific to override yet."
+    }
+  ],
+
+  "_comment_reference_join": "THE KEY FACT FOR THIS ROUTE, confirmed by the user: the dashboard's 'Group Reference Number' is the SAME value the registration confirmation email calls the 'Unique Reference Number'. That equality is what makes identity exact here — the reference is stored at registration and used to pick the dashboard row, with the invitation's name only narrowing the shortlist first.",
+
+  "_comment_validity": "Greece's invitation is valid for 36 HOURS, not 48. That lives in config/inbox/AE-GRC.json, where the email is parsed — it is a property of the message, not of the booking flow, and duplicating it here would create two places to get it wrong.",
+
+  "_comment_next": "To finish this route: walk an invited account with --keep-open, capture the DOM of the dashboard card and every page after 'Book Now', and replace the unverified selectors inherited from _default. Then answer whether an unpaid slot holds or burns before setting \"enabled\": true."
+}

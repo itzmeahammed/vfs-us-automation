@@ -165,6 +165,36 @@ class Webhook(_Section):
     timeout_seconds: float = 10.0   # per attempt; retries are on top of this
 
 
+class Inbox(_Section):
+    """Watching the VFS account mailboxes for the mail VFS sends.
+
+    OBSERVATIONAL. The watcher classifies, records and reports; it triggers
+    nothing, opens no browser and mutates no VFS state. There is deliberately no
+    'enabled' switch here, because running it is an explicit act — you start
+    `python -m src.inbox watch` — rather than something the hourly checker can
+    turn on for itself. When the booking flow eventually consumes these
+    observations, THAT gets its own switch, defaulting off.
+
+    IMAP host, port and mailbox credentials are NOT here: the host and port come
+    from [otp] (already configured, same server), and the credentials are each
+    VFS account's own email and password, resolved through waitlist/accounts.py.
+    """
+
+    #: Seconds between passes when watching continuously. Deliberately slow: an
+    #: invitation is valid for 48 hours, so minutes of latency are irrelevant and
+    #: a low poll rate keeps the watcher a negligible load on the mail server.
+    poll_seconds: int = Field(default=300, ge=30)
+
+    #: How far back a mailbox's FIRST pass looks. Without a bound, a mailbox with
+    #: years of history would be fetched in full on day one. Anything older than
+    #: this cannot be an actionable invitation.
+    first_pass_days: int = Field(default=30, ge=1)
+
+    #: Ceiling on messages fetched from one mailbox per pass, so a runaway
+    #: mailbox cannot turn one pass into an unbounded download.
+    max_per_pass: int = Field(default=200, ge=1)
+
+
 class Waitlist(_Section):
     """Waitlist detection (always on) and registration (opt-in, gated).
 
@@ -305,6 +335,7 @@ _INI_SECTIONS = {
     "logging": "logging",
     "bandwidth": "bandwidth",
     "waitlist": "waitlist",
+    "inbox": "inbox",
 }
 
 
@@ -352,6 +383,7 @@ class Settings(BaseSettings):
     bandwidth: Bandwidth = Field(default_factory=Bandwidth)
     waitlist: Waitlist = Field(default_factory=Waitlist)
     webhook: Webhook = Field(default_factory=Webhook)
+    inbox: Inbox = Field(default_factory=Inbox)
 
     @classmethod
     def settings_customise_sources(

@@ -1,0 +1,35 @@
+{
+  "_comment": "UAE -> Italy email matchers. THE ONLY ROUTE WITH REAL OBSERVED MAIL (two messages, 2026-08). Everything the base config knows was extracted from these; this file adds only what is Italy-specific.",
+  "extends": "_default",
+  "_comment_sender": "MEASURED, not assumed. A live pass over the real mailboxes on 2026-09-02 found every VFS message came from donotreply@vfshelpline.com (115) or donotreply@vfsglobal.com (8) — NOT from the info.italyuae@ address printed in the body's signature block. Pinning the signature address would have matched nothing. The bare domains are therefore what is pinned; the local part varies and must not be relied on.",
+  "matchers": [
+    {
+      "name": "waitlist_invitation",
+      "from_contains": [
+        "vfshelpline.com",
+        "vfsglobal.com"
+      ],
+      "_comment": "Overrides ONLY from_contains — subject_contains, body_contains, extract and validity_hours all survive from _default.",
+      "body_contains": [
+        "/are/en/ita/"
+      ],
+      "_comment_body": "THE COUNTRY DISCRIMINATOR, and it is load-bearing. Every country's mail shares the same subject and near-identical wording, so without it one country's email matches another's matcher (routes are tried in sorted order) and inherits the wrong validity window — silently applying the wrong deadline. The portal URL is the only part of the message that names the country unambiguously."
+    },
+    {
+      "name": "waitlist_confirmation",
+      "from_contains": [
+        "vfshelpline.com",
+        "vfsglobal.com"
+      ],
+      "body_contains": [
+        "/are/en/ita/"
+      ],
+      "_comment": "Only the country discriminator. The MESSAGE TYPE is already pinned by the inherited subject_contains ('Successfully Added to Waitlist'), so a second body phrase would add nothing — entries inside one condition are alternatives (OR), not extra requirements, so listing 'has been successfully registered' here would LOOSEN the match rather than tighten it: any Italian mail would then qualify on the URL alone. Conditions AND across kinds (subject AND from AND body); alternatives OR within a kind.",
+      "_comment_body": "THE COUNTRY DISCRIMINATOR, and it is load-bearing. Every country's mail shares the same subject and near-identical wording, so without it one country's email matches another's matcher (routes are tried in sorted order) and inherits the wrong validity window — silently applying the wrong deadline. The portal URL is the only part of the message that names the country unambiguously."
+    }
+  ],
+  "_comment_reference_format": "Italy's Unique Reference Number is ITD125298020335 — a 3-letter prefix, unlike Switzerland's 4-letter SWDB79923880977. The base's \"([A-Z0-9-]+)\" covers both deliberately; do not narrow it here.",
+  "_comment_observed_invitation": "Subject: 'Slots available for booking an appointment'. Body: 'Dear IRINA KONOVALOVA, Appointment slots for your travel from UAE to Italy for the Tourist visa visa category are now available for booking. We request you to Click Here https://services.vfsglobal.com/are/en/ita/login and complete your appointment booking. This link will only be valid for 48 hours...' — note the link is the PLAIN LOGIN URL already in config/vfs_urls.ini, carrying no token and no reference to a specific application.",
+  "_comment_observed_confirmation": "Subject: 'Successfully Added to Waitlist'. Body: 'Dear IRINA KONOVALOVA, Your registration on the waitlist for a visa appointment from UAE to Italy under the Tourist visa, has been successfully registered. Your Unique Reference Number is ITD125298020335...'",
+  "_comment_mailbox": "Both arrived at the VFS ACCOUNT address. Whether some portal instead mails the applicant's own address is still unconfirmed — see BOOKING_DESIGN open question 4. If one does, the watcher cannot see it and the dashboard poll is the only safety net."
+}
