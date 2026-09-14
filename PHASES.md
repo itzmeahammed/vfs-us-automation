@@ -51,7 +51,7 @@ turns "probably the right person" into "provably the right person".
 
 ## Phase 1 — the mailbox watcher ✅
 
-**`src/inbox/`** · 204 tests · 85% coverage · running against real mailboxes
+**`src/inbox/`** · 91% coverage · running against real mailboxes
 
 **Job:** know when VFS says something happened, without anyone reading email.
 

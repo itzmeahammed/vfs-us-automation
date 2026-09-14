@@ -333,10 +333,31 @@ def test_enable_then_disable(api):
 
 
 def test_get_reports_runnable(api):
+    """A warning is reported but does not make a client un-runnable.
+
+    The shared payload's form email differs from its account, which raises
+    check_invitation_email's warning. That is a real finding and must be
+    surfaced in `problems` — but `runnable` answers a different question ("would
+    this client register?") and the answer is yes.
+    """
     api.post("/clients", json=_client_payload(), headers=HEADERS)
     body = api.get("/clients/test-client-che", headers=HEADERS).json()
     assert body["runnable"] is True
-    assert body["problems"] == []
+    assert [p["severity"] for p in body["problems"]] == ["warning"]
+
+
+def test_a_warning_does_not_block_a_write(api):
+    """Regression: the invitation-email warning once returned 422 on create.
+
+    It is severity=warning — "the client can run, but this is probably not
+    intended" — so refusing the write both contradicts the severity and takes
+    the decision away from the operator, who may legitimately intend to watch
+    that mailbox by hand. It must be reported alongside a 201, not instead of one.
+    """
+    r = api.post("/clients", json=_client_payload(), headers=HEADERS)
+    assert r.status_code == 201, r.text
+    assert [w["severity"] for w in r.json()["warnings"]] == ["warning"]
+    assert "differs from the VFS account" in r.json()["warnings"][0]["message"]
 
 
 def test_list_filters_by_route(api):

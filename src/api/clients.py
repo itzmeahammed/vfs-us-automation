@@ -120,6 +120,38 @@ def _refuse_if_in_flight(client_id: str, existing: Dict[str, Any]) -> None:
             )
 
 
+def _blocking(problems: List[Any]) -> List[Any]:
+    """The problems that must stop a write. Warnings are not among them.
+
+    `precheck_client` returns EVERYTHING it finds, at two severities:
+
+        error    the client cannot run until this is fixed
+        warning  the client can run, but this is probably not intended
+
+    Only errors may refuse a write. A warning that blocks is indistinguishable
+    from an error, which makes the severity field decorative and takes the
+    decision away from the operator — `check_invitation_email` exists precisely
+    to inform that decision, not to overrule it: a client whose form email
+    differs from their account email registers perfectly well, they just have to
+    watch that mailbox by hand.
+
+    Warnings still reach the caller on the way through, in the `warnings` field
+    of a successful response — they are surfaced, not swallowed.
+    """
+    # Imported here rather than at module scope, matching every other use of
+    # src.waitlist in this file: the API must start without loading the bot.
+    from src.waitlist.validate import ERROR
+
+    return [p for p in problems if getattr(p, "severity", ERROR) == ERROR]
+
+
+def _warnings(problems: List[Any]) -> List[Any]:
+    """The other half of `_blocking` — informational, never a reason to refuse."""
+    from src.waitlist.validate import ERROR
+
+    return [p for p in problems if getattr(p, "severity", ERROR) != ERROR]
+
+
 def _raise_validation(problems: List[Any]) -> None:
     """Reject a payload with the full problem list attached."""
     raise HTTPException(
@@ -159,9 +191,10 @@ def create_client(payload: ClientCreateRequest) -> ClientWriteResponse:
     client_id = payload.client_id
 
     problems = validate.precheck_client(client_id, data)
-    if problems:
-        log.info("Rejected client %r: %d problem(s).", client_id, len(problems))
-        _raise_validation(problems)
+    blocking = _blocking(problems)
+    if blocking:
+        log.info("Rejected client %r: %d problem(s).", client_id, len(blocking))
+        _raise_validation(blocking)
 
     try:
         store.create(client_id, data)
@@ -189,6 +222,7 @@ def create_client(payload: ClientCreateRequest) -> ClientWriteResponse:
             if not data.get("enabled") else "Client created and enabled."
         ),
         client=_public_view(client_id, data),
+        warnings=[p.to_dict() for p in _warnings(problems)],
     )
 
 
@@ -265,8 +299,10 @@ def list_clients(
             from src.waitlist import validate
 
             problems = validate.precheck_client(rid, data)
-            row.runnable = not problems
-            row.problem_count = len(problems)
+            # A warning does not stop a run, so it must not make a client
+            # read as not-runnable in the listing either.
+            row.runnable = not _blocking(problems)
+            row.problem_count = len(_blocking(problems))
             if runnable is not None and row.runnable != runnable:
                 continue
 
@@ -306,7 +342,7 @@ def get_client(client_id: str) -> ClientDetailResponse:
     return ClientDetailResponse(
         client_id=client_id,
         client=_public_view(client_id, data),
-        runnable=not problems,
+        runnable=not _blocking(problems),
         problems=_problems_to_models(problems),
     )
 
@@ -346,8 +382,8 @@ def update_client(client_id: str,
     # model's default. That is safe in the disarming direction (a client is
     # parked, not armed) and is exactly what "replace" should mean.
     problems = validate.precheck_client(client_id, replacement)
-    if problems:
-        _raise_validation(problems)
+    if _blocking(problems):
+        _raise_validation(_blocking(problems))
 
     store.update(client_id, replacement, merge=False)
     removed = sorted(set(existing) - set(replacement) - {"_comment"})
@@ -401,8 +437,8 @@ def patch_client(client_id: str,
     merged.update(patch)
 
     problems = validate.precheck_client(client_id, merged)
-    if problems:
-        _raise_validation(problems)
+    if _blocking(problems):
+        _raise_validation(_blocking(problems))
 
     store.update(client_id, merged, merge=False)
     # Field NAMES only — the values include a passport number and a password.
@@ -467,8 +503,8 @@ def enable_client(client_id: str) -> ClientWriteResponse:
                             detail=str(exc)) from exc
 
     problems = validate.precheck_client(client_id, data)
-    if problems:
-        _raise_validation(problems)
+    if _blocking(problems):
+        _raise_validation(_blocking(problems))
 
     store.set_enabled(client_id, True)
     data["enabled"] = True

@@ -495,6 +495,15 @@ class ClientWriteResponse(BaseModel):
         default_factory=dict,
         description="Redacted view — secrets removed, PII masked.",
     )
+    warnings: List[ProblemModel] = Field(
+        default_factory=list,
+        description=(
+            "Non-blocking findings. The write SUCCEEDED — these say what is "
+            "probably not intended, not what went wrong. A client whose form "
+            "email differs from their VFS account is the common case: the "
+            "invitation lands in a mailbox the watcher does not read."
+        ),
+    )
 
 
 class ClientDetailResponse(BaseModel):

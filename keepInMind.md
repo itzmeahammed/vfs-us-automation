@@ -355,7 +355,7 @@ why "3 countries" is the real definition of done rather than "tests pass".
 
 **Phase 1 — code done, 3 countries configured.**
 
-- ✅ Built, tested (**204 tests**), running against real mailboxes
+- ✅ Built, tested (**91% coverage**), running against real mailboxes
 - ✅ `imap_host` set and verified connecting
 - ✅ **3 countries configured** — Italy (48h), Greece (36h), Netherlands (36h)
 - ✅ Incremental scanning: 312 messages → 30 per pass

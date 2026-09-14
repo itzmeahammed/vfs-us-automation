@@ -4,8 +4,8 @@
 [TASKS.md](TASKS.md); read [BOOKING_DESIGN.md](BOOKING_DESIGN.md) for the full
 reasoning.
 
-**Last updated:** 2026-09-10 — Phases 1–5 foundations built
-(`src/inbox/` + `src/booking/`, **1018 tests passing**). Recon answered;
+**Last updated:** 2026-09-14 — Phases 1–5 foundations built
+(`src/inbox/` + `src/booking/`, **1155 tests passing, measured**). Recon answered;
 Switzerland's booking flow built from real DOM.
 Start with [PHASES.md](PHASES.md) for the one-page picture.
 
@@ -406,7 +406,7 @@ fsync, dedup) · `guards.py` · `accounts.py` · `runner.py` · `doctor.py --wal
 ### New modules — what exists TODAY
 
 ```
-src/inbox/          ✅ BUILT, running   204 tests, 85% coverage
+src/inbox/          ✅ BUILT, running   91% coverage (measured 2026-09-14)
   matcher.py        PURE  email -> classification
   config.py               config/inbox/<ROUTE>.json
   seen.py                 UID high-water mark, incremental scan

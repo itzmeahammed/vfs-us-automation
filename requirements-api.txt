@@ -9,3 +9,9 @@ pydantic-settings>=2.0,<3
 # Multipart parsing for document uploads (POST /clients/{id}/documents).
 # FastAPI raises at import time if a route declares UploadFile without it.
 python-multipart>=0.0.7
+# Starlette's TestClient is built on httpx and raises at IMPORT time without it,
+# so the API tests cannot even be COLLECTED — pytest reports an error, not a
+# failure, and a casual "N passed" reads as green while 56 tests never ran.
+# That is how a real 422 regression in clients.py stayed hidden. Test-only, but
+# listed here because this file is what a fresh checkout installs.
+httpx>=0.27

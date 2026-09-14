@@ -6,7 +6,8 @@ Read that first — it explains *why*. This file is *what to do, in what order*.
 **Status legend:** `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
 **Last updated:** 2026-09-03 — **Phases 1–5 foundations built and tested**
-(984 tests passing). See [PHASES.md](PHASES.md) for the one-page overview.
+(**1155 tests passing, 0 failures** — measured 2026-09-14). See
+[PHASES.md](PHASES.md) for the one-page overview.
 
 **Phase 0 (recon) is still open and now blocks the booking runner.** The booking
 configs describe pages nobody has opened in a browser; they ship `enabled: false`.
@@ -124,6 +125,54 @@ guess which row to open, as designed.
 - [ ] **Fix the 3 flagged clients** (`ahmed-nld`, `test-che`,
       `trav-nook-ae-cze-cb9115`) — set their `email` to their account address,
       or accept checking those inboxes by hand.
+
+---
+
+### Environment + measured coverage (2026-09-14)
+
+The suite could not fully run: `fastapi`, `python-multipart`, `pytest-cov` and
+`httpx` were missing from `.venv`, so **56 API tests silently did not execute**
+and coverage could not be measured at all. All are now installed.
+
+> ⚠️ **`httpx` is missing from `requirements-api.txt`.** Starlette's `TestClient`
+> imports it, so a fresh checkout that follows that file still cannot collect the
+> API tests. Add it.
+
+**Full suite: 1155 passed, 0 failed.** Coverage, measured rather than claimed:
+
+| Package | Coverage | Note |
+|---|---|---|
+| `src/inbox/` | **91%** | matches the 85% once claimed, now verified |
+| `src/waitlist/` | **59%** | `runner.py` 27%, `register.py` 27% — browser-driving code |
+| `src/booking/` | **55%** | `probe.py` 32%, `walk.py` 41%, `__main__.py` 0% |
+
+The pure modules are excellent — `identity.py` 99%, `lifecycle.py` 97%,
+`config.py` 94%, `reconcile.py` 97%. The low numbers are all browser-driving or
+CLI code, which is the expected shape here. **The gap worth closing is
+`src/booking/__main__.py` at 0%** — `src/inbox/__main__.py` is at 83%, so the
+pattern for testing a CLI already exists in this repo.
+
+### Two real bugs found while restoring the suite (2026-09-14)
+
+- [x] **The invitation-email warning was blocking client creation (422).**
+      `check_invitation_email` is `severity=warning` — "the client can run, but
+      this is probably not intended" — but all six `precheck_client` call sites
+      in `src/api/clients.py` used `if problems:`, never reading severity. A
+      client whose form email differed from their account could not be created
+      at all. That contradicts the check's own docstring ("the operator
+      decides") and made `runnable` and `problem_count` wrong in the listing
+      too. Fixed with `_blocking()` / `_warnings()` helpers; warnings now ride
+      along in a new `warnings` field on `ClientWriteResponse`. Two regression
+      tests added.
+      **This was caught only because the API tests could finally run** — the
+      missing `fastapi` had been hiding it.
+- [x] **One real client had no `created_at`/`updated_at`.**
+      `mufaddal-calcuttawala-ae-che-656e31` was hand-written rather than created
+      through the API, which stamps automatically. `store.backfill_timestamps()`
+      exists and is tested for exactly this — but **is called from nowhere**: no
+      CLI command, no startup hook. Ran it manually (1 file changed, idempotent).
+- [ ] **Expose `backfill_timestamps()`**, or stamp on read, so a hand-written
+      client file cannot reintroduce the gap.
 
 ---
 
