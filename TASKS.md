@@ -176,6 +176,40 @@ pattern for testing a CLI already exists in this repo.
 
 ---
 
+### `inbox reconcile --apply` is an unlocked journal writer (found 2026-09-16)
+
+Merging `origin/master` brought a reworked `runlock` with per-lane locks, and
+`journal.py`'s docstring now states the rule plainly:
+
+> DO NOT add a writer to this file without taking that lane.
+
+**`src/inbox/reconcile.py:285` already breaks it.** `apply()` calls
+`journal.append()`, and nothing in `src/inbox/` takes any lock — `grep -n
+"runlock\|lane\|acquire" src/inbox/*.py` returns nothing.
+
+Severity: **low, but not zero.** The append itself is one short `O_APPEND` line
+write, so the file will not corrupt. The hazard is the read-check-write across
+`plan()` → `apply()`: reconcile reads the journal, decides which rows are
+dangling, then appends. A registration completing in that gap means reconcile
+decides against a stale view — and the row it writes is a **success** row, which
+is exactly the write the module's own docstring calls the worst one to get
+wrong ("they would then never be retried, and would silently miss their
+appointment").
+
+Today it is only reachable by hand, so two writers require deliberately running
+a registration and `reconcile --apply` at the same moment. It stops being
+theoretical the moment the watcher is put on a schedule — which is an open task
+in HANDOFF_NEXT_SESSION.md.
+
+- [ ] Decide: take `LANE_WAITLIST` around `apply()`, or document that reconcile
+      must not run concurrently with a registration. **Do not schedule the
+      watcher with `--apply` until this is settled.**
+
+*Not fixed here: the lane design was a deliberate choice made in the merged
+commit, and changing its semantics is the author's call, not a merge cleanup.*
+
+---
+
 ### Open security items (moved from DOCUMENT_STORAGE_TASKS.md, 2026-09-14)
 
 Two verification items that live nowhere else. Both are about the control that
