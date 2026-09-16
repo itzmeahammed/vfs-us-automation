@@ -515,6 +515,12 @@ def send_slot_report(source_country_code: str, destination_country_code: str,
         return
 
     logging.info("Slot report:\n" + report)
+
+    # Independent of Telegram: selected destinations (France/Italy) also go to
+    # the web app's TV screen. No-op for any other destination.
+    from src.utils import tv_announce
+    tv_announce.announce_slots(destination_country_code, entries)
+
     if telegram.is_configured():
         telegram.send_message(report)
     else:

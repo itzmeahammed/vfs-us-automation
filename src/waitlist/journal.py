@@ -17,18 +17,26 @@ account_health.py and waitlist_cooldown.py already use — right-sized for a
 manually-invoked tool that registers a handful of times.
 
 Scaling note: the read-check-write in `blocking_entry()` is not atomic, so it is
-only safe while there is exactly ONE writer at a time. That invariant is now
-enforced explicitly rather than assumed: every browser-driving entry point takes
-the global run lock in `src/utils/runlock.py` —
+only safe while there is exactly ONE writer at a time. That invariant is enforced
+by the WAITLIST LANE of the run lock in `src/utils/runlock.py` —
 
-    supervisor.main()              runlock.acquire("slot-check", on_busy="skip")
-    runner.run_registration()      runlock.acquire("waitlist-run")
-    run_task.ps1 / run_ec2.sh      the same OS mutex / lockfile
+    runner.run_registration()   runlock.acquire(..., lane=LANE_WAITLIST)
 
-so a scheduled slot check, an auto-triggered registration and a manual run
-serialise instead of interleaving. DO NOT add a new writer without taking that
-lock; two concurrent runs can double-register a client, which costs a real
+so an auto-triggered registration and a manual one serialise instead of
+interleaving. DO NOT add a writer to this file without taking that lane; two
+concurrent registration runs can double-register a client, which costs a real
 appointment slot.
+
+A scheduled SLOT CHECK does not take this lane and runs concurrently with a
+registration. That is deliberate and safe: the slot checker never writes this
+journal and never registers anyone. It only needed excluding when both fought
+over one Chrome debugging port and profile dir, which chrome_launcher.py no
+longer does.
+
+If waitlist registration ever needs to run several at a time, this lane is what
+has to go — and then the lock has to be replaced by real atomicity, i.e. SQLite
+with a partial UNIQUE INDEX on (route, combo, registrant) and (route,
+registrant), not by a finer-grained lock.
 
 If registration ever needs genuine PARALLELISM (several runs at once, rather
 than several callers taking turns), the lock stops being enough — swap this for

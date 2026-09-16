@@ -275,8 +275,11 @@ def _machine_lock_busy() -> str:
         return ""                                  # lock unavailable: do not block
 
     try:
-        with runlock.acquire("api-trigger-probe", timeout=0,
-                             on_busy="skip") as handle:
+        # The WAITLIST lane specifically. Probing the slot-check lane would 409
+        # a perfectly valid registration just because a routine slot check
+        # happened to be running — the two are independent now.
+        with runlock.acquire("api-trigger-probe", lane=runlock.LANE_WAITLIST,
+                             timeout=0, on_busy="skip") as handle:
             if handle.held:
                 return ""
             return handle.holder_hint or "busy"

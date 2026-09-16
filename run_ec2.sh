@@ -3,8 +3,6 @@
 # EC2 entrypoint for the VFS Malta slot checker — invoke this from cron hourly.
 #
 # It wraps the self-healing supervisor with:
-#   * flock    — a lockfile so overlapping runs can't pile up (if one hour's run
-#                hangs past the hour, the next cron tick is skipped, not stacked).
 #   * xvfb-run — a fresh virtual X display per run (real/headed Chrome needs a
 #                display; -a auto-picks a free display number) torn down after.
 #
@@ -34,15 +32,17 @@ else
   PYTHON="python3"
 fi
 
-LOCKFILE="/tmp/vfs-slot-checker.lock"
-
-# flock: take an exclusive, non-blocking lock on FD 200. If another run holds it,
-# exit immediately (skip this tick) rather than stacking a second browser.
-exec 200>"$LOCKFILE"
-if ! flock -n 200; then
-  echo "[$(date '+%F %T')] Previous run still in progress — skipping this tick."
-  exit 0
-fi
+# OVERLAP GUARD: owned by PYTHON, not by this script. src/supervisor.py flocks
+# the same /tmp/vfs-slot-checker.lock itself (src/utils/runlock.py) and skips the
+# tick if another browser-driving run holds it.
+#
+# This script used to flock it here, before exec'ing the child - which deadlocked
+# once the supervisor started taking it too: the parent held the lock, so the
+# child could never get it and every tick skipped while this script still printed
+# "Run finished". Do not reintroduce a lock here.
+#
+# Python has to be the owner rather than this script, because this script cannot
+# see a waitlist run started by the API or by hand - and those drive a browser too.
 
 echo "[$(date '+%F %T')] Starting VFS slot-check run (xvfb + supervisor)..."
 

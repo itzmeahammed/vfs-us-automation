@@ -37,6 +37,77 @@ def _profile_base() -> str:
     return os.environ.get("TEMP") or "/tmp"
 
 
+def _port_is_free(port: int) -> bool:
+    """True if nothing is listening on `port` on loopback."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def resolve_port(preferred: int) -> int:
+    """The CDP port this run should use: `preferred` if free, else a free one.
+
+    A FIXED port is what stopped a slot check and a waitlist run from existing at
+    the same time — both read [retry] cdp_port (9222) and the second Chrome could
+    not bind it. Falling back to an OS-assigned free port makes concurrent runs
+    possible while keeping 9222 for the common single-run case, so an operator
+    attaching a debugger by hand still finds it where the config says.
+
+    There is a small window between testing a port and Chrome binding it. Losing
+    that race costs one failed launch, which the supervisor already retries — it
+    is not a correctness problem, and it is far rarer than the guaranteed clash
+    a hard-coded port produced.
+    """
+    import socket
+
+    if preferred and _port_is_free(preferred):
+        return preferred
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))          # 0 = let the OS pick a free one
+        chosen = s.getsockname()[1]
+    logging.info(
+        f"CDP port {preferred} is busy (another run?) — using {chosen} instead."
+    )
+    return chosen
+
+
+def _live_bot_profile_dirs() -> list:
+    """user-data-dirs of bot Chrome processes that are RUNNING right now.
+
+    Used to avoid deleting a profile another concurrent run is using.
+    Best-effort: on any failure it returns [] and the caller falls back to its
+    previous behaviour.
+    """
+    dirs = []
+    try:
+        if platform.system() == "Windows":
+            ps = (
+                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+                "ForEach-Object { $_.CommandLine }"
+            )
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=30,
+            ).stdout
+        else:
+            out = subprocess.run(
+                ["ps", "-eo", "args"], capture_output=True, text=True, timeout=30,
+            ).stdout
+        for line in (out or "").splitlines():
+            m = re.search(r"--user-data-dir=([^\s\"]+)", line)
+            if m and PROFILE_PREFIX in m.group(1):
+                dirs.append(os.path.normpath(m.group(1)))
+    except Exception as e:
+        logging.debug(f"_live_bot_profile_dirs (ignored): {e}")
+    return dirs
+
+
 def _mask_egress(egress: str) -> str:
     """Human label for an egress identity (host:port or 'local') without leaking
     the proxy's user:pass credentials into the log."""
@@ -59,20 +130,37 @@ def _split_proxy(url: str):
     return (p.scheme or "http"), p.hostname, p.port, (p.username or ""), (p.password or "")
 
 
-def kill_stale_bot_chrome() -> None:
+def kill_stale_bot_chrome(profile_dir: str = None) -> None:
     """
-    Best-effort: kill any Chrome left over from a PREVIOUS bot run.
+    Best-effort: kill Chrome left over from a PREVIOUS bot run.
 
     Matches ONLY Chrome processes launched with our PROFILE_PREFIX user-data-dir,
     so the user's normal browsing Chrome is never touched. Never raises — this is
     cleanup, not the critical path.
+
+    SCOPE. With `profile_dir`, only Chrome using THAT profile is killed. Every
+    launch calls this, so the unscoped form meant starting a waitlist run killed
+    the slot bot's live Chrome mid-check (and the reverse) — the two could not
+    run at the same time no matter what the locking said. Scoping it to one
+    profile keeps the real purpose (a crashed run holding a lock on the profile
+    we are about to reuse) while leaving other runs alone.
+
+    The unscoped form remains for explicit "clean up everything" callers.
     """
     try:
+        if profile_dir:
+            target = os.path.normpath(profile_dir)
+            match_win = target.replace("'", "''")
+            pattern = target
+        else:
+            match_win = PROFILE_PREFIX
+            pattern = PROFILE_PREFIX
+
         if platform.system() == "Windows":
-            # CIM query: chrome.exe whose command line references our profile dir.
+            # CIM query: chrome.exe whose command line references the profile dir.
             ps = (
                 "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
-                f"Where-Object {{ $_.CommandLine -like '*{PROFILE_PREFIX}*' }} | "
+                f"Where-Object {{ $_.CommandLine -like '*{match_win}*' }} | "
                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
                 "-ErrorAction SilentlyContinue }"
             )
@@ -84,25 +172,38 @@ def kill_stale_bot_chrome() -> None:
             # -f matches against the full command line; our profile prefix is
             # distinctive enough not to hit the user's Chrome.
             subprocess.run(
-                ["pkill", "-f", PROFILE_PREFIX],
+                ["pkill", "-f", pattern],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
             )
     except Exception as e:
         logging.debug(f"kill_stale_bot_chrome (ignored): {e}")
 
 
-def remove_stale_profiles() -> None:
+def remove_stale_profiles(keep: str = None) -> None:
     """
     Best-effort: delete leftover bot profile dirs (PROFILE_PREFIX*) under TEMP so
-    disk isn't slowly filled by crashed runs. Never raises. A dir still locked by
-    a live Chrome is skipped (ignore_errors) — kill_stale_bot_chrome() runs first
-    to release those.
+    disk isn't slowly filled by crashed runs. Never raises.
+
+    Profiles belonging to a Chrome that is RUNNING are skipped, as is `keep` (the
+    caller's own dir). Without that, a starting run deleted the profile directory
+    of a concurrent run — Chrome does not tolerate its user-data-dir vanishing
+    underneath it, so the other run died in a way that looked like a VFS problem.
+    On Windows an in-use dir would usually survive via ignore_errors, but on
+    Linux (EC2) the delete succeeds and takes the live run down with it.
     """
     base = _profile_base()
+    protected = {os.path.normpath(p) for p in _live_bot_profile_dirs()}
+    if keep:
+        protected.add(os.path.normpath(keep))
     try:
         for name in os.listdir(base):
-            if name.startswith(PROFILE_PREFIX):
-                shutil.rmtree(os.path.join(base, name), ignore_errors=True)
+            if not name.startswith(PROFILE_PREFIX):
+                continue
+            path = os.path.join(base, name)
+            if os.path.normpath(path) in protected:
+                logging.debug(f"Keeping in-use bot profile: {name}")
+                continue
+            shutil.rmtree(path, ignore_errors=True)
     except Exception as e:
         logging.debug(f"remove_stale_profiles (ignored): {e}")
 
@@ -169,6 +270,16 @@ class ChromeProcess:
 
     def __init__(self, port=9222, url=None, profile_dir=None, startup_timeout_s=30,
                  proxy=None, profile_key=None):
+        # `port` is a PREFERENCE, not a reservation: if another run already holds
+        # it, start() takes a free one instead of failing to launch. This is what
+        # lets a slot check and a waitlist registration run at the same time.
+        #
+        # Resolved in start(), NOT here. Resolving at construction time meant two
+        # objects built before either launched both saw 9222 free and both chose
+        # it — the second Chrome then could not bind. Deciding immediately before
+        # the exec shrinks that window to milliseconds, and start() retries on a
+        # fresh port if we still lose the race.
+        self._preferred_port = port
         self.port = port
         self.url = url
         self.startup_timeout_s = startup_timeout_s
@@ -214,7 +325,12 @@ class ChromeProcess:
             # PC, leaving Chrome profiles in TEMP across many runs is unwanted
             # residue; on a residential IP Turnstile auto-passes each run so
             # persisting cf_clearance isn't required.
-            self.profile_dir = os.path.join(_profile_base(), f"{PROFILE_PREFIX}{port}")
+            #
+            # Named by PID, not by port. The port is no longer known here (start()
+            # picks it), and tying the two together meant two concurrent runs that
+            # wanted the same port also wanted the same profile directory.
+            self.profile_dir = os.path.join(
+                _profile_base(), f"{PROFILE_PREFIX}pid{os.getpid()}")
             self._owns_profile = True  # ours — delete on close (no residue)
 
     @property
@@ -253,16 +369,16 @@ class ChromeProcess:
             logging.debug(f"egress marker check failed (ignored): {e}")
 
     def start(self) -> "ChromeProcess":
-        # Clean slate before launching: kill any Chrome left over from a previous
-        # bot run and wipe stale profile dirs. This guarantees each run starts
-        # fresh with no residue and no port/profile lock conflicts. Surgical —
-        # only OUR bot Chrome (PROFILE_PREFIX) is matched, never the user's.
-        # Always kill leftover bot Chrome (frees any profile lock from a crashed
-        # run). Only WIPE profile dirs in throwaway mode — in persist mode the
+        # Clean slate before launching, but SCOPED TO THIS RUN. Kill only Chrome
+        # holding OUR profile dir (a crashed previous run using the same account
+        # would still own its lock), and never delete a profile another live run
+        # is using. The unscoped versions killed and deleted across every bot
+        # Chrome on the machine, which made two concurrent runs impossible.
+        # Only WIPE profile dirs in throwaway mode — in persist mode the
         # per-account dirs are the cache we want to keep.
-        kill_stale_bot_chrome()
+        kill_stale_bot_chrome(self.profile_dir)
         if not self._persist:
-            remove_stale_profiles()
+            remove_stale_profiles(keep=self.profile_dir)
 
         # Note the egress IP for this (persistent) profile so the bot can drop a
         # stale, IP-bound cf_clearance if the profile was last used from another IP.
@@ -357,7 +473,6 @@ class ChromeProcess:
         elif self.url:
             args.append(self.url)
 
-        logging.debug(f"Launching Chrome (CDP :{self.port}) — {chrome}")
         # Own a process group so we can kill the whole tree (renderers, GPU proc).
         popen_kwargs = {
             "stdout": subprocess.DEVNULL,
@@ -368,9 +483,39 @@ class ChromeProcess:
         else:
             popen_kwargs["start_new_session"] = True  # setsid → own process group
 
-        self._proc = subprocess.Popen(args, **popen_kwargs)
-        self._wait_for_cdp()
-        return self
+        # Pick the port HERE, as late as possible, and retry on a different one if
+        # another run took it in between. Two concurrent runs racing for 9222 is
+        # the normal case now, not an exotic one, so losing the race must cost a
+        # relaunch rather than the whole run.
+        port_flag = next(
+            i for i, a in enumerate(args)
+            if str(a).startswith("--remote-debugging-port=")
+        )
+        last_error = None
+        for attempt in range(1, 4):
+            # Attempt 1 prefers the configured port; later ones take any free port.
+            self.port = resolve_port(self._preferred_port if attempt == 1 else 0)
+            args[port_flag] = f"--remote-debugging-port={self.port}"
+            logging.debug(f"Launching Chrome (CDP :{self.port}) — {chrome}")
+            self._proc = subprocess.Popen(args, **popen_kwargs)
+            try:
+                self._wait_for_cdp()
+                return self
+            except RuntimeError as e:
+                last_error = e
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+                if attempt == 3:
+                    break
+                logging.warning(
+                    f"Chrome did not come up on port {self.port} "
+                    f"(attempt {attempt}/3) — retrying on another port: {e}"
+                )
+        raise RuntimeError(
+            f"Chrome would not start after 3 attempts: {last_error}"
+        )
 
     def _wait_for_cdp(self) -> None:
         """Polls the CDP /json/version endpoint until it answers or we time out."""
