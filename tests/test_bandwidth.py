@@ -298,10 +298,18 @@ class TestPersistProfile(unittest.TestCase):
             s._cached = original
 
     def test_default_is_throwaway(self):
+        from src.utils.chrome_launcher import PROFILE_PREFIX
+
         c = self._chrome(persist=False, key="gusal@travnook.com")
         self.assertFalse(c._persist)
         self.assertTrue(c._owns_profile, "throwaway profile must be deleted on close")
-        self.assertTrue(c.profile_dir.endswith("9222"))
+        # Named by PID, not by CDP port. This used to assert the dir ended in
+        # "9222": the port and the profile name were the same value, so two
+        # concurrent runs that both wanted 9222 also wanted the SAME profile
+        # directory. The port is now chosen at start() and the profile is keyed
+        # to the process, so what matters is that it is ours and distinctive.
+        self.assertIn(PROFILE_PREFIX, c.profile_dir)
+        self.assertTrue(c.profile_dir.endswith(f"pid{os.getpid()}"))
 
     def test_persist_is_per_account(self):
         a = self._chrome(persist=True, key="gusal@travnook.com")

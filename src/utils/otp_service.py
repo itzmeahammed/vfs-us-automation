@@ -121,13 +121,18 @@ def extract_code(mail: otp_email.OtpMail, otp_len: int, read_attempts: int = 1,
     image attachment via OpenAI. Raises OtpError if neither yields a usable code.
 
     The image read is retried up to `read_attempts` times on the SAME image so a
-    transient OCR miss (e.g. a 7-digit misread of a 6-digit code) is recovered
-    in-place instead of costing a browser relaunch. Temperature rises each retry
-    (from `min_temperature`) so a re-read can differ from the previous answer.
+    misread (e.g. reading a decoy row of VFS's anti-OCR captcha) is recovered
+    in-place instead of costing a browser relaunch. Each retry uses a DIFFERENT
+    PROMPT rather than a higher temperature: on a short digit read the model's
+    argmax barely moves with temperature, so the old ladder just repeated the
+    same wrong answer three times.
 
-    `exclude` is a set of codes already REJECTED by VFS — the reader keeps trying
-    until it produces a valid code NOT in that set, so we never re-submit a code
-    VFS has already refused (which would just burn an attempt toward lockout).
+    `exclude` is a set of codes already REJECTED by VFS. They are both filtered
+    out of the result AND named in the prompt, so the model is told which
+    readings were wrong instead of being re-asked the identical question.
+
+    `min_temperature` is passed through unchanged (no longer escalated); keep it
+    at 0 for a deterministic first read.
     """
     exclude = exclude or set()
 
@@ -144,22 +149,29 @@ def extract_code(mail: otp_email.OtpMail, otp_len: int, read_attempts: int = 1,
 
     attempts = max(1, read_attempts)
     last_text = ""
+    # Codes the model must not return again: those VFS already refused, PLUS any
+    # it produces in this loop. Both are named in the prompt — previously the
+    # retry prompt was byte-identical, so the model had no reason to change its
+    # answer and returned the same rejected code every pass (logs 2026-08-18).
+    tried = set(exclude)
     for attempt in range(1, attempts + 1):
-        temperature = min(1.0, min_temperature + 0.4 * (attempt - 1))
         last_text = otp_openai.read_otp_image(
             mail.image, mail.image_mime or "image/png",
-            expected_len=otp_len, temperature=temperature,
+            expected_len=otp_len, temperature=min_temperature,
+            rejected=sorted(tried), style=attempt - 1,
         )
         code = _find_digits(last_text, otp_len)
         if code and code not in exclude:
             where = f" on attempt {attempt}" if attempt > 1 else ""
             logging.info(f"OTP read from the email image{where}: {code}")
             return code
+        if code:
+            tried.add(code)
         why = (f"already-rejected code {code}" if code and code in exclude
                else f"no {otp_len}-digit code (raw '{last_text}')")
         logging.warning(
             f"OTP image read attempt {attempt}/{attempts}: {why}."
-            + (" Retrying..." if attempt < attempts else "")
+            + (" Retrying with a different prompt..." if attempt < attempts else "")
         )
 
     raise OtpError(

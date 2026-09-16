@@ -5,9 +5,18 @@
 # twice per hour (:29 and :59); both runs in an hour use the SAME rotated VFS
 # account (rotation is by clock hour - see src/utils/credentials.py).
 #
-# A global mutex is the Windows equivalent of run_ec2.sh's flock: if a previous
-# run is still going when the next tick fires, this one skips instead of stacking
-# a second Chrome.
+# OVERLAP GUARD: owned by PYTHON, not by this script. src/supervisor.py takes the
+# Global\VfsSlotChecker mutex itself (src/utils/runlock.py) and skips the tick if
+# another browser-driving run holds it.
+#
+# This wrapper used to take that same mutex before launching the child - which
+# deadlocked the moment the supervisor started taking it too: the parent held it,
+# so the child could never get it and EVERY tick skipped while this script still
+# logged "Run finished (exit 0)". That silently killed the slot bot for 20 hours
+# on 2026-08-28. Do not reintroduce a lock here.
+#
+# Python has to be the owner rather than this script, because this script cannot
+# see a waitlist run started by the API or by hand - and those drive a browser too.
 #
 # Logs (only 3, all in the project root):
 #   app.log         - Python's own structured step-by-step log. THE log to read.
@@ -38,28 +47,9 @@ function Write-Log($msg) {
         Out-File -FilePath $RunnerLog -Append -Encoding utf8
 }
 
-# Overlap guard (flock equivalent): a global named mutex.
-$mutex = New-Object System.Threading.Mutex($false, "Global\VfsSlotChecker")
-$haveLock = $false
-try {
-    $haveLock = $mutex.WaitOne(0)
-} catch [System.Threading.AbandonedMutexException] {
-    # Previous holder died without releasing - we still own it now.
-    $haveLock = $true
-}
-
-if (-not $haveLock) {
-    Write-Log "Previous run still in progress - skipping this tick."
-    exit 0
-}
-
-try {
-    Write-Log "Starting VFS slot-check run (supervisor)... detailed log in app.log"
-    $proc = Start-Process -FilePath $Python -ArgumentList @("-m", "src.supervisor") `
-        -WorkingDirectory $Root -NoNewWindow -Wait -PassThru `
-        -RedirectStandardError $ErrLog
-    Write-Log "Run finished (exit $($proc.ExitCode))."
-} finally {
-    $mutex.ReleaseMutex()
-    $mutex.Dispose()
-}
+# No lock here - the supervisor takes it (see the note at the top of this file).
+Write-Log "Starting VFS slot-check run (supervisor)... detailed log in app.log"
+$proc = Start-Process -FilePath $Python -ArgumentList @("-m", "src.supervisor") `
+    -WorkingDirectory $Root -NoNewWindow -Wait -PassThru `
+    -RedirectStandardError $ErrLog
+Write-Log "Run finished (exit $($proc.ExitCode))."

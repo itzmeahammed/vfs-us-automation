@@ -163,6 +163,20 @@ class OtpVerificationError(RetryableError):
     """
 
 
+class OtpReadError(OtpVerificationError):
+    """
+    The READER could not produce a usable code from the OTP email — the vision
+    model misread the anti-OCR image, or the email had no readable code.
+
+    Split out from its parent because the two are charged differently: a plain
+    OtpVerificationError may mean the account is in trouble, but a reader miss
+    is our OCR failing on a deliberately hostile image and says nothing about
+    the account. The supervisor lists it in _INFRA_EXC_NAMES so it fails the
+    route WITHOUT a strike — otherwise a run of misreads benches a healthy
+    account for hours.
+    """
+
+
 class AccessRestrictedError(Exception):
     """
     VFS served its 'Access Restricted' block page for this route — the portal

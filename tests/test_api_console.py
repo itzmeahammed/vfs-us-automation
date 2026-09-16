@@ -54,6 +54,38 @@ def _app(console_enabled: bool):
     return main_mod.app
 
 
+@pytest.fixture(autouse=True)
+def _restore_env():
+    """Undo `_app`'s environment writes after every test in this module.
+
+    `_app` assigns VFSAPI_* directly rather than through monkeypatch, so without
+    this the values LEAK into the rest of the session: os.environ is
+    process-wide, and the settings cache is cleared right after, so every later
+    module sees this module's token. The modules that pick their token with
+    `os.environ.setdefault` then capture a HEADERS constant at import time that
+    no longer matches what the server expects, and their requests 401.
+
+    That is exactly what happened — test_api_status failed with 401 in a full
+    run and passed when run alone. Restoring here keeps `_app` simple while
+    making the leak impossible.
+    """
+    import src.api.config as config_mod
+
+    saved = {k: os.environ.get(k)
+             for k in ("VFSAPI_SECRET_TOKEN", "VFSAPI_ENABLE_CONSOLE")}
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        # The cache still holds settings built from THIS module's values, so
+        # restoring the env alone is not enough.
+        config_mod.get_settings.cache_clear()
+
+
 @pytest.fixture
 def on():
     return TestClient(_app(True), raise_server_exceptions=False)

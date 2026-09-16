@@ -77,6 +77,10 @@ _INFRA_EXC_NAMES = (
     # VFS silently refused the login and re-showed the form. Matching is by
     # exact class name, not isinstance, so this subclass needs its own entry.
     "LoginBouncedError",
+    # Our vision reader lost to VFS's anti-OCR OTP image (three decoy digit
+    # rows, recoloured glyphs, overlay noise). That is our OCR failing, not the
+    # account misbehaving — three unlucky reads must not bench a healthy account.
+    "OtpReadError",
     "ConnectionResetError", "ConnectionRefusedError", "ConnectionAbortedError",
     "ConnectionError", "TimeoutError",
 )
@@ -134,14 +138,21 @@ def run_once_with_fresh_browser(source: str, dest: str,
     bot = None
     try:
         chrome.start()
-        # Point the bot at the Chrome we just launched.
+        # Point the bot at the Chrome we just launched. Set ON THE BOT, not in
+        # the shared config: a concurrent waitlist run launches its own Chrome,
+        # and a global key would have both bots attach to whichever started last.
+        # The config values are still written for anything that reads them
+        # directly, but the bot uses its own.
         set_config_value("browser", "cdp_url", chrome.cdp_url)
         # If this account's cached profile was last used from a DIFFERENT egress IP
         # (e.g. warmed on local, now run via proxy), tell the bot to drop the stale
         # IP-bound cf_clearance while keeping the HTTP asset cache.
+        egress_changed = bool(getattr(chrome, "egress_changed", False))
         set_config_value("browser", "keep_cf_clearance",
-                         "false" if getattr(chrome, "egress_changed", False) else "true")
+                         "false" if egress_changed else "true")
         bot = get_vfs_bot(source, dest)
+        bot.cdp_url = chrome.cdp_url
+        bot.keep_cf_clearance = not egress_changed
         if email and password:
             bot.set_credential(email, password)
         if not bot.run():
@@ -449,7 +460,17 @@ def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
             # WITHOUT an attempt 2.
             logging.error(f"{route}: OTP verification failed [{account}] — not "
                           f"retrying (no attempt 2). {e}")
-            benched = account_health.record_failure(email, route, f"OtpVerificationError: {e}")
+            # Only charge the ACCOUNT for failures plausibly its own. An
+            # OtpReadError is our vision reader losing to VFS's anti-OCR image —
+            # infra, not account health — so it costs no strike, the same rule
+            # the generic retry paths already apply via _is_infra_error.
+            if _is_infra_error(e):
+                logging.info(f"{route}: not striking {account} — OTP reader "
+                             "failure (infra), not the account's fault.")
+                benched = False
+            else:
+                benched = account_health.record_failure(
+                    email, route, f"OtpVerificationError: {e}")
             note = (f"\nAccount {account} benched {account_health.soft_cooldown_hours()}h "
                     "(too many consecutive failures).") if benched else ""
             _alert_failure(source, dest, f"OTP verification failed: {e}{note}",
@@ -797,20 +818,29 @@ def main() -> None:
     if not connectivity.require_internet_or_log():
         sys.exit(3)
 
-    # Global run lock. run_task.ps1 / run_ec2.sh already skip an overlapping
-    # TICK, but they cannot see a waitlist run started by the API or by hand —
-    # and two browser-driving runs at once collide on the Chrome debugging port
-    # and can interleave writes to the append-only waitlist journal. Taking the
-    # SAME lock here makes every entry point mutually exclusive.
+    # Run lock, SLOT-CHECK LANE. This excludes another slot check (a tick that
+    # overruns into the next one) and nothing else — a waitlist registration
+    # runs in its own lane and no longer costs a tick.
+    #
+    # The lock lives here rather than in run_task.ps1 / run_ec2.sh: those
+    # wrappers cannot see a waitlist run started by the API or by hand, and
+    # having BOTH the wrapper and this take the same mutex deadlocked every
+    # tick (the parent held it, the child could never get it).
     #
     # on_busy="skip" + exit 0 mirrors the scheduler's existing behaviour: an
     # overlapping tick is normal operation, not a failure to alert on.
     from src.utils import runlock
-    with runlock.acquire("slot-check", timeout=0, on_busy="skip") as lock:
+    with runlock.acquire("slot-check", lane=runlock.LANE_SLOT_CHECK,
+                         timeout=0, on_busy="skip") as lock:
         if not lock.held:
-            logging.info(
-                "Another run (slot check or waitlist) is already in progress — "
-                "skipping this tick.")
+            # A skipped tick used to be invisible: the scheduler wrapper still
+            # logged "Run finished (exit 0)", so a stuck lock silently killed
+            # slot checking for 20 hours on 2026-08-28. WARNING, not INFO, and
+            # it names the real cause.
+            logging.warning(
+                "Another SLOT CHECK is already in progress — skipping this "
+                "tick. (A waitlist run no longer blocks slot checks; if you "
+                "see this repeatedly, a previous slot check is stuck.)")
             sys.exit(0)
 
         if args.source_country_code and args.destination_country_code:

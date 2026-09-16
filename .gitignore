@@ -70,3 +70,8 @@ logs/api_jobs/
 # repo. Only ignore a local override and the agent log.
 ngrok/ngrok.local.yml
 ngrok/*.log
+
+# Coverage artifacts (binary, rewritten on every pytest --cov run).
+.coverage
+.coverage.*
+htmlcov/

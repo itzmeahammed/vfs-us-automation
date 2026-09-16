@@ -162,12 +162,26 @@ def test_a_not_ready_route_still_describes_its_form():
 def api():
     import os
 
+    # Saved and restored rather than left assigned. os.environ is process-wide,
+    # so leaking this token made later modules — which capture their HEADERS at
+    # import time from a cooperative setdefault — send a stale token and 401 in
+    # a full run, while passing when run alone.
+    saved = os.environ.get("VFSAPI_SECRET_TOKEN")
     os.environ["VFSAPI_SECRET_TOKEN"] = "t" * 64
     import src.api.config as config_mod
     config_mod.get_settings.cache_clear()
     from fastapi.testclient import TestClient
     import src.api.main as main_mod
-    return TestClient(main_mod.app, raise_server_exceptions=False)
+    try:
+        yield TestClient(main_mod.app, raise_server_exceptions=False)
+    finally:
+        if saved is None:
+            os.environ.pop("VFSAPI_SECRET_TOKEN", None)
+        else:
+            os.environ["VFSAPI_SECRET_TOKEN"] = saved
+        # The env alone is not enough — the cache holds settings built from the
+        # token above.
+        config_mod.get_settings.cache_clear()
 
 
 def test_readiness_returns_the_fields(api):

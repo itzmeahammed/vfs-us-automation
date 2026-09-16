@@ -9,6 +9,8 @@ The functions return a plain string; sending is done by `src.utils.telegram`.
 Plain URLs render as clickable links in Telegram, so no HTML/Markdown is needed.
 """
 
+import re
+
 # Destination code -> flag emoji shown before each slot line.
 # Add an entry when you add a new route (falls back to no flag if missing).
 DESTINATION_FLAGS = {
@@ -24,10 +26,11 @@ DESTINATION_FLAGS = {
     "DEU": "🇩🇪", "DE": "🇩🇪",       # Germany
     "NOR": "🇳🇴", "NO": "🇳🇴",       # Norway
     "NLD": "🇳🇱", "NL": "🇳🇱",       # Netherlands
+    "SWE": "🇸🇪", "SE": "🇸🇪",       # Sweden
 }
 
-# Destination code -> friendly country name, inserted into each label so the
-# message reads "Abu Dhabi - Hungary - Short Stay - Business". Add an entry when
+# Destination code -> friendly country name. It LEADS every slot line, so the
+# message reads "Hungary - Abu Dhabi - Short Stay - Business". Add an entry when
 # you add a new route (falls back to the raw code if missing).
 DESTINATION_NAMES = {
     "MT": "Malta", "MLT": "Malta",
@@ -42,6 +45,7 @@ DESTINATION_NAMES = {
     "DEU": "Germany", "DE": "Germany",
     "NOR": "Norway", "NO": "Norway",
     "NLD": "Netherlands", "NL": "Netherlands",
+    "SWE": "Sweden", "SE": "Sweden",
 }
 
 
@@ -55,29 +59,6 @@ def _country(dest_code: str) -> str:
     return DESTINATION_NAMES.get((dest_code or "").upper(), (dest_code or "").upper())
 
 
-def _label_with_country(label: str, dest_code: str) -> str:
-    """
-    Rewrites a combo label as 'Centre - Country - SubCategory', dropping the
-    middle 'category' segment (e.g. 'Short Stay').
-
-    'Abu Dhabi - Short Stay - Business'  -> 'Abu Dhabi - Hungary - Business'
-    'Dubai - SCHENGEN'                   -> 'Dubai - Hungary - SCHENGEN'
-    'Abu Dhabi'                          -> 'Abu Dhabi - Hungary'
-    """
-    country = _country(dest_code)
-    parts = [p.strip() for p in label.split(" - ") if p.strip()]
-    if len(parts) >= 3:
-        # centre - <category dropped> - sub  ->  centre - country - sub
-        return f"{parts[0]} - {country} - {parts[-1]}"
-    if len(parts) == 2:
-        # centre - sub (no category)  ->  centre - country - sub
-        return f"{parts[0]} - {country} - {parts[1]}"
-    # single part (just a centre)
-    return f"{parts[0]} - {country}" if parts else country
-
-
-import re
-
 # A combination has a real, actionable slot only if its banner contains a date
 # (e.g. '... is : 11-08-2026'). 'No slot message shown' and 'Could not select ...'
 # have no date, so they are filtered out — we only message about real slots.
@@ -89,26 +70,144 @@ def _has_slot(message: str) -> bool:
     return bool(_DATE_RE.search(message or ""))
 
 
+# Application-centre names on VFS are inconsistent across portals — the same
+# city arrives as 'Abu Dhabi', 'Germany Visa Application Centre- Abu Dhabi',
+# 'Sweden Visa Application Centre, Abu Dhabi' or 'Norway Visa Application Center
+# - Abu Dhabi'. The slot line only wants the CITY, so match a known city inside
+# the centre name. Longest first, so 'Ras Al Khaimah' wins over 'Al Ain'-style
+# partial hits. Add a city here when a route opens a new location.
+KNOWN_CITIES = (
+    "Ras Al Khaimah", "Umm Al Quwain", "Damac Hills", "Abu Dhabi",
+    "Al Ain", "Fujairah", "Sharjah", "Ajman", "Dubai",
+)
+
+# Boilerplate stripped from a centre name when it matches no known city, so an
+# unrecognised centre still degrades to something short rather than the full
+# 'X Visa Application Centre - Y' string.
+_CENTRE_NOISE = re.compile(
+    r"\b(visa|application|centre|center|location|temporary|enrolment|enrollment)\b",
+    re.IGNORECASE,
+)
+
+
+def _city(centre: str) -> str:
+    """The city for a centre name: 'Germany Visa Application Centre- Abu Dhabi'
+    -> 'Abu Dhabi'. Falls back to the centre's trailing segment with the
+    'Visa Application Centre' boilerplate stripped, and to the raw centre if
+    that leaves nothing."""
+    centre = (centre or "").strip()
+    if not centre:
+        return ""
+    low = centre.lower()
+    for city in KNOWN_CITIES:
+        if city.lower() in low:
+            return city              # canonical spelling, not the portal's
+    # Unknown centre: take the last '-'/',' segment and drop the boilerplate.
+    tail = re.split(r"[-,]", centre)[-1]
+    cleaned = " ".join(_CENTRE_NOISE.sub(" ", tail).split())
+    return cleaned or centre
+
+
+def _has_known_city(text: str) -> bool:
+    """True if `text` names one of the KNOWN_CITIES."""
+    low = (text or "").lower()
+    return any(city.lower() in low for city in KNOWN_CITIES)
+
+
+def _norm(text: str) -> str:
+    """Comparison key for de-duplicating label segments: lowercase, no spaces or
+    punctuation, so 'Short Stay' and 'ShortStay' collapse to one segment."""
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _join_label(country: str, city: str, extras: list) -> str:
+    """Join 'Country - City - <extras>', dropping empties and any segment that
+    repeats an earlier one.
+
+    The de-duplication matters because several routes set category and
+    sub-category to the same thing (Czechia 'Tourism'/'Tourism', Sweden
+    'Short Stay'/'ShortStay'), which used to print twice on one line."""
+    out, seen = [], set()
+    for seg in [country, city, *extras]:
+        seg = (seg or "").strip()
+        key = _norm(seg)
+        if not seg or (key and key in seen):
+            continue
+        seen.add(key)
+        out.append(seg)
+    return " - ".join(out)
+
+
 def _report_label(combo: dict, dest_code: str) -> str:
-    """Header for a slot line, built from the combo's STRUCTURED fields so it
-    shows the centre, the country, then the category and sub-category:
+    """Header for a slot line: COUNTRY first, then city, then the visa type:
 
-      'Abu Dhabi - France - Short Stay - Business'
-      'Temporary Enrolment Location - Damac Hills - France - Short Stay (any purpose)'
+      'Norway - Abu Dhabi - Short Stay - Tourist'
+      'France - Damac Hills - Short Stay (any purpose)'
+      'Czech Republic - Dubai - Tourism'
 
-    Reads centre / category / sub_category directly (never by splitting a joined
-    label) — the centre itself can contain ' - ' (e.g. the Damac Hills location),
-    which the old string-splitting mangled into 'Temporary ... - France - Damac
-    Hills'. Empty fields are simply omitted.
+    The country leads because that is what you scan for; the centre is reduced
+    to its city because the portal's full centre name repeats the country and
+    pushes the date off a phone screen. Empty fields are omitted, and segments
+    that repeat an earlier one are dropped — several routes set category and
+    sub-category to the same word (Czechia 'Tourism'/'Tourism', Sweden
+    'Short Stay'/'ShortStay'), which used to print twice.
     """
-    country = _country(dest_code)
-    centre = (combo.get("centre") or combo.get("label") or "").strip()
-    parts = [f"{centre} - {country}" if centre else country]
-    for key in ("category", "sub_category"):
-        val = (combo.get(key) or "").strip()
-        if val:
-            parts.append(val)
-    return " - ".join(parts)
+    city = _city(combo.get("centre") or combo.get("label") or "")
+    extras = [(combo.get(k) or "").strip() for k in ("category", "sub_category")]
+    return _join_label(_country(dest_code), city, extras)
+
+
+def _label_with_country(label: str, dest_code: str) -> str:
+    """Same 'Country - City - Category - SubCategory' shape as `_report_label`,
+    but built from a FLAT label string (the waitlist notice only has the joined
+    label from `result_label`, not the combo dict).
+
+    'Norway Visa Application Center - Abu Dhabi - Short Stay - Tourist'
+        -> 'Norway - Abu Dhabi - Short Stay - Tourist'
+    'Dubai - SCHENGEN'  ->  'Switzerland - Dubai - SCHENGEN'
+
+    The centre is found by locating the first segment that names a known city,
+    rather than assuming the centre is one segment — several centres contain
+    ' - ' themselves ('Temporary Enrolment Location - Damac Hills'), which a
+    plain split mangles. Both separators are accepted: `result_label` joins with
+    ' - ', but it falls back to `combo_label`, which joins with ' / '.
+    """
+    parts = [p.strip() for p in re.split(r" - | / ", label or "") if p.strip()]
+    if not parts:
+        return _country(dest_code)
+
+    centre_idx = next(
+        (i for i, p in enumerate(parts) if _has_known_city(p)), 0
+    )
+    city = _city(parts[centre_idx])
+    return _join_label(_country(dest_code), city, parts[centre_idx + 1:])
+
+
+# VFS's own banner is verbose — 'Earliest available slot for 1 Applicants is :
+# 05-08-2026'. Only the applicant count and the date carry information, so the
+# banner is rewritten as 'slot for 1 On : 05-08-2026'. Group 1 is the count,
+# group 2 the date.
+_BANNER_RE = re.compile(
+    r"slot\s+for\s+(\d+)\s+applicants?\s+is\s*:?\s*"
+    r"(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})",
+    re.IGNORECASE,
+)
+
+
+def _slot_line(text: str) -> str:
+    """Rewrite one VFS banner line as 'slot for <n> On : <date>'.
+
+    Any line that does not match the expected banner wording is passed through
+    with only the boilerplate stripped, so a change to VFS's phrasing degrades
+    to a slightly wordier line instead of losing the date entirely.
+    """
+    text = " ".join((text or "").split())
+    m = _BANNER_RE.search(text)
+    if m:
+        return f"slot for {m.group(1)} On : {m.group(2)}"
+    # Unrecognised wording — drop the known filler and keep the rest.
+    stripped = re.sub(r"\bearliest\s+available\s+", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\bapplicants?\s+is\b", "On", stripped, flags=re.IGNORECASE)
 
 
 def slot_report(source_code: str, dest_code: str, entries: list, login_url: str = "") -> str:
@@ -142,10 +241,10 @@ def slot_report(source_code: str, dest_code: str, entries: list, login_url: str 
     for combo, message in available:
         lines.append(f"{prefix}{_report_label(combo, dest_code)}:")
         # `message` may hold SEVERAL banner lines (one per applicant count) —
-        # indent each so multi-slot combos read cleanly.
+        # condense and indent each so multi-slot combos read cleanly.
         for ln in message.splitlines():
             if ln.strip():
-                lines.append(f"  {ln.strip()}")
+                lines.append(f"  {_slot_line(ln)}")
         lines.append("")
     body = "\n".join(lines).strip()
     return body

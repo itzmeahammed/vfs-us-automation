@@ -4,7 +4,7 @@
   "slot_check": {
     "_comment_labels": "Labels must be UNIQUE within a route — a waitlist client file names the combination it wants by label, and duplicates would silently resolve to whichever came first. The centre alone is NOT unique here (two rows share each centre and differ only by category), so each label carries the category too.",
     "combinations": [
-      { "label": "Abu Dhabi - Short Stay - Business", "disabled": true,
+      { "label": "Abu Dhabi - Short Stay - Business", 
         "centre": "Abu Dhabi", "category": "Short Stay - Business", "sub_category": "" },
       { "label": "Abu Dhabi - Short Stay (any purpose)",
         "centre": "Abu Dhabi", "category": "Short Stay (any purpose)", "sub_category": "" },

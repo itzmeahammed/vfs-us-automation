@@ -436,13 +436,21 @@ def run_registration(source: str, dest: str,
     # append-only journal assumes exactly ONE writer; the scheduled slot check,
     # an auto-triggered registration and a manual run are three potential
     # writers. Two at once can double-register a client — a real appointment
-    # slot — and would also collide on the fixed Chrome debugging port.
+    # slot.
+    #
+    # This is the WAITLIST lane only. A scheduled slot check takes a different
+    # lane and is no longer blocked by a registration: it never writes the
+    # journal, never registers anyone, and uses a separate account pool, so the
+    # two have nothing to serialise on. (They used to collide on a fixed Chrome
+    # debugging port and a shared profile dir; chrome_launcher.py now gives each
+    # run its own.)
     #
     # on_busy="raise" (unlike the supervisor's "skip"): a registration is
     # deliberate, so the caller must be TOLD it did not happen, not silently
     # given an empty result list.
     from src.utils import runlock
-    with runlock.acquire("waitlist-run", timeout=runlock.DEFAULT_TIMEOUT_SECONDS):
+    with runlock.acquire("waitlist-run", lane=runlock.LANE_WAITLIST,
+                         timeout=runlock.DEFAULT_TIMEOUT_SECONDS):
         return _run_registration_locked(
             route=route, source=source, dest=dest, plan=plan, url=url,
             resolved=resolved, account=account, proxy_url=proxy_url,
@@ -465,12 +473,17 @@ def _run_registration_locked(*, route, source, dest, plan, url, resolved,
                            proxy=proxy_url, profile_key=resolved.email)
     try:
         chrome.start()
+        # Set ON THE BOT as well as in the config: a concurrent slot check
+        # launches its own Chrome, and the shared config key would leave both
+        # bots attached to whichever started last.
         set_config_value("browser", "cdp_url", chrome.cdp_url)
+        egress_changed = bool(getattr(chrome, "egress_changed", False))
         set_config_value("browser", "keep_cf_clearance",
-                         "false" if getattr(chrome, "egress_changed", False)
-                         else "true")
+                         "false" if egress_changed else "true")
 
         bot = get_vfs_bot(source, dest)
+        bot.cdp_url = chrome.cdp_url
+        bot.keep_cf_clearance = not egress_changed
         bot.set_credential(resolved.email, resolved.password)
         page = _login_and_reach_appointment_page(bot, url)
 
@@ -634,12 +647,17 @@ def run_doctor(source: str, dest: str, combo: Optional[str] = None,
                            proxy=proxy_url, profile_key=resolved.email)
     try:
         chrome.start()
+        # Set ON THE BOT as well as in the config: a concurrent slot check
+        # launches its own Chrome, and the shared config key would leave both
+        # bots attached to whichever started last.
         set_config_value("browser", "cdp_url", chrome.cdp_url)
+        egress_changed = bool(getattr(chrome, "egress_changed", False))
         set_config_value("browser", "keep_cf_clearance",
-                         "false" if getattr(chrome, "egress_changed", False)
-                         else "true")
+                         "false" if egress_changed else "true")
 
         bot = get_vfs_bot(source, dest)
+        bot.cdp_url = chrome.cdp_url
+        bot.keep_cf_clearance = not egress_changed
         bot.set_credential(resolved.email, resolved.password)
         page = _login_and_reach_appointment_page(bot, url)
 

@@ -46,6 +46,11 @@ CLIENT = {
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     """A client with an isolated document store — never the real one."""
+    # Saved and restored explicitly at the end of this fixture rather than left
+    # assigned: os.environ is process-wide, so leaking this token made later
+    # modules (which capture their HEADERS at import time) send a stale one and
+    # get 401s in a full run while passing when run alone.
+    _saved_token = os.environ.get("VFSAPI_SECRET_TOKEN")
     os.environ["VFSAPI_SECRET_TOKEN"] = TOKEN
     monkeypatch.setenv("VFS_DOCUMENT_ROOT", str(tmp_path / "docs"))
 
@@ -68,9 +73,20 @@ def api(tmp_path, monkeypatch):
     client = TestClient(main_mod.app, raise_server_exceptions=False)
 
     client.post("/clients", json=CLIENT, headers=AUTH)
-    yield client
-    client.delete("/clients/doc-test/documents", headers=AUTH)
-    client.delete("/clients/doc-test", headers=AUTH)
+    try:
+        yield client
+    finally:
+        # These deletes still need THIS fixture's token, so the restore below
+        # must come after them.
+        client.delete("/clients/doc-test/documents", headers=AUTH)
+        client.delete("/clients/doc-test", headers=AUTH)
+        if _saved_token is None:
+            os.environ.pop("VFSAPI_SECRET_TOKEN", None)
+        else:
+            os.environ["VFSAPI_SECRET_TOKEN"] = _saved_token
+        # Restoring the env is not enough on its own — the cache still holds
+        # settings built from TOKEN.
+        config_mod.get_settings.cache_clear()
 
 
 def _upload(api, data: bytes, filename: str = "passport.png"):

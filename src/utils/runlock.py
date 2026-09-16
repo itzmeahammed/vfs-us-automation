@@ -1,51 +1,60 @@
-"""One lock for every browser-driving run, across processes AND languages.
+"""Run locks for browser-driving runs: TWO independent lanes, not one.
 
 WHY THIS EXISTS
 ---------------
-`journal.py` documents that the waitlist journal assumes exactly ONE writer:
-
-    "this bot is run ON DEMAND, so there is exactly one writer and the
-     read-check-write in blocking_entry() cannot race. If waitlist registration
-     is ever moved onto the scheduler (concurrent runs), swap this for SQLite
-     with a partial UNIQUE INDEX."
-
-Auto-triggering waitlist registration from the slot checker does exactly what
-that warning describes. Three writers become possible:
-
-    1. the scheduled slot check      (run_task.ps1 / run_ec2.sh, twice hourly)
-    2. an auto-triggered waitlist run
-    3. a manual `python -m src.waitlist run`
-
-Two of those overlapping can double-register a client — burning a real
+`journal.py` documents that the waitlist journal assumes exactly ONE writer: the
+read-check-write in `blocking_entry()` cannot race while that holds. Two
+registration runs at once can therefore double-register a client — burning a real
 appointment slot — or interleave appends and leave the journal inconsistent.
-They also collide on a single fixed Chrome debugging port (see `cdp_port`).
 
-This module is the cheap correct fix: a single mutual-exclusion lock that every
-browser-driving entry point takes. It deliberately contends with the EXISTING
-shell locks rather than inventing a new namespace:
+THE LANES
+---------
+    LANE_WAITLIST    every waitlist REGISTRATION run — auto-triggered or manual.
+                     This is the one protecting the journal. It stays.
 
-    Windows   Global\\VfsSlotChecker      <- the same named mutex run_task.ps1:42 takes
-    POSIX     /tmp/vfs-slot-checker.lock  <- the same lockfile run_ec2.sh:37 flocks
+    LANE_SLOT_CHECK  the scheduled slot check. Excludes only another slot check
+                     (a tick that overruns into the next one).
 
-So a Python run and a scheduler tick exclude each other correctly with no
-change to either shell script.
+They are SEPARATE, so a registration and a slot check run at the same time. That
+was not always true: originally everything took one lock, and a waitlist run cost
+the next scheduled tick outright. The conflicts that justified it were:
+
+    the journal        — a slot check never writes it, so no conflict
+    VFS accounts       — waitlist uses a separate pool (waitlist/accounts.py)
+    double-registering — a slot check never registers anyone
+    Chrome CDP port    — REAL, and now fixed: chrome_launcher.resolve_port()
+    Chrome profile dir — REAL, and now fixed: cleanup is scoped per run
+
+Only the last two were genuine, and both were process-level rather than
+data-level, so they were fixed where they belonged instead of by serialising two
+unrelated jobs.
+
+DO NOT put the lock back in run_task.ps1 / run_ec2.sh. Those wrappers used to
+take the slot-check mutex and then launch the supervisor, which takes it too —
+the parent held it, the child could never get it, and every tick silently
+skipped while the wrapper still logged "Run finished (exit 0)". That killed slot
+checking for 20 hours on 2026-08-28. Python owns these locks now, because only
+Python can see a waitlist run started by the API.
+
+    Windows   Global\\VfsSlotChecker   /  Global\\VfsWaitlistRun
+    POSIX     /tmp/vfs-slot-checker.lock  /  /tmp/vfs-waitlist-run.lock
 
 USAGE
 -----
     from src.utils import runlock
 
-    with runlock.acquire("waitlist-run"):
-        ...                                    # only one such block runs at a time
+    with runlock.acquire("waitlist-run", lane=runlock.LANE_WAITLIST):
+        ...                                    # one registration run at a time
 
     # Non-blocking: skip this tick rather than queue behind the other run.
-    with runlock.acquire("slot-check", timeout=0, on_busy="skip") as lock:
+    with runlock.acquire("slot-check", lane=runlock.LANE_SLOT_CHECK,
+                         timeout=0, on_busy="skip") as lock:
         if not lock.held:
             return
         ...
 
-The lock is REENTRANT within a single process (a supervisor that calls the
-waitlist runner in-process does not deadlock against itself), but strictly
-exclusive between processes.
+Each lane is REENTRANT within a single process and strictly exclusive between
+processes. Holding one lane never blocks the other.
 """
 
 from __future__ import annotations
@@ -62,11 +71,33 @@ from typing import Iterator, Optional
 
 log = logging.getLogger(__name__)
 
-# Names chosen to MATCH the existing shell locks — do not rename without
-# updating run_task.ps1:42 and run_ec2.sh:37 in the same commit, or the
-# scheduler and Python will stop excluding each other.
-WINDOWS_MUTEX_NAME = "Global\\VfsSlotChecker"
-POSIX_LOCKFILE = "/tmp/vfs-slot-checker.lock"
+# LANES. There are two independent locks, not one.
+#
+# Originally everything took a single lock, so a waitlist registration blocked
+# the next scheduled slot check outright — the tick was skipped, not delayed.
+# That is heavier than the actual conflict: a slot check never writes the
+# waitlist journal and never registers anyone, and waitlist accounts are a
+# separate pool (src/waitlist/accounts.py). The only real collisions were
+# process-level (Chrome's debug port and profile dir), and those are now fixed
+# in chrome_launcher.py, so the two can genuinely run side by side.
+#
+# What still needs serialising is WAITLIST AGAINST WAITLIST: journal.py's
+# read-check-write is not atomic, so two registration runs at once can
+# double-register a client. That is the LANE_WAITLIST lock, and it stays.
+#
+# LANE_SLOT_CHECK keeps the historical name so a slot check still excludes
+# another slot check.
+LANE_SLOT_CHECK = "slot-check"
+LANE_WAITLIST = "waitlist"
+
+_LANE_NAMES = {
+    LANE_SLOT_CHECK: ("Global\\VfsSlotChecker", "/tmp/vfs-slot-checker.lock"),
+    LANE_WAITLIST: ("Global\\VfsWaitlistRun", "/tmp/vfs-waitlist-run.lock"),
+}
+
+# Kept for callers that referenced these directly.
+WINDOWS_MUTEX_NAME = _LANE_NAMES[LANE_SLOT_CHECK][0]
+POSIX_LOCKFILE = _LANE_NAMES[LANE_SLOT_CHECK][1]
 
 # Default ceiling on how long to wait for the other run. A slot-check route can
 # legitimately take several minutes; a waitlist registration longer. Waiting
@@ -74,10 +105,12 @@ POSIX_LOCKFILE = "/tmp/vfs-slot-checker.lock"
 DEFAULT_TIMEOUT_SECONDS = 900.0
 
 # Re-entrancy bookkeeping: the OS primitives below are per-process, so nested
-# acquire() calls in one process must be counted rather than re-taken.
+# acquire() calls in one process must be counted rather than re-taken. Counted
+# PER LANE — a process holding the waitlist lane must still be able to take the
+# slot-check lane, so one shared counter would wrongly report it as re-entry.
 _local_lock = threading.RLock()
-_depth = 0
-_holder: Optional[str] = None
+_depth: dict = {}
+_holder: dict = {}
 
 
 class LockBusy(RuntimeError):
@@ -217,11 +250,12 @@ class _PosixLockFile:
             self._fd = None
 
 
-def _make_primitive():
-    """Return the right platform lock primitive."""
+def _make_primitive(lane: str = LANE_SLOT_CHECK):
+    """Return the right platform lock primitive for `lane`."""
+    win_name, posix_path = _LANE_NAMES.get(lane, _LANE_NAMES[LANE_SLOT_CHECK])
     if sys.platform == "win32":
-        return _WindowsMutex(WINDOWS_MUTEX_NAME)
-    return _PosixLockFile(POSIX_LOCKFILE)
+        return _WindowsMutex(win_name)
+    return _PosixLockFile(posix_path)
 
 
 # --------------------------------------------------------------------------
@@ -233,14 +267,19 @@ def _make_primitive():
 def acquire(
     owner: str,
     *,
+    lane: str = LANE_SLOT_CHECK,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     on_busy: str = "raise",
 ) -> Iterator[LockHandle]:
-    """Hold the global run lock for the duration of the block.
+    """Hold one lane of the run lock for the duration of the block.
 
     Args:
         owner: Short label for who is taking it ("slot-check", "waitlist-run").
             Logged, so a blocked run says what it is waiting for.
+        lane: Which lock to take — LANE_SLOT_CHECK or LANE_WAITLIST. The lanes
+            are INDEPENDENT: a waitlist registration and a scheduled slot check
+            no longer block each other. See the lane notes at the top of this
+            module for why that is safe.
         timeout: Seconds to wait. 0 = try once and give up immediately.
         on_busy: What to do if the lock is unavailable within `timeout`:
             "raise" (default) -> LockBusy; "skip" -> yield a handle with
@@ -250,26 +289,25 @@ def acquire(
     Yields:
         LockHandle. Check `.held` when using on_busy="skip".
 
-    Re-entrant within one process; exclusive between processes.
+    Re-entrant within one process (per lane); exclusive between processes.
     """
-    global _depth, _holder
-
     if on_busy not in ("raise", "skip"):
         raise ValueError("on_busy must be 'raise' or 'skip'")
 
-    # -- Re-entrant fast path: this process already holds it ----------------
+    # -- Re-entrant fast path: this process already holds THIS lane ---------
     with _local_lock:
-        if _depth > 0:
-            _depth += 1
-            log.debug("Run lock re-entered by %r (depth=%d)", owner, _depth)
+        if _depth.get(lane, 0) > 0:
+            _depth[lane] += 1
+            log.debug("Run lock (%s) re-entered by %r (depth=%d)",
+                      lane, owner, _depth[lane])
             try:
                 yield LockHandle(held=True, owner=owner)
             finally:
                 with _local_lock:
-                    _depth -= 1
+                    _depth[lane] -= 1
             return
 
-    primitive = _make_primitive()
+    primitive = _make_primitive(lane)
     started = time.monotonic()
     try:
         got = primitive.acquire(timeout)
@@ -279,12 +317,16 @@ def acquire(
             hint = ""
             if isinstance(primitive, _PosixLockFile):
                 hint = primitive.peek_holder()
+            if lane == LANE_WAITLIST:
+                why = ("Waitlist runs are serialised deliberately: two at once "
+                       "can double-register a client.")
+            else:
+                why = ("Slot checks are serialised deliberately: two at once "
+                       "would stack a second browser on the same schedule.")
             message = (
-                f"Another browser-driving run is already in progress"
+                f"Another {lane} run is already in progress"
                 f"{f' ({hint})' if hint else ''}. "
-                f"{owner!r} waited {waited:.0f}s and gave up. Runs are "
-                "serialised deliberately: two at once can double-register a "
-                "client or corrupt the waitlist journal."
+                f"{owner!r} waited {waited:.0f}s and gave up. {why}"
             )
             if on_busy == "raise":
                 log.error(message)
@@ -295,35 +337,36 @@ def acquire(
             return
 
         with _local_lock:
-            _depth = 1
-            _holder = owner
+            _depth[lane] = 1
+            _holder[lane] = owner
 
         if waited > 1.0:
-            log.info("Run lock acquired by %r after waiting %.0fs.", owner, waited)
+            log.info("Run lock (%s) acquired by %r after waiting %.0fs.",
+                     lane, owner, waited)
         else:
-            log.debug("Run lock acquired by %r.", owner)
+            log.debug("Run lock (%s) acquired by %r.", lane, owner)
 
         try:
             yield LockHandle(held=True, owner=owner, waited_seconds=waited)
         finally:
             with _local_lock:
-                _depth = 0
-                _holder = None
+                _depth[lane] = 0
+                _holder.pop(lane, None)
             primitive.release()
-            log.debug("Run lock released by %r.", owner)
+            log.debug("Run lock (%s) released by %r.", lane, owner)
     finally:
         primitive.close()
 
 
-def held_by() -> Optional[str]:
-    """The owner label if THIS process holds the lock, else None.
+def held_by(lane: str = LANE_SLOT_CHECK) -> Optional[str]:
+    """The owner label if THIS process holds `lane`, else None.
 
     Only ever reports this process — it cannot see another process's holder.
     """
     with _local_lock:
-        return _holder if _depth > 0 else None
+        return _holder.get(lane) if _depth.get(lane, 0) > 0 else None
 
 
-def is_held_locally() -> bool:
-    """True if this process currently holds the run lock."""
-    return held_by() is not None
+def is_held_locally(lane: str = LANE_SLOT_CHECK) -> bool:
+    """True if this process currently holds `lane` of the run lock."""
+    return held_by(lane) is not None

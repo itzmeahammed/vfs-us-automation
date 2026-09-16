@@ -107,6 +107,18 @@ class VfsBot(ABC):
         # skipping benched accounts). When set, the bot uses it instead of
         # selecting its own — keeps selection in ONE place.
         self._cred_override = None
+        # Which Chrome THIS bot attaches to, and whether its cf_clearance is
+        # still valid. Both are set by the caller that launched that Chrome
+        # (supervisor / waitlist runner).
+        #
+        # They used to travel through the shared config (browser.cdp_url and
+        # browser.keep_cf_clearance), which is process-wide: with a slot check
+        # and a waitlist run in flight together, whichever launched last
+        # overwrote the key and BOTH bots attached to the same browser. Passing
+        # them per-run is what makes concurrent runs safe. None = fall back to
+        # the config value, so a single-run caller behaves exactly as before.
+        self.cdp_url = None
+        self.keep_cf_clearance = None
         # VFS 403 responses captured by the network watcher this run. The BODY is
         # read later (post Sign-In, on the main thread) to tell a real 403201 IP
         # block apart from a rejected Turnstile token — we no longer assume every
@@ -444,7 +456,8 @@ class VfsBot(ABC):
         os.makedirs(diagnostics.SCREENSHOT_DIR, exist_ok=True)
 
         with sync_playwright() as p:
-            cdp_url = get_config_value("browser", "cdp_url")
+            # Per-run value wins; the config key is the single-run fallback.
+            cdp_url = self.cdp_url or get_config_value("browser", "cdp_url")
             browser, context, page = browser_setup.launch_or_attach(
                 p, browser_type, headless_mode, cdp_url
             )
