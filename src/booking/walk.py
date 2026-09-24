@@ -205,10 +205,23 @@ def _page_text(page, limit: int = 400) -> str:
         return ""
 
 
-CAPTURE_DIR = os.path.join("switzerland_booking", "captured")
+#: Where captured DOM lands, per route: captured/AE-CHE/, captured/AE-ESP/, …
+#:
+#: Per-route rather than one flat folder because capturing is something every
+#: new country goes through, not a one-off for Switzerland. Twelve countries'
+#: pages in one directory, distinguishable only by a timestamp prefix, would be
+#: unusable exactly when it matters — mid-window, looking for the page that
+#: broke last night's walk.
+CAPTURE_ROOT = "captured"
 
 
-def _capture_html(page, step_name: str) -> str:
+def capture_dir(route: str = "") -> str:
+    """The capture directory for a route. Falls back to the root if unknown."""
+    route = (route or "").strip().upper()
+    return os.path.join(CAPTURE_ROOT, route) if route else CAPTURE_ROOT
+
+
+def _capture_html(page, step_name: str, route: str = "") -> str:
     """Save this page's rendered DOM. Returns the path, or "" if it could not.
 
     THE WHOLE POINT OF WALKING IS TO KEEP THE PAGE, NOT TO LOOK AT IT.
@@ -229,9 +242,10 @@ def _capture_html(page, step_name: str) -> str:
     convenience.
     """
     try:
-        os.makedirs(CAPTURE_DIR, exist_ok=True)
+        directory = capture_dir(route)
+        os.makedirs(directory, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(CAPTURE_DIR, f"{stamp}_{step_name}.html")
+        path = os.path.join(directory, f"{stamp}_{step_name}.html")
         with io.open(path, "w", encoding="utf-8") as fh:
             fh.write(page.content())
         log.info(f"  captured DOM -> {path}")
@@ -273,7 +287,7 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             report.page_text = _page_text(page)
             # Captured BEFORE anything is clicked: this is the page as it
             # arrives, which is the state a config has to describe.
-            report.html_path = _capture_html(page, name)
+            report.html_path = _capture_html(page, name, route)
 
             if step.get("type") == "slot_pick":
                 _do_slot_pick(page, step, report, timeout_ms)
@@ -309,7 +323,7 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             # The page that BROKE the walk is the one worth keeping most: it is
             # either a page no config describes, or a selector that has drifted.
             if not report.html_path:
-                report.html_path = _capture_html(page, f"{name}_FAILED")
+                report.html_path = _capture_html(page, f"{name}_FAILED", route)
             result.steps.append(report)
             result.stopped_at = name
             result.reason = str(e)

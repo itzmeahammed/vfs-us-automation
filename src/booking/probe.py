@@ -430,7 +430,7 @@ def run_probe(source: str, dest: str,
         # is a claim you want to be able to re-read rather than re-earn: it
         # costs a login, a Turnstile solve and metered proxy to see again.
         from src.booking.walk import _capture_html
-        _capture_html(page, "dashboard")
+        _capture_html(page, "dashboard", route)
 
         result.rows = read_dashboard(page, route)
         result.bookable = [r for r in result.rows if r.bookable]
