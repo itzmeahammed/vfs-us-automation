@@ -29,6 +29,7 @@ import time
 
 from src.main import initialize_logger
 from src.settings import settings
+from src.slots import store as slot_store
 from src.utils import (
     account_health, connectivity, credentials, proxy_pool, telegram, telegram_message,
 )
@@ -258,6 +259,42 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
 def run(source: str = "AE", dest: str = "MT", route_index: int = 0,
         force_email: str = None, force_password: str = None,
         force_proxy: str = None, keep_open: bool = False) -> dict:
+    """Runs a route and records it in the slot history.
+
+    A thin wrapper around `_run_route` (which holds the actual flow) so that
+    EVERY path — the all-routes loop, the single-route CLI, a forced test run —
+    opens and closes exactly one run row. Doing it here rather than at the
+    call sites is what stops a check being orphaned when a route returns early
+    (no credential, all accounts cooling, cap reached): those are outcomes worth
+    recording too, because "we never looked" is not "there was nothing".
+
+    The run row is closed in a `finally`, so a crash still leaves the history
+    consistent rather than a row stuck at RUNNING.
+    """
+    route = f"{source.upper()}-{dest.upper()}"
+    run_id = slot_store.start_run(route)
+    slot_store.set_current_run(run_id)
+    outcome = None
+    try:
+        outcome = _run_route(source, dest, route_index=route_index,
+                             force_email=force_email, force_password=force_password,
+                             force_proxy=force_proxy, keep_open=keep_open)
+        return outcome
+    finally:
+        slot_store.set_current_run(None)
+        if outcome is None:
+            slot_store.finish_run(run_id, "CRASHED")
+        else:
+            slot_store.update_run_meta(run_id, account=outcome.get("account"),
+                                       proxy=outcome.get("proxy"))
+            slot_store.finish_run(run_id, outcome.get("status", "UNKNOWN"),
+                                  attempts=outcome.get("attempts"),
+                                  error=outcome.get("error"))
+
+
+def _run_route(source: str = "AE", dest: str = "MT", route_index: int = 0,
+               force_email: str = None, force_password: str = None,
+               force_proxy: str = None, keep_open: bool = False) -> dict:
     """
     Runs a route with ONE account (selected up front, skipping benched/disabled)
     and its pinned proxy IP, updating account health per the outcome.
@@ -701,6 +738,20 @@ def run_all_routes() -> bool:
                 f"{bandwidth_budget.remaining_mb():.1f} MB left today."
             )
     _send_run_summary(outcomes)
+
+    # Refresh the agent dashboard from this run's readings, so the page a sales
+    # agent opens is never more than one cycle stale. Best-effort by design (see
+    # build_quietly): a page that won't build must never fail a run that did.
+    from src.slots import dashboard as slot_dashboard, wall as slot_wall
+    slot_dashboard.build_quietly()
+    slot_wall.build_quietly()
+
+    # Send the same board to the web app, so its own page can show it without
+    # reaching back to this machine — which is asleep outside the run window.
+    # Best-effort for the same reason as the pages above.
+    from src.slots import publish as slot_publish
+    slot_publish.push_quietly()
+
     return all_ok
 
 

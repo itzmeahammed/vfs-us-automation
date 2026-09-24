@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schengen Slot Board</title>
+<style>
+  /* Colour roles. Availability is a MAGNITUDE, so it gets one blue ramp
+     light->dark; state gets the fixed status palette and always ships with its
+     label, never colour alone. */
+  :root {
+    color-scheme: light;
+    --plane: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --seq-100: #cde2fb; --seq-200: #9ec5f4; --seq-300: #6da7ec;
+    --seq-450: #2a78d6; --seq-550: #1c5cab; --seq-700: #0d366b;
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --accent: #2a78d6;
+    --shadow: 0 1px 2px rgba(11,11,11,.05), 0 8px 24px rgba(11,11,11,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+      --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+      --border: rgba(255,255,255,0.10);
+      --seq-100: #104281; --seq-200: #184f95; --seq-300: #256abf;
+      --seq-450: #3987e5; --seq-550: #6da7ec; --seq-700: #9ec5f4;
+      --accent: #3987e5;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --seq-100: #104281; --seq-200: #184f95; --seq-300: #256abf;
+    --seq-450: #3987e5; --seq-550: #6da7ec; --seq-700: #9ec5f4;
+    --accent: #3987e5;
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--plane);
+    color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding-block: 24px;
+    padding-inline: 16px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  header h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--ink-2); }
+  .meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 18px;
+    margin-top: 18px;
+  }
+  .card > h2 {
+    font-size: 14px; margin: 0 0 2px; letter-spacing: .02em;
+    text-transform: uppercase; color: var(--ink-2);
+  }
+  .card > .hint { margin: 0 0 14px; color: var(--muted); font-size: 12.5px; }
+
+  /* ---- visa-type tabs: the primary split, so they sit above everything ---- */
+  .tabs {
+    display: flex; gap: 4px; margin-top: 18px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--grid);
+  }
+  .tabs button {
+    background: none; border: 0; border-bottom: 2px solid transparent;
+    border-radius: 0; padding: 9px 14px; color: var(--ink-2);
+    font-size: 14.5px; margin-bottom: -1px;
+  }
+  .tabs button:hover { color: var(--ink); }
+  .tabs button[aria-selected="true"] {
+    color: var(--ink); font-weight: 600; border-bottom-color: var(--accent);
+  }
+  #tab-note { margin: 8px 0 0; }
+
+  /* any-purpose marker, so a row appearing in both tabs explains itself */
+  .tag {
+    font-size: 11px; letter-spacing: .02em; color: var(--ink-2);
+    border: 1px solid var(--axis); border-radius: 999px; padding: 1px 7px;
+    margin-left: 6px; white-space: nowrap;
+  }
+
+  /* ---- controls: one row above the data ---- */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    margin-top: 16px;
+  }
+  .controls label { color: var(--ink-2); font-size: 12.5px; }
+  select, input[type="search"], button {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--axis); border-radius: 8px; padding: 6px 10px;
+  }
+  input[type="search"] { min-width: 180px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .spacer { flex: 1 1 auto; }
+
+  /* ---- stat tiles ---- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .tile .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  .tile .v { font-size: 26px; line-height: 1.2; margin-top: 4px; }
+  .tile .s { color: var(--ink-2); font-size: 12.5px; margin-top: 2px; }
+
+  /* ---- table ---- */
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--axis);
+  }
+  th.sortable { cursor: pointer; }
+  th.sortable:hover { color: var(--ink); }
+  th .dir { color: var(--accent); }
+  tbody tr.row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  tbody tr.row { cursor: pointer; }
+  td.country { font-weight: 600; }
+  td .sub { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .num { text-align: right; }
+
+  /* score: magnitude, so a thin bar + the number */
+  .score { display: flex; align-items: center; gap: 8px; }
+  .score .bar { width: 54px; height: 6px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+  .score .bar > i { display: block; height: 100%; background: var(--seq-450); border-radius: 4px; }
+  .score .n { width: 24px; text-align: right; }
+
+  /* status chip: colour + label + dot, never colour alone */
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .chip.good::before { background: var(--good); }
+  .chip.warn::before { background: var(--warning); }
+  .chip.serious::before { background: var(--serious); }
+  .chip.bad::before { background: var(--critical); }
+  .chip.none::before { background: transparent; border: 1.5px dashed var(--axis); }
+
+  /* week strip: 7 small bars, one per day */
+  .strip { display: inline-flex; gap: 2px; align-items: flex-end; height: 22px; }
+  .strip i {
+    width: 9px; border-radius: 3px 3px 0 0; display: block;
+    background: var(--seq-450); min-height: 2px;
+  }
+  .strip i.empty { background: repeating-linear-gradient(45deg, var(--grid), var(--grid) 2px, transparent 2px, transparent 4px); height: 100% !important; border-radius: 3px; }
+  .strip i.zero { background: var(--grid); height: 2px; }
+
+  /* detail row */
+  tr.detail > td { background: color-mix(in srgb, var(--accent) 3.5%, transparent); white-space: normal; }
+  table.inner { margin-top: 4px; }
+  table.inner th, table.inner td { padding: 6px 10px; font-size: 13px; }
+  .why { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+
+  /* ---- heatmap ---- */
+  .grid-wrap { overflow-x: auto; }
+  table.heat { border-collapse: separate; border-spacing: 2px; width: auto; }
+  table.heat th { padding: 2px 6px; border: 0; font-size: 11px; }
+  table.heat td { padding: 0; border: 0; }
+  .cell { width: 26px; height: 22px; border-radius: 4px; background: var(--grid); position: relative; }
+  .cell.unobserved { background: repeating-linear-gradient(45deg, var(--grid), var(--grid) 2px, transparent 2px, transparent 4px); }
+  .cell.opened::after {
+    content: ""; position: absolute; inset: auto 3px 3px auto; width: 5px; height: 5px;
+    border-radius: 50%; background: var(--surface); box-shadow: 0 0 0 1.5px var(--critical);
+  }
+  .legend { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 12.5px; margin-top: 12px; }
+  .legend .swatches { display: inline-flex; gap: 2px; }
+  .legend .swatches i { width: 18px; height: 12px; border-radius: 3px; display: block; }
+
+  /* ---- openings list ---- */
+  ul.openings { list-style: none; margin: 0; padding: 0; }
+  ul.openings li { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--grid); flex-wrap: wrap; }
+  ul.openings li:last-child { border-bottom: 0; }
+  ul.openings .when { color: var(--muted); min-width: 132px; font-variant-numeric: tabular-nums; }
+  ul.openings .what { font-weight: 600; }
+  ul.openings .date { color: var(--ink-2); }
+
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 22px; }
+  footer code { background: var(--grid); padding: 1px 5px; border-radius: 4px; }
+  .empty-state { color: var(--ink-2); }
+
+  #tip {
+    position: fixed; z-index: 10; pointer-events: none; opacity: 0;
+    transition: opacity .09s ease; background: var(--surface); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+    font-size: 12.5px; box-shadow: var(--shadow); max-width: 260px;
+  }
+  #tip b { display: block; }
+  #tip span { color: var(--ink-2); }
+
+  @media (max-width: 640px) {
+    .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Schengen Slot Board</h1>
+    <p>Which country can we get this client into soonest — from what the bot actually saw.</p>
+    <p class="meta">Dates are the earliest offered on each check, for any party size.</p>
+    <p class="meta" id="meta"></p>
+  </header>
+
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Visa type">
+    <button type="button" role="tab" data-purpose="tourist" aria-selected="true">Tourist</button>
+    <button type="button" role="tab" data-purpose="business" aria-selected="false">Business</button>
+    <button type="button" role="tab" data-purpose="waitlist" aria-selected="false">Waitlist</button>
+  </nav>
+  <p class="meta" id="tab-note"></p>
+
+  <div class="controls">
+    <input type="search" id="search" placeholder="Filter country or city" aria-label="Filter countries">
+    <span class="spacer"></span>
+    <button id="theme" type="button">Dark / light</button>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="card">
+    <h2 id="board-title">Best bets</h2>
+    <p class="hint" id="board-hint">Ranked by how often slots are there, how soon they are, and how
+      recently we saw one. Click a country for its centres and visa types.</p>
+    <div class="scroll" id="waitlist-wrap" hidden>
+      <table id="waitlist">
+        <thead>
+          <tr>
+            <th data-tip="Country|The destination, with the centres whose waitlist we see.">Country</th>
+            <th data-tip="Waitlist|Open now = sign-up was there on the latest check · Was open = offered earlier in the window, not now · Closed = no longer offered.">Waitlist</th>
+            <th class="num" data-tip="Offered on|Share of checks where sign-up was available. 100% means it has been there every single time we looked — dependable to promise.">Offered on</th>
+            <th data-tip="Real slots too|Whether actual appointments ALSO turn up at this country. A waitlist somewhere that opens sometimes is a far better sell than one that never does.">Real slots too</th>
+            <th data-tip="Last seen|The last time we saw the waitlist open, and how long ago that was.">Last seen</th>
+            <th class="num" data-tip="Opened|Times the waitlist went from closed to open in this window. 0 with 100% offered means it simply never closed.">Opened</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="scroll" id="board-wrap">
+      <table id="board">
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="score"
+                data-tip="Best bet score|0-100. How often slots are there (45), how soon they are (35), and how recently we saw one (20). Open a country to see its three parts.">Score</th>
+            <th class="sortable" data-sort="country"
+                data-tip="Country|The destination, with the centres we check underneath.">Country</th>
+            <th data-tip="Status|Always open = a slot on 85%+ of checks · Usually open = 40%+ · Occasional = below 40% · Waitlist only = no slots, but sign-up is open · No slots = checked, nothing there · Not checked = we have no data.">Status</th>
+            <th class="sortable" data-sort="current_date"
+                data-tip="Next appointment|The earliest date bookable RIGHT NOW, from the most recent check. A dash means nothing is on offer at the moment.">Next appointment</th>
+            <th class="sortable num" data-sort="median_lead"
+                data-tip="Typical wait|Median days between a check and the appointment it offered, over the window. This is the number to quote a client as the normal wait.">Typical wait</th>
+            <th class="num hide-sm"
+                data-tip="Soonest seen|The shortest wait we saw in the whole window — the best case, not the norm. A big gap from 'typical wait' means the good dates come and go fast.">Soonest seen</th>
+            <th class="sortable hide-sm" data-sort="last_slot_seen"
+                data-tip="Last slot seen|The last time we actually detected a slot, and the appointment date it offered. For an always-open country this is minutes ago; a date days back means nothing has appeared since.">Last slot seen</th>
+            <th data-tip="Next opening|When we expect this to open NEXT, as a date range. Worked out from the gaps between its past releases — no model, no training. It says why instead of guessing when the data cannot support a range, and 'Open now' means there is a slot on the latest check.">Next opening</th>
+            <th class="num hide-sm"
+                data-tip="Date drift|How fast the earliest date slips, per day. +4d means the appointment moves four days further out for every day the client waits. A negative number means dates are coming closer.">Date drift</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" id="heat-card">
+    <h2>When slots appear</h2>
+    <p class="hint">Share of checks that found a slot, by day and hour (Gulf time).
+      A ringed cell is an hour where a country actually opened up.</p>
+    <div class="controls" style="margin-top:0">
+      <label for="heat-route">Country</label>
+      <select id="heat-route"><option value="all">All countries</option></select>
+    </div>
+    <div class="grid-wrap"><table class="heat" id="heat"></table></div>
+    <div class="legend">
+      <span>Slot found:</span>
+      <span class="swatches">
+        <i style="background:var(--seq-100)"></i><i style="background:var(--seq-200)"></i>
+        <i style="background:var(--seq-300)"></i><i style="background:var(--seq-450)"></i>
+        <i style="background:var(--seq-550)"></i><i style="background:var(--seq-700)"></i>
+      </span>
+      <span>never &rarr; always</span>
+      <span class="chip none">not checked that hour</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Recent activity</h2>
+    <p class="hint" id="activity-hint"></p>
+    <ul class="openings" id="openings"></ul>
+  </section>
+
+  <footer>
+    <p><strong>How to read it.</strong> Hover any column heading for what it means.
+      Every number comes from checks that actually ran — a country is never marked
+      “no slots” for hours nobody looked at (those show hatched on the grid).
+      <strong>Next appointment</strong> is bookable now; <strong>typical wait</strong>
+      is the median days from a check to the appointment it offered;
+      <strong>soonest seen</strong> is the best case in the window;
+      <strong>last slot seen</strong> is when we last detected one. Dates are the
+      earliest offered on a check — VFS quotes a later date for two or three
+      applicants, and the soonest of them is what counts here.</p>
+    <p>Rebuild with <code>python -m scripts.build_dashboard</code>.</p>
+  </footer>
+</div>
+
+<div id="tip" role="status"></div>
+
+<script>
+const DATA = __PAYLOAD__;
+
+const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const SEQ = ["--seq-100","--seq-200","--seq-300","--seq-450","--seq-550","--seq-700"];
+const WAITLIST_CLASS = { "Open now": "good", "Was open": "warn", "Closed": "bad" };
+const VERDICT_CLASS = {
+  "Always open": "good", "Usually open": "good", "Occasional": "warn",
+  "Waitlist only": "serious", "No slots": "bad", "Not checked": "none",
+};
+
+let state = { purpose: "tourist", sort: "score", dir: -1, filter: "", open: null };
+
+// Everything on the page reads from ONE view, so a visa-type tab switches the
+// whole board — ranking, tiles, hour grid and activity — not just the table.
+const view = () => DATA.views[state.purpose] || Object.values(DATA.views)[0];
+
+const TAB_NOTE = {
+  tourist: "Tourist appointments, plus any-purpose types (Schengen / Short Stay) a " +
+           "tourist can be booked into — tagged below. Countries with no tourist " +
+           "appointment type are not listed.",
+  business: "Business appointments, plus any-purpose types (Schengen / Short Stay) a " +
+            "business applicant can be booked into — tagged below. Countries with no " +
+            "business appointment type are not listed.",
+  waitlist: "Countries with no appointments on offer but an OPEN waitlist — register " +
+            "the client now and take the slot when it drops. Covers every visa type.",
+};
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => (
+  {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+
+function rows() {
+  const all = view().countries || [];
+  const q = state.filter.trim().toLowerCase();
+  const list = q ? all.filter(c =>
+    c.country.toLowerCase().includes(q) ||
+    (c.cities || []).some(city => city.toLowerCase().includes(q))) : all.slice();
+
+  const key = state.sort;
+  list.sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (key === "median_lead" || key === "current_date" || key === "last_slot_seen") {
+      // Countries with nothing on offer sort last whichever way the column goes.
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+    }
+    if (typeof av === "string" || typeof bv === "string")
+      return String(av).localeCompare(String(bv)) * state.dir;
+    return ((av ?? 0) - (bv ?? 0)) * state.dir;
+  });
+  return list;
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
+}
+function fmtLead(n) { return n == null ? "—" : (Math.round(n * 10) / 10) + "d"; }
+
+// When we last DETECTED a slot — the date we saw it, with the appointment it
+// offered underneath. An agent asks "is this still live?", and a detection date
+// answers that; the appointment date alone never could.
+function lastSeen(row) {
+  if (!row.last_slot_seen_date) return '<span class="sub">never</span>';
+  return `${fmtDate(row.last_slot_seen_date)}` +
+    `<div class="sub">${esc(row.last_slot_age)}` +
+    (row.last_slot_date ? ` · for ${fmtDate(row.last_slot_date)}` : "") + `</div>`;
+}
+
+// When this is expected to open NEXT. Arithmetic on the gaps between past
+// releases, not a model — so it refuses often, and a refusal is shown as the
+// reason rather than as a blank or a guess. "Open now" always wins: a future
+// date for something on the screen right now would send an agent away from it.
+const FORECAST_WHY = {
+  open_now:     ["Open now",      "good",    "A slot is there on the latest check. Nothing to wait for."],
+  unconfirmed:  ["Was open",      "warn",    "A slot was there when we last looked, but not recently enough to promise it is still there. Worth checking the portal — it may well still be open and nobody has looked."],
+  overdue:      ["Overdue",       "warn",    "It has been quiet longer than any gap we have on record, so we have nothing comparable to reason from. Outside our experience, not 'soon'."],
+  stale:        ["Not checked",   "none",    "The newest reading is too old to say what the state is now."],
+  insufficient: ["Too few",       "none",    "Not enough past releases here, or among combinations behaving like it, to give a range."],
+  dormant:      ["Never opens",   "none",    "Read many times in this window and never once open."],
+  waitlist_only:["Waitlist only", "serious", "Sign-up only — there is no slot release to predict."],
+  never_opened: ["No history",    "none",    "Nothing has ever opened here, so there is no gap to measure."],
+  no_data:      ["—",             "none",    "No forecast was produced for this row."],
+};
+
+function fmtForecast(f) {
+  if (!f) return '<span class="sub">—</span>';
+  if (f.from) {
+    const range = f.same_day ? fmtDate(f.from)
+      : `${fmtDate(f.from)} – ${fmtDate(f.to)}`;
+    const basis = f.gaps
+      ? `${f.gaps} past gap${f.gaps === 1 ? "" : "s"}` +
+        (f.pooled_gaps ? ` + ${f.pooled_gaps} similar` : "")
+      : `${f.pooled_gaps} similar combination${f.pooled_gaps === 1 ? "" : "s"}`;
+    const tip = `Next opening|Where past waits of this length usually ended, ` +
+      `counting only the gaps that ran longer than the current one. Middle half ` +
+      `of that spread, from ${basis}. Not a promise — a range.`;
+    return `<strong data-tip="${esc(tip)}">${range}</strong>` +
+      `<div class="sub">${esc(f.confidence)} · ${esc(basis)}</div>`;
+  }
+  const [label, cls, why] = FORECAST_WHY[f.reason] || FORECAST_WHY.no_data;
+  let sub = "";
+  if (f.reason === "overdue" && f.elapsed_days != null) {
+    sub = `${Math.round(f.elapsed_days)}d quiet · longest ever ${Math.round(f.longest_gap_days)}d`;
+  } else if (f.reason === "stale" && f.last_reading) {
+    sub = `last read ${fmtDate(f.last_reading)}`;
+  } else if (f.reason === "open_now" && f.since) {
+    sub = "take it";
+  } else if (f.reason === "unconfirmed" && f.since) {
+    sub = "go and look";
+  }
+  return `<span class="chip ${cls}" data-tip="${esc(label + "|" + why)}">${esc(label)}</span>` +
+    (sub ? `<div class="sub">${esc(sub)}</div>` : "");
+}
+
+function chip(verdict) {
+  return `<span class="chip ${VERDICT_CLASS[verdict] || "none"}">${esc(verdict)}</span>`;
+}
+
+function comboTable(c) {
+  const head = `<tr><th>Centre</th><th>Visa type</th><th>Status</th>
+    <th data-tip="Next appointment|Earliest date bookable right now at this centre.">Next appointment</th>
+    <th class="num" data-tip="Typical wait|Median days from a check to the appointment it offered.">Typical wait</th>
+    <th data-tip="Last slot seen|When we last detected a slot here, and the appointment it offered.">Last slot seen</th>
+    <th data-tip="Next opening|Expected next opening for this centre and visa type, from its own past gaps.">Next opening</th></tr>`;
+  const body = c.combos.map(k => `
+    <tr>
+      <td>${esc(k.city || k.centre)}${k.enabled ? "" : ' <span class="sub">(off)</span>'}</td>
+      <td>${esc(k.visa_type || "—")}${
+        k.purpose === "any" ? '<span class="tag">any purpose</span>' : ""}</td>
+      <td>${chip(k.verdict)}</td>
+      <td>${k.current_bookable ? fmtDate(k.current_date) : "—"}
+          <span class="sub">${esc(k.current_age)}</span></td>
+      <td class="num">${fmtLead(k.median_lead)}</td>
+      <td>${lastSeen(k)}</td>
+      <td>${fmtForecast(k.forecast)}</td>
+    </tr>`).join("");
+  return `<table class="inner"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+function renderBoard() {
+  // The waitlist answers a different question, so it gets its own table rather
+  // than the slot columns standing empty.
+  const waitlist = state.purpose === "waitlist";
+  $("#waitlist-wrap").hidden = !waitlist;
+  $("#board-wrap").hidden = waitlist;
+  $("#heat-card").hidden = waitlist;        // that grid is about slots, not sign-ups
+  $("#board-title").textContent = waitlist ? "Waitlists" : "Best bets";
+  $("#board-hint").textContent = waitlist
+    ? "Where we can register a client today and take the slot the moment it drops. Click a country for its centres."
+    : "Ranked by how often slots are there, how soon they are, and how recently we saw one. Click a country for its centres and visa types.";
+  if (waitlist) return renderWaitlist();
+
+  const tbody = $("#board tbody");
+  const list = rows();
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Nothing matches that filter.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(c => {
+    const detail = state.open === c.country ? `
+      <tr class="detail"><td colspan="9">
+        ${comboTable(c)}
+        <p class="why">Score ${c.score}/100 — availability ${c.score_parts.availability}/45,
+          speed ${c.score_parts.speed}/35, freshness ${c.score_parts.freshness}/20.
+          ${c.openings ? c.openings + " opening(s) this week." : "No openings seen this week."}</p>
+      </td></tr>` : "";
+    return `
+      <tr class="row" data-country="${esc(c.country)}">
+        <td><span class="score"><span class="bar"><i style="width:${c.score}%"></i></span>
+            <span class="n">${c.score}</span></span></td>
+        <td class="country">${esc(c.country)}<div class="sub">${esc((c.cities || []).join(", "))}</div></td>
+        <td>${chip(c.verdict)}</td>
+        <td>${c.current_bookable ? "<strong>" + fmtDate(c.current_date) + "</strong>" : "—"}
+            <span class="sub">${c.current_bookable ? esc(c.current_city) : esc(c.current_age)}</span></td>
+        <td class="num">${fmtLead(c.median_lead)}</td>
+        <td class="num hide-sm">${fmtLead(c.best_lead)}</td>
+        <td class="hide-sm">${lastSeen(c)}</td>
+        <td>${fmtForecast(c.forecast)}</td>
+        <td class="num hide-sm">${c.drift_per_day == null ? "—" : (c.drift_per_day > 0 ? "+" : "") + c.drift_per_day + "d"}</td>
+      </tr>${detail}`;
+  }).join("");
+}
+
+function waitlistRows() {
+  const q = state.filter.trim().toLowerCase();
+  const all = view().countries || [];
+  return q ? all.filter(c => c.country.toLowerCase().includes(q) ||
+    (c.cities || []).some(city => city.toLowerCase().includes(q))) : all;
+}
+
+function seenCell(row) {
+  if (!row.last_seen_date) return '<span class="sub">never</span>';
+  return `${fmtDate(row.last_seen_date)}<div class="sub">${esc(row.last_seen_age)}</div>`;
+}
+
+function slotsToo(c) {
+  if (c.slot_availability >= 0.85) return chip("Always open");
+  if (c.slot_availability > 0)
+    return `<span class="chip warn">Sometimes &middot; ${Math.round(c.slot_availability * 100)}% of checks</span>`;
+  return '<span class="chip none">Never this week</span>';
+}
+
+function renderWaitlist() {
+  const tbody = $("#waitlist tbody");
+  const list = waitlistRows();
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No country is offering a waitlist in this window.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(c => {
+    const detail = state.open === c.country ? `
+      <tr class="detail"><td colspan="6">
+        <table class="inner">
+          <thead><tr><th>Centre</th><th>Visa type</th><th>Waitlist</th>
+            <th class="num">Offered on</th><th>Last seen</th></tr></thead>
+          <tbody>${c.combos.map(k => `
+            <tr>
+              <td>${esc(k.city)}</td>
+              <td>${esc(k.visa_type || "\u2014")}${
+                k.purpose === "any" ? '<span class="tag">any purpose</span>' : ""}</td>
+              <td><span class="chip ${k.open_now ? "good" : "warn"}">${
+                k.open_now ? "Open now" : "Was open"}</span></td>
+              <td class="num">${Math.round(k.offered_rate * 100)}%</td>
+              <td>${seenCell({last_seen_date: k.last_seen_date, last_seen_age: k.last_seen_age})}</td>
+            </tr>`).join("")}</tbody>
+        </table>
+      </td></tr>` : "";
+    return `
+      <tr class="row" data-country="${esc(c.country)}">
+        <td class="country">${esc(c.country)}<div class="sub">${esc((c.cities || []).join(", "))}</div></td>
+        <td><span class="chip ${WAITLIST_CLASS[c.verdict] || "none"}">${esc(c.verdict)}</span></td>
+        <td class="num">${Math.round(c.offered_rate * 100)}%</td>
+        <td>${slotsToo(c)}</td>
+        <td>${seenCell(c)}</td>
+        <td class="num">${c.openings || "\u2014"}</td>
+      </tr>${detail}`;
+  }).join("");
+}
+
+function renderWaitlistTiles() {
+  const list = view().countries || [];
+  const open = list.filter(c => c.open_now);
+  const dependable = open.filter(c => c.offered_rate >= 0.95);
+  const alsoSlots = open.filter(c => c.slot_availability > 0);
+  const freshest = open.slice().sort((a, b) =>
+    String(b.last_seen).localeCompare(String(a.last_seen)))[0];
+  $("#tiles").innerHTML = `
+    <div class="tile"><div class="k">Waitlists open now</div>
+      <div class="v">${open.length}</div>
+      <div class="s">of ${list.length} countries that have offered one</div></div>
+    <div class="tile"><div class="k">Open every check</div>
+      <div class="v">${dependable.length}</div>
+      <div class="s">95%+ of checks &mdash; safe to promise</div></div>
+    <div class="tile"><div class="k">Also get real slots</div>
+      <div class="v">${alsoSlots.length}</div>
+      <div class="s">waitlist plus genuine availability</div></div>
+    <div class="tile"><div class="k">Last confirmed</div>
+      <div class="v">${freshest ? esc(freshest.last_seen_age) : "\u2014"}</div>
+      <div class="s">${freshest ? esc(freshest.country) : "nothing open"}</div></div>`;
+}
+
+function renderTiles() {
+  if (state.purpose === "waitlist") return renderWaitlistTiles();
+  const list = view().countries || [];
+  const withSlot = list.filter(c => c.current_outcome === "slot");
+  const soonest = withSlot.slice().sort((a, b) =>
+    String(a.current_date).localeCompare(String(b.current_date)))[0];
+  const waitlist = list.filter(c => c.current_outcome !== "slot" && c.waitlist_rate > 0);
+  const best = list[0];
+  $("#tiles").innerHTML = `
+    <div class="tile"><div class="k">Top pick</div>
+      <div class="v">${best ? esc(best.country) : "—"}</div>
+      <div class="s">${best ? esc(best.verdict) + " · score " + best.score : "no data yet"}</div></div>
+    <div class="tile"><div class="k">Soonest appointment</div>
+      <div class="v">${soonest ? fmtDate(soonest.current_date) : "—"}</div>
+      <div class="s">${soonest ? esc(soonest.country + " · " + (soonest.current_city || "")) : "none on offer"}</div></div>
+    <div class="tile"><div class="k">Open right now</div>
+      <div class="v">${withSlot.length}</div>
+      <div class="s">of ${list.length} countries checked</div></div>
+    <div class="tile"><div class="k">Waitlist only</div>
+      <div class="v">${waitlist.length}</div>
+      <div class="s">register now, take the drop</div></div>`;
+}
+
+function renderHeat() {
+  const route = $("#heat-route").value;
+  // The waitlist view has no hour grid (its card is hidden) — nothing to draw.
+  const hm = view().heatmap;
+  if (!hm) return;
+  const cells = route === "all" ? hm.all : (hm.routes[route] || []);
+  const byKey = new Map(cells.map(c => [c.weekday + ":" + c.hour, c]));
+  // Every hour of the day, always — a time axis that silently skips the hours
+  // nobody checked would make the gaps invisible and the shape a lie.
+  const hours = cells.length ? Array.from({ length: 24 }, (_, h) => h) : [];
+  const table = $("#heat");
+  if (!hours.length) {
+    table.innerHTML = `<tr><td class="empty-state">No checks in this window yet.</td></tr>`;
+    return;
+  }
+  let html = "<thead><tr><th></th>" +
+    hours.map(h => `<th>${String(h).padStart(2, "0")}</th>`).join("") + "</tr></thead><tbody>";
+  for (let d = 0; d < 7; d++) {
+    html += `<tr><th>${DAYS[d]}</th>`;
+    for (const h of hours) {
+      const cell = byKey.get(d + ":" + h);
+      if (!cell || !cell.observed) {
+        html += `<td><div class="cell unobserved" data-tip="${DAYS[d]} ${String(h).padStart(2,"0")}:00|not checked"></div></td>`;
+        continue;
+      }
+      const step = cell.rate === 0 ? null : SEQ[Math.min(SEQ.length - 1, Math.floor(cell.rate * SEQ.length))];
+      const bg = step ? `background:var(${step})` : "";
+      const tip = `${DAYS[d]} ${String(h).padStart(2,"0")}:00|slot in ${Math.round(cell.rate*100)}% of ${cell.observed} checks` +
+                  (cell.openings ? ` · ${cell.openings} opening(s)` : "");
+      html += `<td><div class="cell${cell.openings ? " opened" : ""}" style="${bg}" data-tip="${esc(tip)}"></div></td>`;
+    }
+    html += "</tr>";
+  }
+  table.innerHTML = html + "</tbody>";
+}
+
+const ACTIVITY = {
+  opened:          { cls: "good",    label: "Opened" },
+  moved_earlier:   { cls: "good",    label: "Moved earlier" },
+  closed:          { cls: "bad",     label: "Closed" },
+  waitlist_opened: { cls: "serious", label: "Waitlist opened" },
+};
+
+function activityDetail(o) {
+  if (o.kind === "moved_earlier")
+    return `${o.days_earlier} day${o.days_earlier === 1 ? "" : "s"} sooner — ` +
+           `${fmtDate(o.prev_date)} &rarr; <strong>${fmtDate(o.new_date)}</strong>`;
+  if (o.kind === "closed") return `was ${fmtDate(o.prev_date)}`;
+  if (o.kind === "waitlist_opened") return "sign-up available";
+  return `appointment <strong>${fmtDate(o.new_date)}</strong>`;
+}
+
+function renderOpenings() {
+  const list = view().activity || [];
+  $("#activity-hint").textContent = state.purpose === "waitlist"
+    ? "When a waitlist went from closed to open. Nothing here means the open ones never closed."
+    : "Slots opening, and earliest dates jumping closer \u2014 both mean VFS just released appointments. Dates drifting further out are normal decay and are left off.";
+  $("#openings").innerHTML = list.length ? list.map(o => {
+    const when = new Date(o.ts_local);
+    const kind = ACTIVITY[o.kind] || { cls: "none", label: o.kind };
+    return `<li>
+      <span class="when">${when.toLocaleDateString(undefined,{day:"2-digit",month:"short"})}
+        ${when.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"})}</span>
+      <span class="chip ${kind.cls}">${esc(kind.label)}</span>
+      <span class="what">${esc(o.country_name)}</span>
+      <span>${esc(o.city)} · ${esc(o.visa_type || "")}</span>
+      <span class="date">${activityDetail(o)}</span>
+    </li>`;
+  }).join("") : `<li class="empty-state">${state.purpose === "waitlist"
+      ? "No waitlist opened or closed in this window \u2014 the open ones have stayed open."
+      : "No openings or earlier dates in this window."}</li>`;
+}
+
+function renderMeta() {
+  const c = DATA.coverage;
+  $("#meta").textContent =
+    `Last ${DATA.window_days} days · ${c.checks.toLocaleString()} checks across ` +
+    `${c.countries} countries · built ${DATA.generated}`;
+  $("#tab-note").textContent = TAB_NOTE[state.purpose] || "";
+}
+
+function renderRoutePicker() {
+  const picker = $("#heat-route");
+  const previous = picker.value;
+  picker.innerHTML = '<option value="all">All countries</option>';
+  // The waitlist view carries no route list — its card is hidden anyway.
+  for (const r of view().routes || []) {
+    const opt = document.createElement("option");
+    opt.value = r.route; opt.textContent = r.country;
+    picker.append(opt);
+  }
+  // Keep the agent's country selection across a tab switch when it still exists.
+  picker.value = [...picker.options].some(o => o.value === previous) ? previous : "all";
+}
+
+function renderAll() {
+  renderMeta(); renderTiles(); renderBoard();
+  renderRoutePicker(); renderHeat(); renderOpenings();
+}
+
+// ---- interaction ----------------------------------------------------------
+$("#tabs").addEventListener("click", e => {
+  const tab = e.target.closest("[data-purpose]");
+  if (!tab || tab.dataset.purpose === state.purpose) return;
+  state.purpose = tab.dataset.purpose;
+  state.open = null;
+  document.querySelectorAll("#tabs [role=tab]").forEach(t =>
+    t.setAttribute("aria-selected", String(t === tab)));
+  renderAll();
+});
+
+$("#search").addEventListener("input", e => { state.filter = e.target.value; renderBoard(); });
+$("#heat-route").addEventListener("change", renderHeat);
+$("#theme").addEventListener("click", () => {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark" ||
+    (!document.documentElement.getAttribute("data-theme") &&
+     matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+});
+
+document.querySelectorAll("th.sortable").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (state.sort === key) state.dir *= -1;
+    else { state.sort = key; state.dir = (key === "country") ? 1 : -1; }
+    document.querySelectorAll("th.sortable .dir").forEach(el => el.remove());
+    th.insertAdjacentHTML("beforeend", `<span class="dir"> ${state.dir > 0 ? "&uarr;" : "&darr;"}</span>`);
+    renderBoard();
+  });
+});
+
+for (const id of ["#board", "#waitlist"]) {
+  $(id).addEventListener("click", e => {
+    const row = e.target.closest("tr.row");
+    if (!row) return;
+    state.open = state.open === row.dataset.country ? null : row.dataset.country;
+    renderBoard();
+  });
+}
+
+// One tooltip element, driven by data-tip="title|detail".
+const tip = $("#tip");
+document.addEventListener("mouseover", e => {
+  const el = e.target.closest("[data-tip]");
+  if (!el) return;
+  const [title, detail] = el.dataset.tip.split("|");
+  tip.innerHTML = `<b>${esc(title)}</b><span>${esc(detail || "")}</span>`;
+  tip.style.opacity = "1";
+});
+document.addEventListener("mousemove", e => {
+  if (tip.style.opacity !== "1") return;
+  const pad = 14;
+  const x = Math.min(e.clientX + pad, innerWidth - tip.offsetWidth - 8);
+  const y = Math.min(e.clientY + pad, innerHeight - tip.offsetHeight - 8);
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+});
+document.addEventListener("mouseout", e => {
+  if (e.target.closest("[data-tip]")) tip.style.opacity = "0";
+});
+
+// ---- boot -----------------------------------------------------------------
+renderAll();
+</script>
+</body>
+</html>

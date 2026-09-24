@@ -1,0 +1,10 @@
+const { JSDOM } = require("jsdom");
+const dom = new JSDOM("<!doctype html><div id=root></div>", { pretendToBeVisual: true });
+global.window = dom.window;
+global.document = dom.window.document;
+global.navigator = dom.window.navigator;
+global.HTMLElement = dom.window.HTMLElement;
+global.MouseEvent = dom.window.MouseEvent;
+global.KeyboardEvent = dom.window.KeyboardEvent;
+global.IS_REACT_ACT_ENVIRONMENT = true;
+module.exports = { dom };

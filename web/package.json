@@ -1,0 +1,14 @@
+{
+  "name": "slot-wall",
+  "private": true,
+  "description": "The slot board as a React component, plus a harness that renders it against real output.",
+  "scripts": {
+    "verify": "esbuild verify/render.jsx --bundle --platform=node --format=cjs --outfile=verify/.render.cjs --loader:.json=json --jsx=automatic --log-level=error && node verify/.render.cjs && esbuild verify/dom.jsx --bundle --platform=node --format=cjs --outfile=verify/.dom.cjs --loader:.json=json --jsx=automatic --external:jsdom --log-level=error && node verify/.dom.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "jsdom": "^27.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

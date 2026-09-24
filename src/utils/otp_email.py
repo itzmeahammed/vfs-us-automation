@@ -21,6 +21,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
+# How far before Sign In an OTP email may be stamped and still count. Covers the
+# mail server's clock lagging ours plus INTERNALDATE's 1s truncation, while staying
+# well under the ~100s minimum gap between two logins on the same mailbox (so a
+# previous route's OTP is still rejected as stale).
+CLOCK_SKEW_GRACE_S = 30
+
+# (mailbox, uid) pairs already reported as stale — logged once, not every poll.
+_logged_skips = set()
+
 
 @dataclass
 class OtpMail:
@@ -42,7 +51,8 @@ def fetch_latest_otp_mail(
 ) -> Optional[OtpMail]:
     """
     Returns the newest email whose body contains `search_text` and which the
-    server received AFTER `since_epoch`, or None if there is no such email yet.
+    server received AFTER `since_epoch` (less CLOCK_SKEW_GRACE_S), or None if
+    there is no such email yet.
 
     One-shot (no polling — the caller polls). Any IMAP failure is logged and
     returned as None so a mail-server hiccup reads as 'not arrived yet' and the
@@ -72,11 +82,31 @@ def fetch_latest_otp_mail(
             return None
 
         # Walk candidates from newest UID down; the first one received after
-        # since_epoch wins (UID order tracks arrival order).
+        # the cutoff wins (UID order tracks arrival order). The cutoff sits
+        # CLOCK_SKEW_GRACE_S before since_epoch: VFS delivers the OTP ~1s after
+        # Sign In, while INTERNALDATE is whole-second and the mail server's
+        # clock runs 1-2s behind ours — a strict `> since_epoch` dropped the
+        # real OTP as 'stale' (logs 2026-09-17: sign-in 18:44:33.5, OTP
+        # stamped 18:44:34, skipped for all 120s).
+        cutoff = since_epoch - CLOCK_SKEW_GRACE_S
         for uid in sorted(uids, key=int, reverse=True):
             received = _internal_date(imap, uid)
-            if received is None or received <= since_epoch:
+            if received is None:
+                logging.warning(f"OTP email UID {uid.decode()} has an unreadable "
+                                "INTERNALDATE — skipping it.")
                 continue
+            if received <= cutoff:
+                key = (user, uid)
+                if key not in _logged_skips:
+                    _logged_skips.add(key)
+                    logging.info(
+                        f"Newest matching OTP email for {user} was received "
+                        f"{datetime.fromtimestamp(received):%H:%M:%S}, before sign-in "
+                        f"{datetime.fromtimestamp(since_epoch):%H:%M:%S} "
+                        f"(-{CLOCK_SKEW_GRACE_S}s grace) — treated as stale; "
+                        "waiting for a newer one.")
+                break  # older UIDs are older still
+
             status, msg_data = imap.uid("FETCH", uid, "(RFC822)")
             if status != "OK" or not msg_data or msg_data[0] is None:
                 continue

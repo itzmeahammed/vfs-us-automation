@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schengen Slot Wall</title>
+<!-- A screen in the room: reload on its own so the wall never shows stale data.
+     The bot rewrites this file at the end of every run. -->
+<meta http-equiv="refresh" content="300">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Every value below is taken from the design mockup
+     (Card wall (your concept)-html/Main.dc.html) — keep them in step with it. */
+  :root {
+    --bg: #0F1B2A;
+    --panel: #16263A;
+    --line: #26384E;
+    --ink: #EEF2F6;
+    --ink-2: #C9D3DE;
+    --muted: #9AAABB;
+    --dim: #5E7086;
+    --accent: #6CB4FF;
+    --open: #3DD68C;
+    --occ: #F2B84B;
+    --wait: #F07A64;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif; overflow: hidden;
+  }
+  .disp { font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif; }
+
+  /* Authored at 1920x1080 and scaled to the screen, positioned from the
+     top-left in one transform (grid centring clamps an oversized box). */
+  #fit { position: fixed; inset: 0; overflow: hidden; }
+  #stage {
+    position: absolute; top: 0; left: 0; transform-origin: top left;
+    width: 1920px; height: 1080px; box-sizing: border-box; padding: 40px 48px;
+    display: flex; flex-direction: column; gap: 24px; background: var(--bg);
+  }
+
+  /* ---- header ---- */
+  .header { display: flex; align-items: center; justify-content: space-between; height: 120px; gap: 40px; }
+  .title { display: flex; flex-direction: column; gap: 12px; }
+  .title .h { font-size: 56px; font-weight: 700; line-height: 1; }
+
+  /* The view tabs — the one thing that changes what the whole wall means, so
+     they are set in the display face, large, and the live one is a filled
+     accent pill that reads from across the room. */
+  .tabs { display: flex; align-items: center; gap: 8px; }
+  .tab {
+    position: relative; overflow: hidden;
+    font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+    font-size: 32px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+    line-height: 1; color: var(--muted); background: var(--panel);
+    border: 0; border-radius: 999px; padding: 8px 22px 9px; cursor: pointer;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+  .tab[aria-selected="true"] { color: var(--bg); background: var(--accent); }
+  /* Time until the wall moves on: a darker band sweeping along the active pill. */
+  .tab .fill {
+    position: absolute; left: 0; bottom: 0; height: 4px; width: 0;
+    background: rgba(15, 27, 42, .45);
+  }
+  .tab[aria-selected="true"] .fill.run { animation: fill var(--rotate, 20s) linear forwards; }
+  @keyframes fill { from { width: 0 } to { width: 100% } }
+
+  .kpis { display: flex; gap: 16px; }
+  .kpi {
+    display: flex; flex-direction: column; gap: 2px; padding: 14px 28px;
+    background: var(--panel); border-radius: 14px; min-width: 226px;
+  }
+  .kpi .k { font-size: 16px; color: var(--muted); white-space: nowrap; }
+  .kpi .v { font-size: 44px; font-weight: 600; line-height: 1; white-space: nowrap; }
+  .clock { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .clock .t { font-size: 56px; font-weight: 600; line-height: 1; }
+  .clock .s { display: flex; align-items: center; gap: 8px; font-size: 18px; color: var(--muted); white-space: nowrap; }
+  .live { width: 10px; height: 10px; border-radius: 50%; background: var(--open); }
+  .live.stale { background: var(--wait); }
+
+  /* ---- body ---- */
+  .body { flex-grow: 1; display: grid; grid-template-columns: minmax(0, 1fr) 460px; gap: 24px; min-height: 0; }
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .card {
+    display: flex; flex-direction: column; gap: 14px; padding: 26px 28px;
+    border-radius: 18px; background: var(--panel); min-height: 0;
+  }
+  .card.lead { box-shadow: inset 0 0 0 2px var(--accent); }
+  .row1 { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .name { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+  .rank { font-size: 40px; font-weight: 600; color: var(--dim); }
+  .country { font-size: 52px; font-weight: 700; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meter { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
+  .meter .n { font-size: 44px; font-weight: 600; line-height: 1; }
+  .meter .bar { width: 96px; height: 6px; border-radius: 3px; background: var(--line); }
+  .meter .bar i { display: block; height: 6px; border-radius: 3px; background: var(--accent); }
+  .row2 { display: flex; align-items: center; gap: 14px; font-size: 20px; }
+  .row2 .st { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+  .dot.open { background: var(--open); } .dot.occ { background: var(--occ); }
+  .dot.wait { background: var(--wait); } .dot.none { background: var(--dim); }
+  .badge { padding: 2px 10px; border-radius: 999px; background: #1E3A2E; color: #7FE3AE; font-size: 16px; font-weight: 600; }
+  .mid { display: flex; flex-direction: column; gap: 2px; flex-grow: 1; justify-content: center; min-height: 0; }
+  .mid .lbl { font-size: 16px; color: var(--muted); }
+  .mid .date { font-size: 88px; font-weight: 700; line-height: 0.95; color: #FFFFFF; }
+  .mid .ctr { font-size: 20px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mid .et { font-size: 56px; font-weight: 600; }
+  .mid .et.occ { color: var(--occ); } .mid .et.wait { color: var(--wait); } .mid .et.none { color: var(--dim); }
+  .mid .es { font-size: 20px; color: var(--muted); }
+  .mid .es.solo { font-size: 30px; line-height: 1.25; color: var(--ink-2); }
+
+  /* The mockup's footer: a group bottom-left, a group bottom-right. The week bars
+     that used to sit left are gone (as on the dashboard); two of its numbers
+     take their place in the same "Label value" style. */
+  /* When this is expected to open NEXT. A thin strip under the headline, so a
+     card with nothing on offer still answers "when should I look again?"
+     rather than leaving the space blank. */
+  .fc { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+        padding: 9px 0 3px; border-top: 1px solid var(--line); font-size: 17px; }
+  .fc-l { color: var(--muted); }
+  .fc-v { font-weight: 600; color: var(--ink); }
+  .fc.due .fc-v { color: var(--accent); }
+  .fc.quiet .fc-v { color: var(--dim); font-weight: 500; }
+  .fc-n { color: var(--dim); font-size: 15px; }
+  /* "All 12" — the board shows the six that matter; this is the rest of the
+     truth, for someone who walks up to the screen rather than glancing at it. */
+  .allbtn {
+    appearance: none; cursor: pointer; font: inherit;
+    background: transparent; color: var(--ink-2);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 7px 16px; font-size: 17px; white-space: nowrap;
+  }
+  .allbtn:hover { color: var(--ink); border-color: var(--accent); }
+  .sheet[hidden] { display: none !important; }
+  .sheet {
+    position: absolute; inset: 0; z-index: 20;
+    background: rgba(15, 27, 42, 0.97);
+    display: flex; flex-direction: column; gap: 18px; padding: 40px 44px;
+  }
+  .sheet .shead { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
+  .sheet .shead .h { font-size: 40px; font-weight: 700; }
+  .sheet .swrap { flex: 1; min-height: 0; overflow: auto; }
+  .sheet table { width: 100%; border-collapse: collapse; font-size: 18px; }
+  .sheet th, .sheet td { text-align: left; padding: 9px 12px; white-space: nowrap; }
+  .sheet thead th {
+    position: sticky; top: 0; background: var(--panel); color: var(--muted);
+    font-weight: 600; font-size: 16px; border-bottom: 1px solid var(--line);
+  }
+  .sheet tbody tr { border-bottom: 1px solid rgba(38, 56, 78, 0.6); }
+  .sheet tbody tr:hover { background: rgba(108, 180, 255, 0.06); }
+  .sheet td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .sheet td.co { font-weight: 600; color: var(--ink); }
+  .sheet td .sub { display: block; font-size: 15px; color: var(--dim); }
+  .sheet .when { color: var(--accent); font-weight: 600; }
+  .sheet .quiet { color: var(--dim); }
+  .foot {
+    display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;
+    padding-top: 14px; border-top: 1px solid var(--line);
+  }
+  .grp { display: flex; gap: 14px; font-size: 17px; color: var(--muted); white-space: nowrap; }
+  .grp b { color: var(--ink); font-weight: 600; }
+
+  .feed { display: flex; flex-direction: column; gap: 16px; background: var(--panel); border-radius: 18px; padding: 28px; min-height: 0; }
+  .feed .h { font-size: 34px; font-weight: 600; }
+  .feed .rows { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .item { display: flex; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .item .dot { margin-top: 6px; }
+  .item .txt { display: flex; flex-direction: column; gap: 4px; flex-grow: 1; min-width: 0; }
+  .item .t { font-size: 21px; font-weight: 600; }
+  .item .s { font-size: 17px; color: var(--muted); }
+  .item .w { font-size: 16px; color: var(--muted); white-space: nowrap; }
+  .quiet { font-size: 19px; color: var(--muted); padding: 14px 0; line-height: 1.45; }
+  .note { margin-top: auto; padding: 20px; border-radius: 14px; background: var(--bg); display: flex; flex-direction: column; gap: 8px; }
+  .note .k { font-size: 16px; color: var(--muted); }
+  .note .v { font-size: 21px; line-height: 1.4; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tab[aria-selected="true"] .fill.run { animation: none; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div id="fit"><div id="stage">
+
+  <div class="header">
+    <div class="title">
+      <div class="h disp">Schengen Slot Board</div>
+      <div class="tabs" id="tabs" role="tablist" aria-label="View"></div>
+    </div>
+    <div class="kpis" id="kpis"></div>
+    <div class="clock">
+      <div class="t disp" id="clock">--:--</div>
+      <div class="s">
+        <span class="live" id="live"></span><span id="updated"></span>
+        <button type="button" class="allbtn" id="all-btn" aria-expanded="false">All countries</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-label="All countries">
+    <div class="shead">
+      <div class="h disp" id="sheet-title">All countries</div>
+      <button type="button" class="allbtn" id="sheet-close">Close &#10005;</button>
+    </div>
+    <div class="swrap"><table id="sheet-table"></table></div>
+  </div>
+
+  <div class="body">
+    <div class="cards" id="cards"></div>
+    <div class="feed">
+      <div class="h disp" id="feed-title">What just changed</div>
+      <div class="rows" id="feed"></div>
+      <div class="note">
+        <div class="k" id="note-label"></div>
+        <div class="v" id="note"></div>
+      </div>
+    </div>
+  </div>
+
+</div></div>
+
+<script>
+const DATA = __PAYLOAD__;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => (
+  {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+
+function fit() {
+  const s = Math.min(innerWidth / 1920, innerHeight / 1080);
+  const x = (innerWidth - 1920 * s) / 2;
+  const y = (innerHeight - 1080 * s) / 2;
+  $("#stage").style.transform = `translate(${x}px, ${y}px) scale(${s})`;
+}
+addEventListener("resize", fit);
+
+const group = (stats) => (stats || []).map(s =>
+  `<span>${esc(s.label)} <b>${esc(s.value)}</b></span>`).join("");
+
+function card(c, i) {
+  const mid = c.has_date
+    ? `<div class="lbl">${esc(c.headline_label)}</div>
+       <div class="date disp">${esc(c.headline)}</div>
+       <div class="ctr">${esc(c.centre)}</div>`
+    : (c.empty_title
+        ? `<div class="et disp ${c.kind}">${esc(c.empty_title)}</div>
+           <div class="es">${esc(c.empty_sub)}</div>`
+        // No heading: the fact carries the card, so it takes the larger size
+        // rather than sitting small under an empty slot.
+        : `<div class="es solo">${esc(c.empty_sub)}</div>`);
+  return `
+    <div class="card${i === 0 ? " lead" : ""}">
+      <div class="row1">
+        <div class="name">
+          <span class="rank disp">${c.rank}</span>
+          <span class="country disp">${esc(c.country)}</span>
+        </div>
+        <div class="meter">
+          <span class="n disp">${esc(c.meter_value)}</span>
+          <div class="bar"><i style="width:${Math.max(2, Math.min(100, c.meter))}%"></i></div>
+        </div>
+      </div>
+      <div class="row2">
+        <span class="st"><span class="dot ${c.kind}"></span><span>${esc(c.status)}</span></span>
+        ${c.badge ? `<span class="badge">${esc(c.badge)}</span>` : ""}
+      </div>
+      <div class="mid">${mid}</div>
+      ${c.forecast ? `<div class="fc ${c.forecast.kind}">
+        <span class="fc-l">${esc(c.forecast.label)}</span>
+        <span class="fc-v">${esc(c.forecast.value)}</span>
+        ${c.forecast.note ? `<span class="fc-n">${esc(c.forecast.note)}</span>` : ""}
+      </div>` : ""}
+      <div class="foot">
+        <div class="grp">${group(c.stats_left)}</div>
+        <div class="grp">${group(c.stats_right)}</div>
+      </div>
+    </div>`;
+}
+
+// Text that would overflow steps its size down until it fits, rather than
+// being cut off ("Czech Rep...") or spilling out of the card. Anything that
+// already fits keeps the design's size, so ordinary cards match the mockup
+// exactly; only the one long name or the widest footer gives a point or two.
+function shrinkToFit(selector, from, floor, step, measure) {
+  document.querySelectorAll(selector).forEach(el => {
+    const target = measure ? measure(el) : el;
+    let size = from;
+    el.style.fontSize = size + "px";
+    while (target.scrollWidth > target.clientWidth && size > floor) {
+      size -= step;
+      el.style.fontSize = size + "px";
+    }
+  });
+}
+function fitNames() {
+  shrinkToFit(".country", 52, 34, 2);
+  // A footer overflows as a whole, so shrink both of its groups together.
+  document.querySelectorAll(".foot").forEach(foot => {
+    let size = 17;
+    const apply = () => foot.querySelectorAll(".grp").forEach(g => g.style.fontSize = size + "px");
+    apply();
+    while (foot.scrollWidth > foot.clientWidth && size > 13) { size -= 0.5; apply(); }
+  });
+}
+
+// ---- tabs: Tourist · Business · Waitlist ------------------------------------
+// Clickable like the dashboard's; on a screen nobody touches, the wall also
+// moves to the next one on its own, and holds a clicked tab for a minute.
+const ROTATE_MS = (DATA.rotate_seconds || 20) * 1000;
+const HOLD_MS = 60 * 1000;
+let current = 0, timer = null;
+
+$("#tabs").innerHTML = DATA.views.map((v, i) => `
+  <button type="button" class="tab" role="tab" data-i="${i}" aria-selected="${i === 0}"
+          title="${esc(v.subtitle)}">${esc(v.name)}<span class="fill"></span></button>`).join("");
+
+function show(i, held) {
+  current = (i + DATA.views.length) % DATA.views.length;
+  const v = DATA.views[current];
+  document.querySelectorAll(".tab").forEach((t, n) => {
+    t.setAttribute("aria-selected", String(n === current));
+    const f = t.querySelector(".fill");
+    f.classList.remove("run");
+    if (n === current && !held) { void f.offsetWidth; f.classList.add("run"); }
+  });
+  $("#stage").style.setProperty("--rotate", `${ROTATE_MS / 1000}s`);
+
+  $("#kpis").innerHTML = v.kpis.map(k => `
+    <div class="kpi"><div class="k">${esc(k.label)}</div><div class="v disp">${esc(k.value)}</div></div>`).join("");
+  $("#cards").innerHTML = v.cards.map(card).join("");
+  fitNames();
+  $("#feed-title").textContent = v.feed_title;
+  $("#feed").innerHTML = v.feed.length ? v.feed.map(f => `
+    <div class="item">
+      <span class="dot ${f.kind}"></span>
+      <div class="txt"><div class="t">${esc(f.title)}</div><div class="s">${esc(f.sub)}</div></div>
+      <div class="w">${esc(f.when)}</div>
+    </div>`).join("") : `<div class="quiet">${esc(v.feed_empty)}</div>`;
+  $("#note-label").textContent = v.note_label;
+  $("#note").textContent = v.note;
+}
+
+// ---- the table behind "All countries" --------------------------------------
+// The board shows six because six is what reads from across the room. This is
+// the rest of it, for someone standing at the screen: every country, every
+// figure the card carries, in the same order the board ranks them.
+
+function sheetTable(v) {
+  const rows = v.table || v.cards || [];
+  if (!rows.length) return "";
+  // Stat columns come from the rows themselves — the waitlist tab counts
+  // different things (Offered, Real slots) and gets its own headings for free.
+  const statCols = [...(rows[0].stats_left || []),
+                    ...(rows[0].stats_right || [])].map(st => st.label);
+  const head = `<thead><tr>
+      <th class="n">#</th><th>Country</th><th>Status</th>
+      <th>Next appointment</th><th>Where</th><th>Next opening</th>
+      ${statCols.map(l => `<th class="n">${esc(l)}</th>`).join("")}
+      <th class="n">Score</th>
+    </tr></thead>`;
+  const body = rows.map(c => {
+    const stats = [...(c.stats_left || []), ...(c.stats_right || [])];
+    const f = c.forecast;
+    const when = f
+      ? `<span class="${f.kind === "due" ? "when" : "quiet"}">${esc(f.value)}</span>` +
+        (f.note ? `<span class="sub">${esc(f.note)}</span>` : "")
+      : `<span class="quiet">&mdash;</span>`;
+    return `<tr>
+      <td class="n">${c.rank}</td>
+      <td class="co">${esc(c.country)}${
+        c.badge ? ` <span class="badge">${esc(c.badge)}</span>` : ""}</td>
+      <td><span class="st"><span class="dot ${c.kind}"></span>${esc(c.status)}</span></td>
+      <td>${c.has_date ? `<span class="when">${esc(c.headline)}</span>`
+                       : `<span class="quiet">&mdash;</span>`}</td>
+      <td>${esc(c.has_date ? (c.centre || "") : (c.empty_sub || ""))}</td>
+      <td>${when}</td>
+      ${stats.map(st => `<td class="n">${esc(st.value)}</td>`).join("")}
+      <td class="n">${esc(c.meter_value)}</td>
+    </tr>`;
+  }).join("");
+  return head + `<tbody>${body}</tbody>`;
+}
+
+function openSheet() {
+  const v = DATA.views[current];
+  $("#sheet-title").textContent = `All countries — ${v.name}`;
+  $("#sheet-table").innerHTML = sheetTable(v);
+  $("#sheet").hidden = false;
+  $("#all-btn").setAttribute("aria-expanded", "true");
+  // Hold the tab still: rotating the view out from under someone reading the
+  // table is the one thing this button must not do.
+  clearTimeout(timer);
+}
+
+function closeSheet() {
+  $("#sheet").hidden = true;
+  $("#all-btn").setAttribute("aria-expanded", "false");
+  next(HOLD_MS);
+}
+
+$("#all-btn").addEventListener("click", () =>
+  $("#sheet").hidden ? openSheet() : closeSheet());
+$("#sheet-close").addEventListener("click", closeSheet);
+addEventListener("keydown", e => {
+  if (e.key === "Escape" && !$("#sheet").hidden) closeSheet();
+});
+
+function next(delay) {
+  clearTimeout(timer);
+  timer = setTimeout(() => { show(current + 1, false); next(ROTATE_MS); }, delay);
+}
+function pick(i) { show(i, true); next(HOLD_MS); }
+
+$("#tabs").addEventListener("click", e => {
+  const t = e.target.closest(".tab");
+  if (t) pick(Number(t.dataset.i));
+});
+addEventListener("keydown", e => {
+  const n = Number(e.key);
+  if (n >= 1 && n <= DATA.views.length) pick(n - 1);
+  else if (e.key === "ArrowRight") pick(current + 1);
+  else if (e.key === "ArrowLeft") pick(current - 1);
+});
+
+// Clock, and how long ago the bot rewrote this page. The dot goes red past
+// 30 minutes — a board that silently freezes is worse than no board.
+function tick() {
+  const now = new Date();
+  $("#clock").textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  // A hosted copy is a picture of one moment; say so instead of implying it's live.
+  if (DATA.snapshot) {
+    $("#updated").textContent = `Snapshot · ${DATA.generated}`;
+    $("#live").style.background = "var(--occ)";
+    return;
+  }
+  const mins = Math.max(0, Math.round((now - new Date(DATA.generated_iso)) / 60000));
+  const ago = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ago`;
+  $("#updated").textContent = `${now.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}, updated ${ago}`;
+  $("#live").classList.toggle("stale", mins > 30);
+}
+
+show(0, false);
+next(ROTATE_MS);
+fit();
+// The web fonts arrive after first paint and are wider than the fallback the
+// first fit measured with — re-fit once they're in, or text overflows again.
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitNames);
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

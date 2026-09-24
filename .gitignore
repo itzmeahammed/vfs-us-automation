@@ -75,3 +75,6 @@ ngrok/*.log
 .coverage
 .coverage.*
 htmlcov/
+
+# Generated slot dashboard (rebuilt from state/slots.db after every run)
+reports/

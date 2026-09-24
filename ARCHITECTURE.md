@@ -531,6 +531,18 @@ src/
     waitlist_cooldown.py   # per-country waitlist notice suppression (waitlist_cooldown.json)
     analytics.py           # traffic / run stats helpers
     show_schedule.py       # preview which account runs when
+  slots/                   # slot HISTORY: the permanent record + the agent board
+    schema.sql             # SQLite tables (combos, runs, checks, slot_dates, events)
+    db.py                  # connection (WAL) + forward-only migrations
+    parse.py               # banner text → outcome + dates per party size (pure)
+    registry.py            # config/routes/*.json → canonical combos; label → combo
+    events.py              # opened / closed / date_moved between checks (pure)
+    store.py               # the only writer; failure-isolated API for the bot
+    logreader.py           # log files → checks (for seeding history)
+    seed.py                # idempotent backfill
+    query.py               # the ranking/wait/availability numbers
+    dashboard.py           # builds reports/slot_dashboard.html (the desk tool)
+    wall.py                # builds reports/slot_wall.html (the office screen)
   vfs_bot/
     vfs_bot.py             # the flow: run → login → gates → dashboard (re-exports errors)
     vfs_bot_factory.py     # route → bot instance (UnsupportedCountryError)

@@ -1,0 +1,2019 @@
+{
+  "generated_iso": "2026-09-23T18:02:14+04:00",
+  "generated": "Wed 23 Sep, 18:02",
+  "rotate_seconds": 20,
+  "views": [
+    {
+      "name": "Tourist",
+      "subtitle": "Tourist appointments in the UAE, ranked live",
+      "feed_title": "What just changed",
+      "feed_empty": "Nothing has changed in the window.",
+      "kpis": [
+        {
+          "label": "Top pick",
+          "value": "Sweden"
+        },
+        {
+          "label": "Soonest",
+          "value": "Sep 24"
+        },
+        {
+          "label": "Open now",
+          "value": "2 of 12"
+        },
+        {
+          "label": "Waitlist only",
+          "value": "6"
+        }
+      ],
+      "cards": [
+        {
+          "rank": 1,
+          "order": [
+            0,
+            "2026-09-24",
+            -98
+          ],
+          "country": "Sweden",
+          "forecast": null,
+          "meter_value": "98",
+          "meter": 98,
+          "kind": "open",
+          "status": "Open now",
+          "badge": "",
+          "has_date": true,
+          "headline_label": "Next appointment",
+          "headline": "Sep 24",
+          "centre": "Abu Dhabi, Short Stay",
+          "empty_title": "",
+          "empty_sub": "Last slot Sep 24, seen 13m ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "1d"
+            },
+            {
+              "label": "Soonest",
+              "value": "1d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "13m"
+            },
+            {
+              "label": "Drift",
+              "value": "+1d"
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "order": [
+            0,
+            "2026-09-25",
+            -95
+          ],
+          "country": "Norway",
+          "forecast": null,
+          "meter_value": "95",
+          "meter": 95,
+          "kind": "open",
+          "status": "Open now",
+          "badge": "",
+          "has_date": true,
+          "headline_label": "Next appointment",
+          "headline": "Sep 25",
+          "centre": "Abu Dhabi, Short Stay - Tourist",
+          "empty_title": "",
+          "empty_sub": "Last slot Sep 29, seen 15m ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "2d"
+            },
+            {
+              "label": "Soonest",
+              "value": "2d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "15m"
+            },
+            {
+              "label": "Drift",
+              "value": "+5.6d"
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "order": [
+            2,
+            "",
+            -53
+          ],
+          "country": "Hungary",
+          "forecast": {
+            "label": "Next opening",
+            "value": "Sep 23 – Sep 24",
+            "note": "pooled",
+            "kind": "due"
+          },
+          "meter_value": "53",
+          "meter": 53,
+          "kind": "wait",
+          "status": "No slots now",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "",
+          "empty_sub": "Last slot Oct 26, seen 3h ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "16d"
+            },
+            {
+              "label": "Soonest",
+              "value": "3d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "3h"
+            },
+            {
+              "label": "Drift",
+              "value": "+5.4d"
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Switzerland",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 5,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Germany",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 6,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Greece",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        }
+      ],
+      "table": [
+        {
+          "rank": 1,
+          "order": [
+            0,
+            "2026-09-24",
+            -98
+          ],
+          "country": "Sweden",
+          "forecast": null,
+          "meter_value": "98",
+          "meter": 98,
+          "kind": "open",
+          "status": "Open now",
+          "badge": "",
+          "has_date": true,
+          "headline_label": "Next appointment",
+          "headline": "Sep 24",
+          "centre": "Abu Dhabi, Short Stay",
+          "empty_title": "",
+          "empty_sub": "Last slot Sep 24, seen 13m ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "1d"
+            },
+            {
+              "label": "Soonest",
+              "value": "1d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "13m"
+            },
+            {
+              "label": "Drift",
+              "value": "+1d"
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "order": [
+            0,
+            "2026-09-25",
+            -95
+          ],
+          "country": "Norway",
+          "forecast": null,
+          "meter_value": "95",
+          "meter": 95,
+          "kind": "open",
+          "status": "Open now",
+          "badge": "",
+          "has_date": true,
+          "headline_label": "Next appointment",
+          "headline": "Sep 25",
+          "centre": "Abu Dhabi, Short Stay - Tourist",
+          "empty_title": "",
+          "empty_sub": "Last slot Sep 29, seen 15m ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "2d"
+            },
+            {
+              "label": "Soonest",
+              "value": "2d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "15m"
+            },
+            {
+              "label": "Drift",
+              "value": "+5.6d"
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "order": [
+            2,
+            "",
+            -53
+          ],
+          "country": "Hungary",
+          "forecast": {
+            "label": "Next opening",
+            "value": "Sep 23 – Sep 24",
+            "note": "pooled",
+            "kind": "due"
+          },
+          "meter_value": "53",
+          "meter": 53,
+          "kind": "wait",
+          "status": "No slots now",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "",
+          "empty_sub": "Last slot Oct 26, seen 3h ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "16d"
+            },
+            {
+              "label": "Soonest",
+              "value": "3d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "3h"
+            },
+            {
+              "label": "Drift",
+              "value": "+5.4d"
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Switzerland",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 5,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Germany",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 6,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Greece",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 7,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Italy",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "Jul 24"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 8,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Netherlands",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 9,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Czech Republic",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "Jul 28"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 10,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "France",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "wait",
+          "status": "No slots now",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "",
+          "empty_sub": "Last slot Oct 21, seen 12d ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "Sep 11"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 11,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "Malta",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "none",
+          "status": "Not checked",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Not checked",
+          "empty_sub": "No data for this country yet",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 12,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "Luxembourg",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "none",
+          "status": "Not checked",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Not checked",
+          "empty_sub": "No data for this country yet",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        }
+      ],
+      "feed": [
+        {
+          "title": "Hungary: slot gone",
+          "sub": "Abu Dhabi, was Oct 26",
+          "kind": "occ",
+          "when": "2h"
+        },
+        {
+          "title": "Hungary: new slot Oct 26",
+          "sub": "Abu Dhabi, Short Stay - Tourist",
+          "kind": "open",
+          "when": "3h"
+        },
+        {
+          "title": "Hungary: slot gone",
+          "sub": "Abu Dhabi, was Oct 26",
+          "kind": "occ",
+          "when": "4h"
+        },
+        {
+          "title": "Germany: waitlist opened",
+          "sub": "Abu Dhabi, Short Term Visa - Short Stay",
+          "kind": "wait",
+          "when": "5h"
+        },
+        {
+          "title": "Hungary: new slot Sep 30",
+          "sub": "Abu Dhabi, Short Stay - Tourist",
+          "kind": "open",
+          "when": "8h"
+        }
+      ],
+      "note_label": "Best right now",
+      "note": "Sweden, Sep 24 at Abu Dhabi, Short Stay. Typical wait 1d."
+    },
+    {
+      "name": "Business",
+      "subtitle": "Business appointments in the UAE, ranked live",
+      "feed_title": "What just changed",
+      "feed_empty": "Nothing has changed in the window.",
+      "kpis": [
+        {
+          "label": "Top pick",
+          "value": "Sweden"
+        },
+        {
+          "label": "Soonest",
+          "value": "Sep 24"
+        },
+        {
+          "label": "Open now",
+          "value": "2 of 12"
+        },
+        {
+          "label": "Waitlist only",
+          "value": "3"
+        }
+      ],
+      "cards": [
+        {
+          "rank": 1,
+          "order": [
+            0,
+            "2026-09-24",
+            -98
+          ],
+          "country": "Sweden",
+          "forecast": null,
+          "meter_value": "98",
+          "meter": 98,
+          "kind": "open",
+          "status": "Open now",
+          "badge": "",
+          "has_date": true,
+          "headline_label": "Next appointment",
+          "headline": "Sep 24",
+          "centre": "Abu Dhabi, Short Stay",
+          "empty_title": "",
+          "empty_sub": "Last slot Sep 24, seen 13m ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "1d"
+            },
+            {
+              "label": "Soonest",
+              "value": "1d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "13m"
+            },
+            {
+              "label": "Drift",
+              "value": "+1d"
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "order": [
+            0,
+            "2026-10-26",
+            -77
+          ],
+          "country": "France",
+          "forecast": null,
+          "meter_value": "77",
+          "meter": 77,
+          "kind": "open",
+          "status": "Open now",
+          "badge": "",
+          "has_date": true,
+          "headline_label": "Next appointment",
+          "headline": "Oct 26",
+          "centre": "Abu Dhabi, Short Stay - Business",
+          "empty_title": "",
+          "empty_sub": "Last slot Oct 26, seen 26m ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "26d"
+            },
+            {
+              "label": "Soonest",
+              "value": "22d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "26m"
+            },
+            {
+              "label": "Drift",
+              "value": "+2.6d"
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "order": [
+            2,
+            "",
+            -54
+          ],
+          "country": "Hungary",
+          "forecast": {
+            "label": "Next opening",
+            "value": "too little history to say",
+            "note": "",
+            "kind": "quiet"
+          },
+          "meter_value": "54",
+          "meter": 54,
+          "kind": "wait",
+          "status": "No slots now",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "",
+          "empty_sub": "Last slot Oct 26, seen 3h ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "16d"
+            },
+            {
+              "label": "Soonest",
+              "value": "3d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "3h"
+            },
+            {
+              "label": "Drift",
+              "value": "+3.7d"
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Switzerland",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 5,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Germany",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 6,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Greece",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        }
+      ],
+      "table": [
+        {
+          "rank": 1,
+          "order": [
+            0,
+            "2026-09-24",
+            -98
+          ],
+          "country": "Sweden",
+          "forecast": null,
+          "meter_value": "98",
+          "meter": 98,
+          "kind": "open",
+          "status": "Open now",
+          "badge": "",
+          "has_date": true,
+          "headline_label": "Next appointment",
+          "headline": "Sep 24",
+          "centre": "Abu Dhabi, Short Stay",
+          "empty_title": "",
+          "empty_sub": "Last slot Sep 24, seen 13m ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "1d"
+            },
+            {
+              "label": "Soonest",
+              "value": "1d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "13m"
+            },
+            {
+              "label": "Drift",
+              "value": "+1d"
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "order": [
+            0,
+            "2026-10-26",
+            -77
+          ],
+          "country": "France",
+          "forecast": null,
+          "meter_value": "77",
+          "meter": 77,
+          "kind": "open",
+          "status": "Open now",
+          "badge": "",
+          "has_date": true,
+          "headline_label": "Next appointment",
+          "headline": "Oct 26",
+          "centre": "Abu Dhabi, Short Stay - Business",
+          "empty_title": "",
+          "empty_sub": "Last slot Oct 26, seen 26m ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "26d"
+            },
+            {
+              "label": "Soonest",
+              "value": "22d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "26m"
+            },
+            {
+              "label": "Drift",
+              "value": "+2.6d"
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "order": [
+            2,
+            "",
+            -54
+          ],
+          "country": "Hungary",
+          "forecast": {
+            "label": "Next opening",
+            "value": "too little history to say",
+            "note": "",
+            "kind": "quiet"
+          },
+          "meter_value": "54",
+          "meter": 54,
+          "kind": "wait",
+          "status": "No slots now",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "",
+          "empty_sub": "Last slot Oct 26, seen 3h ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "16d"
+            },
+            {
+              "label": "Soonest",
+              "value": "3d"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "3h"
+            },
+            {
+              "label": "Drift",
+              "value": "+3.7d"
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Switzerland",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 5,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Germany",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 6,
+          "order": [
+            2,
+            "",
+            -5
+          ],
+          "country": "Greece",
+          "forecast": null,
+          "meter_value": "5",
+          "meter": 5,
+          "kind": "wait",
+          "status": "Waitlist only",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Waitlist only",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 7,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "Italy",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "wait",
+          "status": "No slots now",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "",
+          "empty_sub": "Last slot Jul 31, seen 60d ago",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "Jul 24"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 8,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "Malta",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "none",
+          "status": "Not checked",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Not checked",
+          "empty_sub": "No data for this country yet",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 9,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "Netherlands",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "wait",
+          "status": "No slots now",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "No slots",
+          "empty_sub": "Nothing seen in the window",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 10,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "Czech Republic",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "none",
+          "status": "Not checked",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Not checked",
+          "empty_sub": "No data for this country yet",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "Jul 28"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 11,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "Luxembourg",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "none",
+          "status": "Not checked",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Not checked",
+          "empty_sub": "No data for this country yet",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 12,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "Norway",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "none",
+          "status": "Not checked",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "empty_title": "Not checked",
+          "empty_sub": "No data for this country yet",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "Jul 24"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        }
+      ],
+      "feed": [
+        {
+          "title": "Hungary: slot gone",
+          "sub": "Abu Dhabi, was Oct 26",
+          "kind": "occ",
+          "when": "2h"
+        },
+        {
+          "title": "Hungary: new slot Oct 26",
+          "sub": "Abu Dhabi, Short Stay - Business",
+          "kind": "open",
+          "when": "3h"
+        },
+        {
+          "title": "Hungary: slot gone",
+          "sub": "Abu Dhabi, was Oct 26",
+          "kind": "occ",
+          "when": "4h"
+        },
+        {
+          "title": "Germany: waitlist opened",
+          "sub": "Abu Dhabi, Short Term Visa - Short Stay",
+          "kind": "wait",
+          "when": "5h"
+        },
+        {
+          "title": "Hungary: Sep 30, 19 days sooner",
+          "sub": "Abu Dhabi, was Oct 19",
+          "kind": "open",
+          "when": "8h"
+        }
+      ],
+      "note_label": "Best right now",
+      "note": "Sweden, Sep 24 at Abu Dhabi, Short Stay. Typical wait 1d."
+    },
+    {
+      "name": "Waitlist",
+      "subtitle": "Waitlists open in the UAE — register now, take the drop",
+      "feed_title": "Waitlist changes",
+      "feed_empty": "No waitlist opened or closed in the window — the open ones stayed open.",
+      "kpis": [
+        {
+          "label": "Open now",
+          "value": "6"
+        },
+        {
+          "label": "Every check",
+          "value": "6"
+        },
+        {
+          "label": "Real slots too",
+          "value": "0"
+        },
+        {
+          "label": "Countries",
+          "value": "6"
+        }
+      ],
+      "cards": [
+        {
+          "rank": 1,
+          "country": "Greece",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "47m"
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "country": "Italy",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "17m"
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "country": "Netherlands",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "10m"
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "country": "Switzerland",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "27m"
+            }
+          ]
+        },
+        {
+          "rank": 5,
+          "country": "Czech Republic",
+          "meter_value": "99%",
+          "meter": 99,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "99%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "just now"
+            }
+          ]
+        },
+        {
+          "rank": 6,
+          "country": "Germany",
+          "meter_value": "99%",
+          "meter": 99,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "99%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "20m"
+            }
+          ]
+        }
+      ],
+      "table": [
+        {
+          "rank": 1,
+          "country": "Greece",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "47m"
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "country": "Italy",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "17m"
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "country": "Netherlands",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "10m"
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "country": "Switzerland",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "27m"
+            }
+          ]
+        },
+        {
+          "rank": 5,
+          "country": "Czech Republic",
+          "meter_value": "99%",
+          "meter": 99,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "99%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "just now"
+            }
+          ]
+        },
+        {
+          "rank": 6,
+          "country": "Germany",
+          "meter_value": "99%",
+          "meter": 99,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "99%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "20m"
+            }
+          ]
+        }
+      ],
+      "feed": [
+        {
+          "title": "Germany: waitlist opened",
+          "sub": "Abu Dhabi, Short Term Visa - Short Stay",
+          "kind": "wait",
+          "when": "5h"
+        },
+        {
+          "title": "Czech Republic: waitlist opened",
+          "sub": "Dubai, Tourism",
+          "kind": "wait",
+          "when": "1d"
+        },
+        {
+          "title": "Czech Republic: waitlist opened",
+          "sub": "Abu Dhabi, Tourism",
+          "kind": "wait",
+          "when": "1d"
+        },
+        {
+          "title": "Switzerland: waitlist opened",
+          "sub": "Dubai, SCHENGEN",
+          "kind": "wait",
+          "when": "1d"
+        }
+      ],
+      "note_label": "Waitlists open now",
+      "note": "Greece, Italy, Netherlands, Switzerland, Czech Republic, Germany."
+    }
+  ]
+}
