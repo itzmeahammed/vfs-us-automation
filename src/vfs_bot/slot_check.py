@@ -16,6 +16,7 @@ tests/test_slot_check.py).
 import logging
 
 from src.settings import settings
+from src.slots import store as slot_store
 from src.utils.config_reader import get_config_value
 from src.vfs_bot import diagnostics, page_guard, turnstile
 from src.vfs_bot.errors import SlotCheckError
@@ -463,6 +464,13 @@ def run_slot_check(page, schema: dict, source_country_code: str,
                            else "No slot message shown (no availability?).")
 
         logging.info(f"  -> {message}")
+        # Keep this reading forever, in the slot database the dashboard reads.
+        # Passed as the STRUCTURED combo (not its label) so the history is keyed
+        # on centre/category/sub-category and survives VFS renaming a dropdown.
+        # Failure-isolated inside the store: recording history must never cost
+        # us a slot check.
+        slot_store.record_check(
+            f"{source_country_code}-{destination_country_code}", message, combo=combo)
         results.append((result_label(combo), message))
         report_entries.append((combo, message))
         diagnostics.take_screenshot(page, f"slot_{len(results)}")

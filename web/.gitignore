@@ -1,0 +1,5 @@
+# The verify harness only. Nothing here ships with the component.
+node_modules/
+package-lock.json
+verify/.render.cjs
+verify/.dom.cjs

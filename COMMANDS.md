@@ -234,6 +234,31 @@ auto-flagged insights (e.g. "route PAUSED — all accounts benched").
 Read-only (never changes state). To act on what it shows, use the account-health
 commands above.
 
+## Slot board (which country is easiest — for sales agents)
+
+Every check the bot makes is recorded in `state/slots.db` (SQLite, kept
+forever). The board ranks countries by how often slots appear, how soon they
+are, and how recently one was seen, and gives each a copy-ready pitch line.
+
+```powershell
+# Build the page (rebuilt automatically after every run too)
+& .venv\Scripts\python.exe -m scripts.build_dashboard            # -> reports\slot_dashboard.html
+& .venv\Scripts\python.exe -m scripts.build_dashboard --open     # and open it
+& .venv\Scripts\python.exe -m scripts.build_dashboard --days 30  # wider window
+
+# Wall board for a screen in the office (card wall design, auto-reloads)
+& .venv\Scripts\python.exe -m scripts.build_wall                   # -> reports\slot_wall.html
+& .venv\Scripts\python.exe -m scripts.build_wall --open            # open it (then F11 fullscreen)
+
+# Import history from the log files (idempotent — safe to re-run)
+& .venv\Scripts\python.exe -m scripts.seed_from_logs             # last 7 days
+& .venv\Scripts\python.exe -m scripts.seed_from_logs --all       # every log on disk
+```
+
+Recording is controlled by `[slots]` in `config/config.ini`. If a label in the
+logs doesn't match anything in `config/routes`, the seeder lists it instead of
+guessing — fix the route file, then re-run to import those readings.
+
 ## Log maintenance
 
 `app.log` grows over time — trim it occasionally:

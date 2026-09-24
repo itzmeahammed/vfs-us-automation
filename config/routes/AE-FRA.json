@@ -3,11 +3,14 @@
   "mode": "slot-check",
   "slot_check": {
     "_comment_labels": "Labels must be UNIQUE within a route — a waitlist client file names the combination it wants by label, and duplicates would silently resolve to whichever came first. The centre alone is NOT unique here (two rows share each centre and differ only by category), so each label carries the category too.",
+    "_comment_tv": "tv_title and tv_category are WORDING FOR THE TV ONLY. France sells its tourist appointments as 'Short Stay (any purpose)', which reads as nothing across a room, so the screen says 'Tourist' over 'France - Abu Dhabi - Short Stay'. Telegram, the dashboard and the slot history are untouched — availability under an any-purpose category still counts for business clients there.",
     "combinations": [
-      { "label": "Abu Dhabi - Short Stay - Business", 
-        "centre": "Abu Dhabi", "category": "Short Stay - Business", "sub_category": "" },
+      { "label": "Abu Dhabi - Short Stay - Business",
+        "centre": "Abu Dhabi", "category": "Short Stay - Business", "sub_category": "",
+        "tv_title": "Business" },
       { "label": "Abu Dhabi - Short Stay (any purpose)",
-        "centre": "Abu Dhabi", "category": "Short Stay (any purpose)", "sub_category": "" },
+        "centre": "Abu Dhabi", "category": "Short Stay (any purpose)", "sub_category": "",
+        "tv_title": "Tourist", "tv_category": "Short Stay" },
 
       { "label": "Temporary Enrolment Location - Damac Hills - Short Stay - Business", "disabled": true,
         "centre": "Temporary Enrolment Location - Damac Hills", "category": "Short Stay - Business", "sub_category": "" },

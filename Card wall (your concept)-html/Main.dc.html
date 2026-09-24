@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    body { margin: 0; background: #0F1B2A; color: #EEF2F6; font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif; }
+    a { color: #6CB4FF; } a:hover { color: #9BCBFF; }
+    .disp { font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif; }
+  </style>
+</helmet>
+<div style="width: 1920px; height: 1080px; box-sizing: border-box; padding: 40px 48px; display: flex; flex-direction: column; gap: 24px; background: #0F1B2A;">
+
+  <div style="display: flex; align-items: center; justify-content: space-between; height: 96px; gap: 40px;">
+    <div style="display: flex; flex-direction: column; gap: 4px;">
+      <div class="disp" style="font-size: 56px; font-weight: 700; line-height: 1;">Schengen Slot Board</div>
+      <div style="font-size: 20px; color: #9AAABB;">Tourist appointments in the UAE, ranked live</div>
+    </div>
+    <div style="display: flex; gap: 16px;">
+      <sc-for list="{{kpis}}" as="k" hint-placeholder-count="4">
+        <div style="display: flex; flex-direction: column; gap: 2px; padding: 14px 28px; background: #16263A; border-radius: 14px; min-width: 170px;">
+          <div style="font-size: 16px; color: #9AAABB;">{{k.label}}</div>
+          <div class="disp" style="font-size: 44px; font-weight: 600; line-height: 1;">{{k.value}}</div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+      <div class="disp" style="font-size: 56px; font-weight: 600; line-height: 1;">16:24</div>
+      <div style="display: flex; align-items: center; gap: 8px; font-size: 18px; color: #9AAABB;">
+        <span style="width: 10px; height: 10px; border-radius: 50%; background: #3DD68C;"></span>
+        <span>Thu 17 Sep, updated 12s ago</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1; display: grid; grid-template-columns: minmax(0, 1fr) 460px; gap: 24px; min-height: 0;">
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 20px;">
+      <sc-for list="{{cards}}" as="c" hint-placeholder-count="6">
+        <div style="{{c.cardStyle}}">
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;">
+            <div style="display: flex; align-items: baseline; gap: 14px;">
+              <span class="disp" style="font-size: 40px; font-weight: 600; color: #5E7086;">{{c.rank}}</span>
+              <span class="disp" style="font-size: 52px; font-weight: 700; line-height: 1;">{{c.country}}</span>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+              <span class="disp" style="font-size: 44px; font-weight: 600; line-height: 1;">{{c.score}}</span>
+              <div style="width: 96px; height: 6px; border-radius: 3px; background: #26384E;">
+                <div style="height: 6px; border-radius: 3px; background: {{accent}}; width: {{c.score}}%;"></div>
+              </div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 14px; font-size: 20px;">
+            <span style="display: flex; align-items: center; gap: 8px;">
+              <span style="{{c.dot}}"></span><span>{{c.status}}</span>
+            </span>
+            <sc-if value="{{c.moved}}" hint-placeholder-val="{{ false }}">
+              <span style="padding: 2px 10px; border-radius: 999px; background: #1E3A2E; color: #7FE3AE; font-size: 16px; font-weight: 600;">{{c.moved}}</span>
+            </sc-if>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; justify-content: center;">
+            <sc-if value="{{c.hasDate}}" hint-placeholder-val="{{ true }}">
+              <div style="font-size: 16px; color: #9AAABB;">Next appointment</div>
+              <div class="disp" style="font-size: 88px; font-weight: 700; line-height: 0.95; color: #FFFFFF;">{{c.next}}</div>
+              <div style="font-size: 20px; color: #C9D3DE;">{{c.centre}}</div>
+            </sc-if>
+            <sc-if value="{{c.noDate}}" hint-placeholder-val="{{ false }}">
+              <div class="disp" style="font-size: 56px; font-weight: 600; color: {{c.emptyColor}};">{{c.emptyTitle}}</div>
+              <div style="font-size: 20px; color: #9AAABB;">{{c.emptySub}}</div>
+            </sc-if>
+          </div>
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding-top: 14px; border-top: 1px solid #26384E;">
+            <div style="display: flex; align-items: flex-end; gap: 5px; height: 36px;">
+              <sc-for list="{{c.week}}" as="b" hint-placeholder-count="7">
+                <div style="width: 12px; border-radius: 2px; height: {{b.h}}px; background: {{b.c}};"></div>
+              </sc-for>
+            </div>
+            <div style="display: flex; gap: 24px; font-size: 17px; color: #9AAABB;">
+              <span>Wait <b style="color: #EEF2F6;">{{c.wait}}</b></span>
+              <span>Seen <b style="color: #EEF2F6;">{{c.seen}}</b></span>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 16px; background: #16263A; border-radius: 18px; padding: 28px;">
+      <div class="disp" style="font-size: 34px; font-weight: 600;">What just changed</div>
+      <sc-for list="{{feed}}" as="f" hint-placeholder-count="6">
+        <div style="display: flex; gap: 14px; padding: 14px 0; border-bottom: 1px solid #26384E;">
+          <span style="{{f.dot}}"></span>
+          <div style="display: flex; flex-direction: column; gap: 4px; flex-grow: 1;">
+            <div style="font-size: 21px; font-weight: 600;">{{f.title}}</div>
+            <div style="font-size: 17px; color: #9AAABB;">{{f.sub}}</div>
+          </div>
+          <div style="font-size: 16px; color: #9AAABB; white-space: nowrap;">{{f.when}}</div>
+        </div>
+      </sc-for>
+      <div style="margin-top: auto; padding: 20px; border-radius: 14px; background: #0F1B2A; display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-size: 16px; color: #9AAABB;">Say this to the client</div>
+        <div style="font-size: 21px; line-height: 1.4;">Sweden is open almost every day. We can book Abu Dhabi for 18 Sep.</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="height: 56px; display: flex; align-items: center; gap: 24px; padding: 0 24px; border-radius: 12px; background: #16263A; font-size: 20px; color: #C9D3DE; overflow: hidden; white-space: nowrap;">
+    <span style="color: #F07A64; font-weight: 600;">Waitlist only</span>
+    <span>Switzerland, Germany, Greece</span>
+    <span style="color: #5E7086;">|</span>
+    <span>3,379 checks across 10 countries in the last 7 days</span>
+    <span style="color: #5E7086;">|</span>
+    <span>Dates shown are the earliest offered, any party size</span>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"accent":{"editor":"color","default":"#6CB4FF","options":["#6CB4FF","#3DD68C","#F2B84B"]},"$preview":{"width":1920,"height":1080}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#6CB4FF';
+    const col = { open: '#3DD68C', occ: '#F2B84B', wait: '#F07A64' };
+    const dot = (k) => 'width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; background: ' + col[k] + ';';
+    const wk = (arr, k) => arr.map((v) => ({ h: Math.max(4, v * 36), c: v > 0 ? (k === 'open' ? accent : col[k]) : '#26384E' }));
+    const base = 'display: flex; flex-direction: column; gap: 14px; padding: 26px 28px; border-radius: 18px; background: #16263A; min-height: 0;';
+    const top = base + ' box-shadow: inset 0 0 0 2px ' + accent + ';';
+    const raw = [
+      { country: 'Sweden', score: 96, k: 'open', status: 'Always open', next: 'Sep 18', centre: 'Abu Dhabi, Short Stay Tourist', wait: '2d', seen: '2m ago', moved: '', week: [1,1,0.2,1,1,1,1] },
+      { country: 'Norway', score: 96, k: 'open', status: 'Always open', next: 'Sep 21', centre: 'Abu Dhabi, Tourist', wait: '2d', seen: '4m ago', moved: 'New slot', week: [1,1,0.2,1,1,1,1] },
+      { country: 'Hungary', score: 36, k: 'occ', status: 'Occasional', next: '', emptyTitle: 'Worth watching', emptySub: 'Last slot Sep 30, seen 2d ago', wait: '7d', seen: '13m ago', moved: '', week: [0,0,0,0.4,0,0,0] },
+      { country: 'France', score: 18, k: 'occ', status: 'Occasional', next: '', emptyTitle: 'Worth watching', emptySub: 'Last slot Oct 21, seen 5d ago', wait: '24d', seen: '47m ago', moved: '', week: [0.3,0,0,0,0,0,0] },
+      { country: 'Switzerland', score: 5, k: 'wait', status: 'Waitlist only', next: '', emptyTitle: 'Waitlist only', emptySub: 'Register the client, wait for a drop', centre: '', wait: '—', seen: '20m ago', moved: '', week: [0,0,0,0,0,0,0] },
+      { country: 'Germany', score: 5, k: 'wait', status: 'Waitlist only', next: '', emptyTitle: 'Waitlist only', emptySub: 'Register the client, wait for a drop', centre: '', wait: '—', seen: '12m ago', moved: '', week: [0,0,0,0,0,0,0] }
+    ];
+    const cards = raw.map((r, i) => ({ ...r, rank: i + 1, dot: dot(r.k).replace('margin-top: 6px; ', ''), hasDate: !!r.next, noDate: !r.next, week: wk(r.week, r.k), cardStyle: i === 0 ? top : base, emptyColor: col[r.k] }));
+    const feed = [
+      { k: 'open', title: 'Sweden: new slot 18 Sep', sub: 'Abu Dhabi, Short Stay Tourist', when: '2m' },
+      { k: 'open', title: 'Norway: new slot 21 Sep', sub: 'Abu Dhabi, dates drifting +1d', when: '4m' },
+      { k: 'occ', title: 'Hungary checked, nothing yet', sub: 'Dubai and Abu Dhabi', when: '13m' },
+      { k: 'wait', title: 'Germany still waitlist', sub: 'Abu Dhabi', when: '12m' },
+      { k: 'occ', title: 'France dates drifting later', sub: '+4.3 days this week', when: '47m' }
+    ].map((f) => ({ ...f, dot: dot(f.k) }));
+    const kpis = [
+      { label: 'Top pick', value: 'Sweden' },
+      { label: 'Soonest', value: 'Sep 18' },
+      { label: 'Open now', value: '2 of 12' },
+      { label: 'Waitlist only', value: '6' }
+    ];
+    return { accent, cards, feed, kpis };
+  }
+}
+</script>
+</body>
+</html>

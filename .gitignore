@@ -70,3 +70,6 @@ logs/api_jobs/
 # repo. Only ignore a local override and the agent log.
 ngrok/ngrok.local.yml
 ngrok/*.log
+
+# Generated slot dashboard (rebuilt from state/slots.db after every run)
+reports/
