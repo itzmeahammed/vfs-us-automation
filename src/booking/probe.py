@@ -177,6 +177,16 @@ def parse_card(text: str, index: int, reference_pattern: str) -> DashboardRow:
     return row
 
 
+#: How long to wait for the first application card to render.
+#:
+#: The dashboard is Angular: the HTML arrives, then the applications are
+#: fetched and the cards are drawn. 15s is generous for that round trip over a
+#: metered residential proxy, and it is only ever paid in full by an account
+#: that really has no applications — where waiting costs nothing, because that
+#: run has nothing else to do.
+CARD_WAIT_MS = 15000
+
+
 def read_dashboard(page, route: str) -> List[DashboardRow]:
     """Reads every application card on the dashboard. Clicks nothing."""
     selector = _card_selector(route)
@@ -186,6 +196,30 @@ def read_dashboard(page, route: str) -> List[DashboardRow]:
     rows: List[DashboardRow] = []
     try:
         cards = page.locator(selector).filter(visible=True)
+
+        # WAIT for the first card before counting.
+        #
+        # `.count()` is an INSTANT query — it is one of the few Playwright calls
+        # with no auto-waiting, so it returns whatever exists at that moment.
+        # This dashboard is Angular and fetches the applications after the page
+        # itself has loaded, so counting immediately reliably returned 0 and the
+        # probe then reported "this account holds no applications" about an
+        # account that demonstrably had one.
+        #
+        # That was a wrong answer delivered confidently, which is worse than an
+        # error: it sent the search off after the wrong problem entirely.
+        #
+        # A timeout here is NOT a failure — an account genuinely holding nothing
+        # will always time out, and that is a real and expected answer. So this
+        # falls through to the count either way and lets _diagnose_empty() ask
+        # the page which case it is.
+        try:
+            cards.first.wait_for(state="visible", timeout=CARD_WAIT_MS)
+        except Exception:
+            log.debug(
+                f"No card became visible within {CARD_WAIT_MS}ms — either the "
+                "account holds none, or the selector is wrong. Diagnosing.")
+
         count = cards.count()
     except Exception as e:
         log.warning(f"Could not query cards with '{selector}': {e}")
@@ -390,6 +424,13 @@ def run_probe(source: str, dest: str,
         if "dashboard" not in (page.url or "").lower():
             log.warning(f"Expected a dashboard URL, got {page.url} — navigating.")
             _go_to_dashboard(page, url)
+
+        # Keep the dashboard itself. A probe that finds 0 cards is the case
+        # most worth investigating later, and "the page said no applications"
+        # is a claim you want to be able to re-read rather than re-earn: it
+        # costs a login, a Turnstile solve and metered proxy to see again.
+        from src.booking.walk import _capture_html
+        _capture_html(page, "dashboard")
 
         result.rows = read_dashboard(page, route)
         result.bookable = [r for r in result.rows if r.bookable]

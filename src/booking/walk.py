@@ -34,8 +34,11 @@ the opposite direction. They will likely converge once the flow is known.
 
 from __future__ import annotations
 
+import io
 import logging
+import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -64,6 +67,7 @@ class StepReport:
     detail: str = ""
     found: Dict[str, Any] = field(default_factory=dict)
     page_text: str = ""
+    html_path: str = ""      # where this page's DOM was saved, if it was
 
     def summary(self) -> str:
         mark = "OK  " if self.ok else "STOP"
@@ -201,6 +205,42 @@ def _page_text(page, limit: int = 400) -> str:
         return ""
 
 
+CAPTURE_DIR = os.path.join("switzerland_booking", "captured")
+
+
+def _capture_html(page, step_name: str) -> str:
+    """Save this page's rendered DOM. Returns the path, or "" if it could not.
+
+    THE WHOLE POINT OF WALKING IS TO KEEP THE PAGE, NOT TO LOOK AT IT.
+
+    An invitation is the only chance to see these pages, and the Swiss window is
+    12 hours. Without this the walk printed a 400-character text summary, left
+    the browser open, and expected a human to read selectors off the screen
+    before the session died — so a walk run at 3am captured nothing, and the DOM
+    was gone until the next invitation, which may be weeks away.
+
+    `page.content()` is the RENDERED DOM, not the server's original HTML. That
+    is what is wanted here: this portal is Angular, so the interesting markup —
+    the calendar cells, the slot table — does not exist in the served response
+    at all.
+
+    Best-effort by design. A capture failure must never stop a walk that is
+    racing a deadline: the walk is the irreplaceable part, the file is a
+    convenience.
+    """
+    try:
+        os.makedirs(CAPTURE_DIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(CAPTURE_DIR, f"{stamp}_{step_name}.html")
+        with io.open(path, "w", encoding="utf-8") as fh:
+            fh.write(page.content())
+        log.info(f"  captured DOM -> {path}")
+        return path
+    except Exception as e:
+        log.warning(f"  could not capture DOM for '{step_name}': {e}")
+        return ""
+
+
 def walk_flow(page, route: str, to_step: Optional[str] = None,
               dry_run: bool = True) -> WalkResult:
     """Walk the configured booking steps from wherever the page currently is.
@@ -231,6 +271,9 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             _await_page(page, step, timeout_ms)
             report.url = page.url
             report.page_text = _page_text(page)
+            # Captured BEFORE anything is clicked: this is the page as it
+            # arrives, which is the state a config has to describe.
+            report.html_path = _capture_html(page, name)
 
             if step.get("type") == "slot_pick":
                 _do_slot_pick(page, step, report, timeout_ms)
@@ -263,6 +306,10 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             report.detail = str(e)
             report.url = page.url
             report.page_text = _page_text(page)
+            # The page that BROKE the walk is the one worth keeping most: it is
+            # either a page no config describes, or a selector that has drifted.
+            if not report.html_path:
+                report.html_path = _capture_html(page, f"{name}_FAILED")
             result.steps.append(report)
             result.stopped_at = name
             result.reason = str(e)

@@ -17,11 +17,13 @@
     {
       "name": "waitlist_invitation",
       "body_contains": ["from UAE to Switzerland"],
-      "validity_hours": null,
+      "validity_hours": 12,
 
-      "_comment_validity": "*** NOT YET KNOWN — DELIBERATELY NOT GUESSED. *** Greece and Netherlands say 36 hours, Italy says 48, and the AE-NLD config warns that the base's 48 'is now the odd one out, and every new route should be checked rather than assumed'. No Swiss INVITATION has been seen yet, so the window is unverified. null here rather than a number so a wrong deadline cannot be computed and shown as fact. Set it from the real email when the first invitation arrives.",
+      "_comment_validity": "*** 12 HOURS. CONFIRMED from the real invitation read on 2026-09-24 — 'This link will only be valid for 12 hours'. *** This is the shortest window seen by a wide margin: Greece and Netherlands say 36, Italy says 48. Had this been left at the base's 48, a Swiss invitation arriving at 18:19 would have been shown as expiring in two days when it really expired at 06:19 the next morning — the client would have missed it while the system reported time in hand. That is exactly why this field was held null rather than guessed.",
 
-      "_comment_body": "PROVISIONAL. The confirmation's wording is confirmed; this line assumes the invitation names the country the same way. It is the reasonable inference — same sender, same template family — but it is an inference. Verify against the first real Swiss invitation, and if that mail does carry a portal URL, prefer '/are/en/che/' to match the other three configs."
+      "_comment_body": "CONFIRMED. The real invitation DOES carry the portal URL, unlike the confirmation email, so '/are/en/che/' would work here too. 'from UAE to Switzerland' is kept because it matches BOTH messages, and a single discriminator for the route is easier to reason about than two.",
+
+      "_comment_sender": "NOTE: the invitation comes from donotreply@vfsHELPLINE.com, while the confirmation comes from donotreply@vfsGLOBAL.com. Two different sending domains for the same route. The base matcher does not filter on sender, which is why both still match — do not add a from_contains here without checking both."
     }
   ],
 
