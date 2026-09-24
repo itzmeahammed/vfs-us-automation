@@ -51,7 +51,7 @@ CLIENT = {
     "first_name": "TRAV",
     "last_name": "NOOK",
     "gender": "Male",
-    "nationality": "India",
+    "nationality": "INDIA",
     "passport_number": "A12945678",
     "passport_expiry": "2030-07-05",
     "phone_country_code": "971",

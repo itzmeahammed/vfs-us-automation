@@ -187,6 +187,25 @@ def _check_client(cfg, route: str, person) -> int:
             print(f"    ✗ {combo}  — not in config/routes/{route}.json")
             print(f"        available: {'; '.join(known) or 'none'}")
 
+    # Dropdown values, against the options HARVESTED from the live portal.
+    #
+    # This is the check that earns its keep. A value like "INDIAN" resolves as a
+    # placeholder, passes every check above, and only fails deep inside a live
+    # run — after a login, a Turnstile solve and a committed form step — because
+    # the portal's own entry is "INDIA". That happened on 2026-09-24.
+    #
+    # Only fields whose list has actually been harvested are checked; an
+    # unharvested dropdown passes through rather than blocking on a list nobody
+    # has read. Run `doctor --walk --harvest` to populate one.
+    from src.waitlist.validate import check_choices
+
+    choice_problems = check_choices(route, dict(person.data))
+    problems += len(choice_problems)
+    for problem in choice_problems:
+        print(f"    ✗ {problem.message}")
+        if problem.hint:
+            print(f"        {problem.hint}")
+
     context = ctx.build(person, route=route,
                         combo=person.combos[0] if person.combos else "")
     unresolved = ctx.validate(_all_templates(cfg), context)

@@ -37,7 +37,7 @@ CLIENT = {
     "client_id": "doc-test", "route": "AE-CHE",
     "combos": ["Dubai - SCHENGEN"],
     "account": "p@example.com", "account_password": "x" * 10,
-    "first_name": "AVA", "last_name": "STONE", "nationality": "India",
+    "first_name": "AVA", "last_name": "STONE", "nationality": "INDIA",
     "passport_number": "Z9876543", "phone_country_code": "971",
     "phone_number": "501112233", "email": "ava@example.com",
 }

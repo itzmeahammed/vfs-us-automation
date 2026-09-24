@@ -21,7 +21,7 @@ def _person(**overrides):
         "combos": ["Dubai - SCHENGEN"],
         "first_name": "Ahmed",
         "last_name": "Khan",
-        "nationality": "India",
+        "nationality": "INDIA",
         "passport_number": "a1234567",
         "date_of_birth": "1990-04-12",
         "phone_country_code": "+971",

@@ -320,7 +320,7 @@ def _client(**overrides):
     data = {
         "route": "AE-CZE", "combos": ["Dubai - Tourism"],
         "first_name": "TRAV", "last_name": "NOOK", "gender": "Male",
-        "nationality": "India", "passport_number": "A1",
+        "nationality": "INDIA", "passport_number": "A1",
         "passport_expiry": "2030-07-05", "phone_country_code": "971",
         "phone_number": "556024553", "email": "a@b.com",
     }

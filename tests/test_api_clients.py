@@ -48,7 +48,7 @@ def _client_payload(client_id: str = "test-client-che", **overrides):
         "account_password": SECRET_PASSWORD,
         "first_name": "TEST",
         "last_name": "CLIENT",
-        "nationality": "India",
+        "nationality": "INDIA",
         "passport_number": "X1234567",
         "date_of_birth": "1990-04-12",
         "phone_country_code": "971",
