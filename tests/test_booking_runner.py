@@ -51,12 +51,26 @@ class FakePage:
 
 
 class FakeRegistrant:
+    """Thin stand-in for Registrant.
+
+    `as_context()` is part of that interface, not an optional extra: it is how
+    a client's fields reach {{placeholders}}, and the booking runner now builds
+    its values through it exactly as registration does.
+    """
+
     def __init__(self, rid="client-1", first="MUFADDAL", last="CALCUTTAWALA"):
         self.id = rid
-        self._data = {"first_name": first, "last_name": last}
+        self.route = "AE-CHE"
+        self.combos = ["Dubai - SCHENGEN"]
+        self.enabled = True
+        self._data = {"first_name": first, "last_name": last,
+                      "passport_number": "X1234567"}
 
     def get(self, key, default=None):
         return self._data.get(key, default)
+
+    def as_context(self):
+        return dict(self._data)
 
 
 class FakeRow:
@@ -279,6 +293,36 @@ class TestCommitBoundary(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # Finishing                                                                    #
 # --------------------------------------------------------------------------- #
+
+class TestClientData(unittest.TestCase):
+    """Booking reads the SAME client file registration used."""
+
+    def test_values_default_to_the_clients_own_record(self):
+        """No separate booking dataset, and none should be invented.
+
+        VFS matches a booking against the waitlist entry it already holds, so a
+        second copy of the client's details that could drift from the first is
+        how a booking ends up under details the waitlist does not recognise.
+        """
+        captured = {}
+
+        _patch_config(self, _steps(
+            {"name": "details", "type": "form",
+             "fields": [{"name": "first_name", "value": "{{first_name}}"}],
+             "submit": {"role": "button", "name": "Continue"}}))
+        self.enterContext(mock.patch.object(runner, "_await_page"))
+        self.enterContext(mock.patch.object(runner, "_capture"))
+        self.enterContext(mock.patch.object(runner, "_submit"))
+        self.enterContext(mock.patch(
+            "src.waitlist.fields.fill_all",
+            side_effect=lambda page, specs, values, timeout: captured.update(values)))
+
+        runner.book(FakePage(), "AE-CHE", FakeRegistrant(), live=True)
+
+        # ctx.build() is what flattens a client file for {{placeholders}}; the
+        # runner must reach for it rather than expect a caller to supply data.
+        self.assertIn("first_name", captured)
+
 
 class TestOutcome(unittest.TestCase):
 

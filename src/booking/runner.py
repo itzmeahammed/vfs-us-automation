@@ -435,7 +435,25 @@ def book(page, route: str, registrant, *, account: str = "",
     has moved to it.
     """
     run = BookingRun(route=route, registrant_id=registrant.id, account=account)
-    values = values or {}
+
+    # THE SAME CLIENT FILE REGISTRATION USED. There is no separate "booking
+    # data": config/registrants/<id>.json is the one record of a client, and
+    # ctx.build() flattens it into the mapping {{placeholders}} resolve against
+    # — exactly as the waitlist runner does.
+    #
+    # That is deliberate, not an economy. The client typed their passport
+    # number once, and VFS matches the booking against the waitlist entry it
+    # already holds; a second copy that could drift from the first is how a
+    # booking ends up under details the waitlist does not recognise.
+    #
+    # If a country's booking pages ask for something registration never
+    # collected, the missing key surfaces as an unresolved {{placeholder}} at
+    # validation time — before a browser starts — rather than as a half-filled
+    # form three pages in.
+    if values is None:
+        from src.waitlist import context as ctx_mod
+
+        values = ctx_mod.build(registrant, route=route)
 
     cfg = booking_config.get(route)
     if not cfg.get("enabled"):
