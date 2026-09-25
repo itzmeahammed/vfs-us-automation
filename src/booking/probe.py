@@ -489,14 +489,17 @@ def run_probe(source: str, dest: str,
             log.warning(f"Expected a dashboard URL, got {page.url} — navigating.")
             _go_to_dashboard(page, url)
 
-        # Keep the dashboard itself. A probe that finds 0 cards is the case
-        # most worth investigating later, and "the page said no applications"
-        # is a claim you want to be able to re-read rather than re-earn: it
-        # costs a login, a Turnstile solve and metered proxy to see again.
+        result.rows = read_dashboard(page, route)
+
+        # Captured AFTER read_dashboard, not before, and the order is the whole
+        # point: this dashboard is Angular and draws its cards from a fetch that
+        # completes after load. read_dashboard already waits for the first card,
+        # so capturing before it saved the pre-render page — which still says
+        # "No Application(s) Found" and contains none of the markup the capture
+        # exists to preserve. The empty file then looked like proof the account
+        # held nothing.
         from src.booking.walk import _capture_html
         _capture_html(page, "dashboard", route)
-
-        result.rows = read_dashboard(page, route)
         result.bookable = [r for r in result.rows if r.bookable]
 
         if person is not None:

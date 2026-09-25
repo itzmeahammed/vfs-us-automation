@@ -232,6 +232,17 @@ def main(argv: List[str] = None) -> int:
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
 
+    # Load the INI before any command runs. Every other entry point does this
+    # (waitlist/__main__.py:766); booking did not, and got away with it only
+    # because resolving a --registrant happened to initialise config as a side
+    # effect. Passing --email skips that path, so the first config read hit
+    # _config = None and the probe died with
+    # "'NoneType' object has no attribute 'has_section'" — a confusing error
+    # for a missing call, on the exact path used when there is no client file.
+    from src.utils.config_reader import initialize_config
+
+    initialize_config()
+
     commands = {"check": cmd_check, "status": cmd_status, "probe": cmd_probe}
     if args.command not in commands:
         parser.print_help()
