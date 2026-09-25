@@ -243,3 +243,60 @@ def test_an_unreadable_page_does_not_raise():
             raise RuntimeError("page gone")
 
     _diagnose_empty(Broken())
+
+
+# --------------------------------------------------------------------------- #
+# The real AE-CHE card                                                         #
+# --------------------------------------------------------------------------- #
+#
+# Every test above uses text transcribed from a SCREENSHOT. The text below was
+# taken off the running portal on 2026-09-25, from osama@travnook.com holding
+# SWDB82433277533 with an invitation open.
+
+REAL_CHE_CARD = (
+    "Appointment details General Appointments "
+    "Group Reference Number - SWDB82433277533 Manage Application "
+    "Waitlist Status: SLOTS AVAILABLE Book Now "
+    "Applicants: MUFADDAL MUFADDAL "
+    "Visa Application form Status - Not Initiated Edit Form"
+)
+
+
+def _real_row():
+    from src.booking.probe import _reference_pattern
+
+    return parse_card(REAL_CHE_CARD, 0, _reference_pattern("AE-CHE"))
+
+
+def test_the_real_card_yields_its_reference():
+    assert _real_row().reference == "SWDB82433277533"
+
+
+def test_the_applicant_name_stops_at_the_next_label():
+    """The name must not absorb the labels that FOLLOW it.
+
+    The dashboard puts "Visa Application form Status - ..." and "Edit Form"
+    straight after the applicant, and a terminator list naming only the labels
+    that PRECEDE it captured
+    "MUFADDAL MUFADDAL Visa Application form Status - Not Initiated Edit Form"
+    as the person's name. It still matched by reference, so this would have
+    gone unnoticed until a name comparison quietly failed.
+    """
+    assert _real_row().name == "MUFADDAL MUFADDAL"
+
+
+def test_the_reference_resolves_where_a_name_alone_refuses():
+    """Why the client file exists at all.
+
+    osama@travnook.com is shared by several real people, and an invitation
+    carries a name and no reference. Storing the reference at registration is
+    what turns a guess into an exact match.
+    """
+    rows = [_real_row()]
+
+    found, _ = match_row(rows, reference="SWDB82433277533",
+                         name="MUFADDAL MUFADDAL")
+    assert found is not None
+
+    refused, reason = match_row(rows, reference="", name="SOMEBODY ELSE")
+    assert refused is None, f"should have refused, got {reason}"

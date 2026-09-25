@@ -162,9 +162,17 @@ def parse_card(text: str, index: int, reference_pattern: str) -> DashboardRow:
         row.reference = found.group(1).strip()
 
     # "Applicants:" is followed by one or more names, up to the next label.
+    # The terminator list must name every label that can FOLLOW "Applicants:",
+    # not merely the ones that precede it. On the real AE-CHE dashboard the
+    # applicant row is followed by "Visa Application form Status - ..." and
+    # "Edit Form", and without those the name captured as
+    #   "MUFADDAL MUFADDAL Visa Application form Status - Not Initiated Edit Form"
+    # — which still matched by reference, but would have failed every name
+    # comparison and rendered unreadably in any report.
     applicants = re.search(
         r"Applicants?\s*:\s*(.+?)(?:\s*(?:Group Reference|Waitlist Status|"
-        r"Manage |Book Now|Appointment details)|$)",
+        r"Manage |Book Now|Appointment details|Visa Application|Edit Form|"
+        r"Apply For|Travel Medical)|$)",
         flat, re.IGNORECASE,
     )
     if applicants:
