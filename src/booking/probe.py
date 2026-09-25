@@ -402,6 +402,7 @@ def run_probe(source: str, dest: str,
               password: Optional[str] = None,
               proxy: Optional[str] = None,
               keep_open: bool = False,
+              hold_seconds: int = 0,
               walk: bool = False,
               to_step: Optional[str] = None) -> ProbeResult:
     """Log in, read the dashboard, report. Clicks nothing, changes nothing.
@@ -535,10 +536,7 @@ def run_probe(source: str, dest: str,
         if keep_open:
             log.info("Browser left open — click 'Book Now' by hand and capture "
                      "the selectors for the pages after it.")
-            try:
-                input("\n[keep-open] Press Enter to close the browser...")
-            except EOFError:
-                pass
+            _hold_open(hold_seconds)
         _report_usage(bot, proxy_url, "probe")
         _record_usage(proxy_url)
         # shutdown(), not chrome.close(): the Playwright driver must disconnect
@@ -547,6 +545,41 @@ def run_probe(source: str, dest: str,
         shutdown(bot, chrome)
 
     return result
+
+
+def _hold_open(seconds: int = 0) -> None:
+    """Keep the browser up after a run, WITHOUT ending the session.
+
+    EVERY PROBE INVOCATION IS A FRESH LOGIN, and that is what gets an account
+    restricted: three runs in five minutes triggered VFS's 429001 on
+    2026-09-25, on two different accounts, each time costing a live invitation.
+    The fix is to stop starting new sessions, not to slow them down.
+
+    Two ways to wait, because a probe is driven both by hand and by a script:
+
+      * input() when a terminal is attached - press Enter, close, done.
+      * a timed sleep otherwise, because a non-interactive caller gets EOF
+        immediately and would tear the session down at once, which is exactly
+        the behaviour being avoided.
+    """
+    import sys
+    import time as _time
+
+    if seconds > 0:
+        log.info(f"Holding the session open for {seconds}s.")
+        _time.sleep(seconds)
+        return
+
+    if not sys.stdin or not sys.stdin.isatty():
+        log.info("No terminal attached - holding for 600s. Pass --hold N to "
+                 "choose, or run from a terminal to close with Enter.")
+        _time.sleep(600)
+        return
+
+    try:
+        input("[keep-open] Press Enter to close the browser...")
+    except EOFError:
+        pass
 
 
 def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str]):

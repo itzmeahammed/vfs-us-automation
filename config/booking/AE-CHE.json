@@ -11,10 +11,9 @@
         "reference_pattern": "Group Reference Number\\s*-\\s*(SWDB\\d+)",
         "_comment_reference": "Switzerland's references are SWDB + digits (SWDB80857698379, SWDB79923880977) — a FOUR-letter prefix, where Greece and Italy use three. The base keeps a loose pattern for routes whose format is unknown; this one is exact.",
         "open": {
-          "role": "button",
-          "name": "Book Now"
+          "selector": "span.c-brand-orange.cursor-pointer:has-text('Book Now')"
         },
-        "_comment_open": "REAL DOM: <span class=\"c-brand-orange text-decoration-underline cursor-pointer\"> Book Now </span> — a SPAN, not an <a> or <button>. get_by_role(\"button\") still matches it because the accessible name is what is matched, and dom_utils' click ladder (normal -> force -> JS) handles a span that ignores a plain click. Pin \"selector\": \"span.c-brand-orange.cursor-pointer\" only if the role lookup ever picks the wrong element.",
+        "_comment_open": "A CSS SELECTOR, not a role lookup. The base config guessed {\"role\": \"button\", \"name\": \"Book Now\"} on the theory that the accessible name is what gets matched — but this is a bare <span> with no role attribute and no ARIA, so get_by_role('button') finds nothing and the walk died on a 30s timeout with the element plainly on screen. REAL DOM 2026-09-25: <span class=\"c-brand-orange text-decoration-underline cursor-pointer\"> Book Now </span>. The :has-text() guard matters because c-brand-orange is VFS's generic accent class and also dresses 'Manage Application' on the same card. dom_utils' click ladder (normal -> force -> JS) handles a span that ignores a plain click.",
         "_comment_status": "The same row carries 'Waitlist Status: SLOTS AVAILABLE'. That text — not the presence of the button — is what the probe treats as 'invited'.",
         "container": "div.card.mb-20",
         "_comment_container": "REAL DOM, captured from a live invited account 2026-09-25. Plain Bootstrap — NOT app-appointment-card, .application-card or mat-card, all of which the default guessed and none of which exist on this page. The probe reported 'this account holds no applications' about an account whose dashboard plainly showed one. 'mb-20' is what separates the application card from the page's two other .card elements.",

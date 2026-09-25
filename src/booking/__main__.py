@@ -121,6 +121,7 @@ def cmd_probe(args) -> int:
             password=args.password,
             proxy=args.proxy_url,
             keep_open=args.keep_open,
+        hold_seconds=getattr(args, 'hold_seconds', 0),
             walk=args.walk,
             to_step=args.to_step,
         )
@@ -224,6 +225,11 @@ def main(argv: List[str] = None) -> int:
         help="click 'Book Now' and walk the booking pages, reporting what is "
              "offered. REVERSIBLE — the slot is not reserved, and it stops "
              "before the committing step.")
+    probe.add_argument(
+        "--hold", dest="hold_seconds", type=int, default=0, metavar="SECONDS",
+        help="with --keep-open, hold the session this long instead of waiting "
+             "for Enter. Use it to keep ONE login alive across several "
+             "inspections: a fresh login per run is what trips VFS's 429001.")
     probe.add_argument(
         "--to", dest="to_step", metavar="STEP",
         help="stop after this step (e.g. select_slot), for capturing one page "

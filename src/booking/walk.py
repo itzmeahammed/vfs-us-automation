@@ -51,6 +51,11 @@ DEFAULT_STEP_TIMEOUT_MS = 45000
 #: disabled until both are.
 ENABLE_TIMEOUT_MS = 20000
 
+#: How many months forward to search for an available date. VFS opens on the
+#: current month and the offered dates are routinely weeks out, so reading only
+#: the first month reports "no slots" while the portal is showing plenty.
+DEFAULT_MAX_MONTHS_AHEAD = 4
+
 
 @dataclass
 class StepReport:
@@ -115,6 +120,66 @@ def available_dates(page, calendar: Dict[str, Any]) -> List[str]:
     except Exception as e:
         log.debug(f"Could not read available dates: {e}")
     return sorted(dates)
+
+
+#: Pause between deliberate actions. Not anti-detection theatre: VFS's own
+#: pages animate, and a click landing mid-transition hits the element that was
+#: there a moment ago. It also keeps a walk legible when watched live.
+HUMAN_PAUSE_MS = 1200
+
+
+def _settle(page, why: str = "") -> None:
+    """Wait for the page to stop moving before the next deliberate action."""
+    try:
+        page.wait_for_timeout(HUMAN_PAUSE_MS)
+    except Exception:                                       # noqa: BLE001
+        pass
+
+
+def current_month(page, calendar: Dict[str, Any]) -> str:
+    """The month the calendar is showing, e.g. "September 2026"."""
+    selector = calendar.get("month_title", ".fc-toolbar-title")
+    try:
+        return (page.locator(selector).first.inner_text(timeout=5000) or "").strip()
+    except Exception as e:                                  # noqa: BLE001
+        log.debug(f"Could not read the calendar month: {e}")
+        return ""
+
+
+def advance_month(page, calendar: Dict[str, Any],
+                  timeout_ms: int = DEFAULT_STEP_TIMEOUT_MS) -> bool:
+    """Page the calendar forward one month. False if it would not move.
+
+    Returns a BOOLEAN rather than raising: running out of months is a normal
+    end to a search, not a fault. The caller decides whether that is
+    disappointing or expected.
+
+    The title is read before and after and compared, because FullCalendar's
+    next button stays in the DOM at the end of its range and simply stops
+    responding — clicking it happily "succeeds" while nothing changes, which
+    would make a search loop forever.
+    """
+    before = current_month(page, calendar)
+    selector = calendar.get("next_month", "button.fc-next-button")
+
+    try:
+        button = page.locator(selector).first
+        if button.is_disabled(timeout=3000):
+            log.info(f"Calendar will not advance past {before or 'this month'}.")
+            return False
+        button.click(timeout=timeout_ms)
+    except Exception as e:                                  # noqa: BLE001
+        log.info(f"Could not advance the calendar: {e}")
+        return False
+
+    page.wait_for_timeout(900)          # the grid redraws after the click
+    after = current_month(page, calendar)
+    if after and after == before:
+        log.info(f"Calendar did not move past {before}.")
+        return False
+
+    log.info(f"Calendar advanced: {before or '?'} -> {after or '?'}")
+    return True
 
 
 def pick_date(page, calendar: Dict[str, Any], date: str,
@@ -346,17 +411,40 @@ def _do_slot_pick(page, step: Dict[str, Any], report: StepReport,
     calendar = step.get("calendar") or {}
     slots = step.get("time_slots") or {}
 
-    dates = available_dates(page, calendar)
+    # Search forward month by month. VFS opens the calendar on the current
+    # month, which is routinely full — the offered dates sit weeks out — so a
+    # walk that only ever read the first month reported "no slots" while the
+    # portal was showing plenty one click away.
+    max_months = int(step.get("max_months_ahead") or DEFAULT_MAX_MONTHS_AHEAD)
+    months_seen: List[str] = []
+    dates: List[str] = []
+
+    for attempt in range(max_months):
+        month = current_month(page, calendar)
+        dates = available_dates(page, calendar)
+        months_seen.append(f"{month or '?'}({len(dates)})")
+        log.info(f"{month or 'calendar'}: {len(dates)} available date(s)"
+                 + (f" — {', '.join(dates)}" if dates else ""))
+        if dates:
+            break
+        if attempt == max_months - 1:
+            break
+        _settle(page, "before paging the calendar")
+        if not advance_month(page, calendar, timeout_ms):
+            break
+
+    report.found["months_searched"] = months_seen
     report.found["available_dates"] = dates
-    log.info(f"Calendar offers {len(dates)} date(s): {', '.join(dates) or 'none'}")
+    report.found["month"] = current_month(page, calendar)
 
     if not dates:
         raise WaitlistStepError(
-            "The calendar shows no available dates this month. Another applicant "
-            "may have taken them, or they may be in a later month (the walk does "
-            "not page forward yet).")
+            "No available dates in any of the months searched "
+            f"({', '.join(months_seen)}). Another applicant may have taken "
+            "them, or they may be further ahead than max_months_ahead.")
 
     chosen_date = dates[0]        # 'earliest' — the slot is not held, so speed wins
+    _settle(page, "before picking a date")
     pick_date(page, calendar, chosen_date, timeout_ms)
     report.found["chosen_date"] = chosen_date
     log.info(f"Picked date {chosen_date}")
