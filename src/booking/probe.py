@@ -470,6 +470,7 @@ def run_probe(source: str, dest: str,
     _assert_account_healthy(resolved.email, route)
 
     bot = None
+    page = None      # bound after login; the error path checks it
     _reset_usage()
     chrome = ChromeProcess(port=settings().retry.cdp_port, url=url,
                            proxy=proxy_url, profile_key=resolved.email)
@@ -522,6 +523,16 @@ def run_probe(source: str, dest: str,
         if walk:
             result.walk = _do_walk(page, route, result, to_step)
 
+            # A walk that stopped short is exactly when the session is worth
+            # most: the page it could not pass is on screen, logged in, one
+            # human click from moving on. Tearing it down here is what turns a
+            # selector problem into another login.
+            if keep_open and result.walk is not None and result.walk.stopped_at:
+                _handover(page, route,
+                          f"walk stopped at '{result.walk.stopped_at}': "
+                          f"{result.walk.reason}", hold_seconds)
+                keep_open = False        # already held; do not hold twice
+
     except AccessRestrictedError as e:
         # A hard block. Record it so the NEXT run refuses instead of renewing
         # the restriction — which is the mistake that cost a live invitation on
@@ -532,6 +543,14 @@ def run_probe(source: str, dest: str,
     except Exception as e:
         log.exception(f"Probe failed: {e}")
         result.errors.append(str(e))
+        # Same reasoning as a short walk: a failure with the browser still up is
+        # recoverable by hand, and the login it holds is the scarce resource.
+        if keep_open and page is not None:
+            try:
+                _handover(page, route, f"probe failed: {e}", hold_seconds)
+                keep_open = False
+            except Exception:                               # noqa: BLE001
+                pass
     finally:
         if keep_open:
             log.info("Browser left open — click 'Book Now' by hand and capture "
@@ -545,6 +564,43 @@ def run_probe(source: str, dest: str,
         shutdown(bot, chrome)
 
     return result
+
+
+def _handover(page, route: str, why: str, seconds: int = 0) -> None:
+    """Stop, SAVE THE PAGE, say what is needed, and wait for a human.
+
+    The alternative — tearing the session down and asking the operator to run
+    it again — is what restricted two accounts in two days: every invocation is
+    a fresh login, and VFS counts them. So when the walk cannot proceed, the
+    session is the most valuable thing in the room and must not be spent.
+
+    What this prints is the handover itself: the page it stopped on, the file
+    the DOM was written to, and the reason. The operator clicks the thing the
+    bot could not, and the next step runs in the SAME session.
+    """
+    from src.booking.walk import _capture_html
+
+    path = ""
+    try:
+        path = _capture_html(page, "handover", route)
+    except Exception as e:                                  # noqa: BLE001
+        log.warning(f"Could not capture the page at handover: {e}")
+
+    log.warning("=" * 68)
+    log.warning("HANDOVER — the browser is still open and still logged in.")
+    log.warning(f"  reason : {why}")
+    try:
+        log.warning(f"  page   : {page.url}")
+    except Exception:                                       # noqa: BLE001
+        pass
+    if path:
+        log.warning(f"  saved  : {path}")
+    log.warning("  Do the step by hand in the open window. The session is NOT")
+    log.warning("  spent — closing it would cost another login, and repeated")
+    log.warning("  logins are what trigger VFS's 429001.")
+    log.warning("=" * 68)
+
+    _hold_open(seconds)
 
 
 def _hold_open(seconds: int = 0) -> None:
