@@ -80,6 +80,20 @@ def cmd_check(args) -> int:
     return 0
 
 
+def cmd_panel(args) -> int:
+    """Write the local HTML overview and say where it went.
+
+    Static file rather than a server: nothing to leave listening on a machine
+    that also holds passport numbers, and nothing to remember to kill.
+    """
+    from src.inbox import panel
+
+    path = panel.write(args.output or panel.DEFAULT_OUTPUT)
+    print(f"Panel written to {path}")
+    print("Open it in a browser; re-run this command to refresh.")
+    return 0
+
+
 def cmd_status(args) -> int:
     """What is configured and which mailboxes would be read."""
     routes = inbox_config.configured_routes()
@@ -286,6 +300,11 @@ def main(argv: List[str] = None) -> int:
     sub.add_parser("check", help="validate every config/inbox/*.json (offline)")
     sub.add_parser("status", help="what is configured and which mailboxes")
 
+    panel_cmd = sub.add_parser(
+        "panel", help="write a local HTML overview of the watcher")
+    panel_cmd.add_argument(
+        "--output", help="where to write it (default: state/inbox_panel.html)")
+
     test = sub.add_parser("test", help="run matchers against saved .eml fixtures (offline)")
     test.add_argument("--file", help="one .eml file instead of the fixture directory")
     test.add_argument("--route", help="test only this route's matchers")
@@ -309,6 +328,7 @@ def main(argv: List[str] = None) -> int:
     commands = {
         "check": cmd_check,
         "status": cmd_status,
+        "panel": cmd_panel,
         "test": cmd_test,
         "watch": cmd_watch,
         "reconcile": cmd_reconcile,
