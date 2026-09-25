@@ -73,14 +73,24 @@ def build_digest(result) -> str:
 
     invitations = result.invitations()
     confirmations = result.confirmations()
+    expiries = result.expiries()
     others = [
         o for o in result.observations
         if not o.match.is_invitation and not o.match.is_confirmation
+        and not o.match.is_expired
     ]
 
     if invitations:
         lines.append(f"INVITATIONS ({len(invitations)})")
         lines.extend(f"  {_line(o)}" for o in invitations)
+
+    if expiries:
+        if lines:
+            lines.append("")
+        lines.append(f"EXPIRED — REMOVED FROM THE WAITLIST ({len(expiries)})")
+        lines.append("  The window closed unbooked. VFS has removed these from the")
+        lines.append("  waitlist; the client must be registered again to re-queue.")
+        lines.extend(f"  {_line(o)}" for o in expiries)
 
     if confirmations:
         if lines:
@@ -137,7 +147,11 @@ def report(result) -> None:
 
     # An invitation is the only thing time-critical enough to push. Everything
     # else sits in the log for whoever is reviewing the matchers.
-    if not result.invitations() and not result.mailboxes_failed:
+    # An expiry is pushed for the same reason an invitation is: it invalidates
+    # something the journal records as done, and a client nobody re-registers
+    # waits forever for a queue they were removed from.
+    if (not result.invitations() and not result.expiries()
+            and not result.mailboxes_failed):
         return
 
     try:

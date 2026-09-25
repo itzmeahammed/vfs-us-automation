@@ -1,108 +1,116 @@
 {
   "_comment": "SHARED BASE for inbox (email) configs. A route inherits it with \"extends\": \"_default\" and overrides only what its portal words differently. Matchers merge BY NAME, exactly like waitlist steps: repeat a name to override just the keys you list, add a new name to append, use \"before\"/\"after\" to position it, or \"remove\": true to drop an inherited one.",
-
   "_comment_evidence": "WRITTEN FROM ONE COUNTRY'S REAL MAIL (Italy, 2026-08) and nothing else. It is a starting point, not a specification — the whole reason src/inbox ships observational-first is to collect real wording per country before anyone trusts these patterns. When a country does not fit, add its own file; do not bend this one until several countries agree.",
-
   "_comment_order": "ORDER MATTERS: classify() takes the FIRST match. Specific matchers must sit above general ones. The catch-all at the bottom is what makes an unrecognised VFS email visible in the digest instead of silently dropped — that is how new email types get discovered.",
-
   "matchers": [
+    {
+      "name": "waitlist_invitation_reminder",
+      "classify": "reminder",
+      "_comment": "A REMINDER about an invitation already sent, NOT a new one. It MUST be matched before waitlist_invitation, because its subject also contains 'Slots available for booking' and its body also says 'are now available for booking'. Matched as an invitation, the 12-hour deadline would be measured from the REMINDER's timestamp — silently granting hours that do not exist, on the one clock where being wrong is unrecoverable. Real subject: 'Reminder : Slots available for booking an appointment (Re-entry NOT Allowed)', observed 2026-09-25, sent 12h after the original.",
+      "subject_contains": [
+        "Reminder :",
+        "Reminder:"
+      ],
+      "extract": {
+        "applicant_name": "Dear\\s+([A-Za-z][A-Za-z\\s'.-]+?)\\s*,"
+      },
+      "_comment_reentry": "'(Re-entry NOT Allowed)' is VFS's own wording and worth heeding: it suggests an abandoned booking flow may not be resumable, which would make a mid-flow abort costlier than the 'nothing is held' model assumes. Unverified — do not act on it until it has been tested deliberately.",
+      "_comment_classify": "Classified as a REMINDER, not 'other'. classify_all runs every route's SPECIFIC matchers before any generic one, so a matcher marked 'other' is deferred to the second pass — and by then waitlist_invitation has already claimed this message in pass one. Ordering inside the file cannot fix that; the classification is what decides which pass a matcher competes in."
+    },
     {
       "name": "waitlist_invitation",
       "classify": "invitation",
-
       "_comment": "THE ONE THAT MATTERS. VFS is telling us the client may now book. The link it carries is just the ordinary portal login URL — no token, no per-application deep link — so this email is a TRIGGER, not an instruction. Which application it refers to is settled later against the dashboard.",
-
-      "subject_contains": ["Slots available for booking"],
-      "body_contains": ["are now available for booking"],
-
+      "subject_contains": [
+        "Slots available for booking"
+      ],
+      "body_contains": [
+        "are now available for booking"
+      ],
       "_comment_from": "from_contains is deliberately NOT set in the base. The sender differs per country (info.italyuae@vfshelpline.com for Italy) and pinning the wrong one here would make every route fail to match. Set it in a route file once its real sender is known.",
-
       "extract": {
         "applicant_name": "Dear\\s+([A-Za-z][A-Za-z\\s'.-]+?)\\s*,",
         "category": "for the\\s+(.+?)\\s+visa"
       },
-
       "_comment_extract": "BOTH ARE OPTIONAL — a pattern that misses records null and the match still stands. Nothing downstream may require them. applicant_name is a HINT for narrowing candidates later, never proof of identity: the dashboard is authoritative. The name pattern is non-greedy up to the comma and allows apostrophes, hyphens and full stops (O'BRIEN, AL-FARSI, JR.).",
-
       "_comment_category": "'for the Tourist visa visa category' — the doubled 'visa' is REAL in Italy's mail, not a typo here. Stopping at the first 'visa' captures 'Tourist' cleanly from both that and a normal single-'visa' phrasing.",
-
       "validity_hours": 48,
       "_comment_validity": "'This link will only be valid for 48 hours'. Counted from the message's server INTERNALDATE, not from when it was read, so a watcher that was down does not silently extend the deadline. Override per route if a portal states a different window."
     },
-
     {
       "name": "waitlist_confirmation",
       "classify": "confirmation",
-
       "_comment": "Confirms a registration landed AND carries the Unique Reference Number. That makes it a second, independent source for a value the browser sometimes fails to capture: a registration that submits and then loses the page is journalled 'unknown' and blocks that client until a human checks the portal. This email resolves most of those on its own — worth having even if the booking flow is never built.",
-
-      "subject_contains": ["Successfully Added to Waitlist"],
-
+      "subject_contains": [
+        "Successfully Added to Waitlist"
+      ],
       "extract": {
         "applicant_name": "Dear\\s+([A-Za-z][A-Za-z\\s'.-]+?)\\s*,",
         "reference": "Reference Number is\\s+([A-Z0-9-]+)"
       },
-
       "_comment_reference": "Observed: ITD125298020335 (Italy), SWDB79923880977 (Switzerland). A hand-verified WL-77231 also exists in the journal, so hyphens are allowed and NO fixed length or prefix is assumed. Do not tighten this into \\b[A-Z]{4}\\d{9,}\\b — that pattern already exists in the waitlist configs and would miss two of the three real formats."
     },
-
+    {
+      "name": "waitlist_expired",
+      "classify": "expired",
+      "_comment": "THE OUTCOME NOBODY WATCHES FOR. VFS mails this when an invitation's window closes unbooked, and it says plainly that 'your details have been removed from the waitlist' — the client is no longer queued and must register again. Without this matcher the message fell to the vfs_other catch-all and the loss was invisible: the journal still said 'success', so nothing would ever retry them. Observed on a real AE-CHE message, 2026-09-25.",
+      "subject_contains": [
+        "application has expired",
+        "Your application has expired"
+      ],
+      "extract": {
+        "applicant_name": "Dear\\s+([A-Za-z][A-Za-z\\s'.-]+?)\\s*,",
+        "reference": "Unique Reference Number\\s+([A-Z0-9-]+)"
+      },
+      "_comment_extract": "The reference is what makes this ACTIONABLE rather than merely sad: it names exactly which journal row is now dead, so a row can be retired precisely instead of by guessing from a name. Real wording: 'associated with the Unique Reference Number SWDB82370725773 , for your travel from UAE to Switzerland'."
+    },
     {
       "name": "appointment_confirmed",
       "classify": "other",
-
       "_comment": "THE END OF THE JOURNEY — VFS confirming a booked appointment. Discovered by a live pass on 2026-09-03, not designed up front. Two wordings seen in the same mailbox: 'Your <Country> Visa Appointment is Confirmed!' carrying 'Appointment Reference Group URN - GRC127086415238', and a plainer 'Appointment Confirmation' carrying 'Unique Reference Number NOR126162488430'. Both name the applicant and the reference.",
-
       "_comment_why_it_matters": "This is the email that proves a booking landed, and it is the natural counterpart to the registration confirmation: one says 'on the waitlist', this says 'appointment booked'. When the booking runner exists, this is what settles a 'booking_unknown' row without a human logging in — exactly what reconcile.py already does for registrations. Classified 'other' for now because nothing consumes it yet.",
-
       "_comment_evidence": "One of these — 'GRC127086415238 / MICHEL EL KHOURY' — matches row [0] of the real dashboard screenshot exactly. Independent confirmation that the reference in VFS's mail and the reference on the dashboard are the same value.",
-
-      "subject_contains": ["Appointment is Confirmed", "Appointment Confirmation"],
-
+      "subject_contains": [
+        "Appointment is Confirmed",
+        "Appointment Confirmation"
+      ],
       "extract": {
         "applicant_name": "Dear\\s+([A-Za-z][A-Za-z\\s'.-]+?)\\s+Greetings",
         "reference": "(?:Group URN|Unique Reference Number)\\s*[-:]?\\s*([A-Z0-9-]+)"
       },
-
       "_comment_greeting": "'Dear MICHEL EL KHOURY Greetings from VFS Global' — NO COMMA after the name, like the cancellation email and unlike the invitation. Anchored on 'Greetings' instead. A third greeting shape; do not assume any of them.",
-
       "_comment_reference_labels": "Two different labels for the same kind of value: 'Appointment Reference Group URN' and 'Unique Reference Number'. Matching either keeps one matcher serving both wordings."
     },
-
     {
       "name": "waitlist_cancellation",
       "classify": "other",
-
       "_comment": "DISCOVERED BY A LIVE PASS, 2026-09-02, not designed up front. VFS sends this when a waitlist entry is cancelled, and it names the Application Number — the SAME reference the registration confirmation carries (SWDB79923880977 was seen in both). It is classified 'other' rather than getting its own class because nothing consumes it yet, but it is pulled out of the catch-all so it is visible and its reference is captured.",
-
       "_comment_why_it_matters": "A cancellation means a journal row marked 'success' is NO LONGER TRUE — the client is not on the waitlist any more and must be re-registered. Nothing acts on that today. When something does, this matcher is where it starts. See TASKS.md.",
-
-      "subject_contains": ["Waitlist cancellation"],
-
+      "subject_contains": [
+        "Waitlist cancellation"
+      ],
       "extract": {
         "applicant_name": "Dear\\s+([A-Za-z][A-Za-z\\s'.-]+?)\\s+Your",
         "reference": "Application Number\\s+([A-Z0-9-]+)"
       },
-
       "_comment_greeting": "NOTE the greeting here has NO COMMA — 'Dear TRAV NOOK Your appointment for...' — unlike the invitation and confirmation, which do. A pattern anchored on the comma captures nothing here. Real wording, verified against three of these messages."
     },
-
     {
       "name": "vfs_otp",
       "classify": "other",
-
       "_comment": "The single most common VFS email by a wide margin (111 of 123 in the first live pass). It is matched explicitly ONLY to keep it out of the 'unrecognised' section of the digest, where it would bury everything worth reading. src/utils/otp_email.py handles the actual OTP flow; this package just recognises and ignores them.",
-
-      "subject_contains": ["One Time Password"]
+      "subject_contains": [
+        "One Time Password"
+      ]
     },
-
     {
       "name": "vfs_other",
       "classify": "other",
-
       "_comment": "CATCH-ALL, deliberately last. Anything from a VFS domain that is not one of the above — receipts, password resets, newsletters, and email types nobody has seen yet. It exists so unrecognised VFS mail shows up in the digest rather than vanishing. When the digest keeps showing the same 'other', that is the signal to add a real matcher for it.",
-
-      "from_contains": ["vfsglobal.com", "vfshelpline.com"],
-
+      "from_contains": [
+        "vfsglobal.com",
+        "vfshelpline.com"
+      ],
       "_comment_no_extract": "Nothing is extracted: by definition we do not know the shape of this mail yet."
     }
   ]

@@ -38,7 +38,9 @@ Typical use:
 
 from src.inbox.matcher import (  # noqa: F401
     CONFIRMATION,
+    EXPIRED,
     INVITATION,
+    REMINDER,
     UNMATCHED,
     Email,
     Match,
@@ -51,5 +53,7 @@ __all__ = [
     "classify",
     "INVITATION",
     "CONFIRMATION",
+    "EXPIRED",
+    "REMINDER",
     "UNMATCHED",
 ]

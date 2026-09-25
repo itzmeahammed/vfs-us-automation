@@ -64,13 +64,42 @@ def test_the_shipped_italy_config_inherits_the_base_matchers():
     inbox_config.clear_cache()
     names = [m["name"] for m in inbox_config.matchers_for("AE-ITA")]
     assert names == [
+        "waitlist_invitation_reminder",  # BEFORE the invitation — see below
         "waitlist_invitation",
         "waitlist_confirmation",
+        "waitlist_expired",        # found live 2026-09-25: removed from waitlist
         "appointment_confirmed",   # found live 2026-09-03: booking confirmed
         "waitlist_cancellation",   # found live 2026-09-02
         "vfs_otp",                 # 111 of 123 real messages
         "vfs_other",               # catch-all, and it must stay LAST
     ]
+
+
+def test_the_reminder_is_matched_before_the_invitation():
+    """A reminder's subject and body BOTH contain the invitation's phrases.
+
+    Matched as an invitation, its deadline would be measured from the
+    reminder's timestamp — granting hours that do not exist, on the one clock
+    where being wrong cannot be undone. Real case: the AE-CHE reminder arrived
+    12h after the original, exactly when the window was closing.
+    """
+    inbox_config.clear_cache()
+    names = [m["name"] for m in inbox_config.matchers_for("AE-CHE")]
+    assert names.index("waitlist_invitation_reminder") <         names.index("waitlist_invitation")
+
+
+def test_the_reminder_does_not_classify_as_an_invitation():
+    """Ordering alone is not enough — the CLASSIFICATION decides the pass.
+
+    classify_all runs every route's specific matchers before any generic one,
+    so a reminder marked "other" would lose to waitlist_invitation in pass one
+    no matter where it sits in the file. This is what pins that.
+    """
+    inbox_config.clear_cache()
+    reminder = next(m for m in inbox_config.matchers_for("AE-CHE")
+                    if m["name"] == "waitlist_invitation_reminder")
+    assert reminder["classify"] == "reminder", (
+        "a reminder must carry its own classification, not 'other'")
 
 
 def test_the_catch_all_is_last_so_it_cannot_swallow_the_others():

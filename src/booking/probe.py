@@ -33,11 +33,13 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from src.booking import config as booking_config
-from src.booking.errors import BookingConfigError
+from src.booking.errors import BookingConfigError, BookingSkipped
+from src.vfs_bot.errors import AccessRestrictedError
 from src.booking.identity import Candidate, resolve
 
 log = logging.getLogger(__name__)
@@ -326,6 +328,66 @@ def match_row(rows: List[DashboardRow], reference: str = "",
 # The probe                                                                    #
 # --------------------------------------------------------------------------- #
 
+def _assert_account_healthy(email: str, route: str) -> None:
+    """Refuse to log in with an account the circuit breaker has benched.
+
+    The probe had no such check, and that is how a restricted account got
+    signed into five times in 35 minutes on 2026-09-24 — each attempt renewing
+    a block that then outlived the 12-hour invitation it was trying to serve.
+
+    Read-only, like the waitlist's equivalent: this refuses the run rather than
+    deepening a cooldown another subsystem is already serving.
+    """
+    try:
+        from src.utils import account_health
+
+        if account_health.is_disabled(email):
+            raise BookingSkipped(
+                f"Account {_mask(email)} is DISABLED — refusing to sign in.")
+        if account_health.is_benched(email, route):
+            until = account_health.benched_until(email, route)
+            mins = max(1, int((until - time.time()) / 60))
+            raise BookingSkipped(
+                f"Account {_mask(email)} is benched on {route} for another "
+                f"{mins} min. Signing in now would renew the block, not clear "
+                "it. To override: python -m src.utils.account_health clear "
+                f"{email}")
+    except BookingSkipped:
+        raise
+    except Exception as e:                             # noqa: BLE001
+        # A health-file problem must never be what stops a run the user asked
+        # for; the breaker is a safety net, not a gate of last resort.
+        log.debug(f"Could not read account health: {e}")
+
+
+def _record_block(email: str, route: str, error: Exception) -> None:
+    """Bench the account after a hard block, exactly as the supervisor does.
+
+    Without this the probe learned nothing from a 429: the next run signed
+    straight back in and renewed the restriction. The supervisor has benched on
+    this for a long time (supervisor.py, AccessRestrictedError) — the probe was
+    simply never taught the same lesson.
+    """
+    try:
+        from src.utils import account_health
+
+        hours = account_health.hard_cooldown_hours()
+        account_health.bench(email, route, hours, "restricted-429001")
+        log.error(
+            f"Account benched for {hours}h after a hard block: {error}")
+    except Exception as e:                             # noqa: BLE001
+        log.warning(f"Could not record the block against account health: {e}")
+
+
+def _mask(email: str) -> str:
+    from src.waitlist.accounts import mask
+
+    try:
+        return mask(email)
+    except Exception:                                  # noqa: BLE001
+        return "(account)"
+
+
 def run_probe(source: str, dest: str,
               registrant_id: Optional[str] = None,
               email: Optional[str] = None,
@@ -396,6 +458,8 @@ def run_probe(source: str, dest: str,
         raise WaitlistConfigError(
             f"No login URL for {route} in config/vfs_urls.ini.")
 
+    _assert_account_healthy(resolved.email, route)
+
     bot = None
     _reset_usage()
     chrome = ChromeProcess(port=settings().retry.cdp_port, url=url,
@@ -446,6 +510,13 @@ def run_probe(source: str, dest: str,
         if walk:
             result.walk = _do_walk(page, route, result, to_step)
 
+    except AccessRestrictedError as e:
+        # A hard block. Record it so the NEXT run refuses instead of renewing
+        # the restriction — which is the mistake that cost a live invitation on
+        # 2026-09-24.
+        _record_block(resolved.email, route, e)
+        log.error(f"Probe blocked: {e}")
+        result.errors.append(str(e))
     except Exception as e:
         log.exception(f"Probe failed: {e}")
         result.errors.append(str(e))

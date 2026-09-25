@@ -60,6 +60,24 @@ INVITATION = "invitation"
 #: independent source for a value the browser sometimes fails to capture.
 CONFIRMATION = "confirmation"
 
+#: The invitation window closed unbooked and VFS has REMOVED the client from the
+#: waitlist. Its own class rather than "other" because it is the only VFS mail
+#: that invalidates something already recorded as done: the journal still says
+#: the registration succeeded, so without this the client sits in a queue they
+#: are no longer in, and nothing ever retries them.
+EXPIRED = "expired"
+
+#: A REMINDER about an invitation already sent. Its own class, not "other",
+#: for a mechanical reason: classify_all runs every route's specific matchers
+#: before any generic one, so a matcher marked "other" is deferred to the
+#: second pass — by which time waitlist_invitation has already claimed the
+#: message, because a reminder's subject and body both contain the invitation's
+#: phrases. Only a specific classification competes in the first pass.
+#:
+#: The cost of getting this wrong is a wrong DEADLINE: the window would be
+#: measured from the reminder's timestamp, granting hours that do not exist.
+REMINDER = "reminder"
+
 #: Recognised as VFS mail, but not one of the above (newsletters, receipts,
 #: password resets). Worth recording — an unmatched VFS mail in the digest is
 #: how a new email type gets discovered.
@@ -70,7 +88,8 @@ UNMATCHED = "unmatched"
 
 #: Classifications a matcher may declare. UNMATCHED is produced by classify()
 #: alone and can never be asked for.
-VALID_CLASSIFICATIONS = frozenset({INVITATION, CONFIRMATION, OTHER})
+VALID_CLASSIFICATIONS = frozenset(
+    {INVITATION, CONFIRMATION, EXPIRED, REMINDER, OTHER})
 
 
 class MatcherConfigError(ValueError):
@@ -132,6 +151,14 @@ class Match:
     @property
     def is_confirmation(self) -> bool:
         return self.classification == CONFIRMATION
+
+    @property
+    def is_expired(self) -> bool:
+        return self.classification == EXPIRED
+
+    @property
+    def is_reminder(self) -> bool:
+        return self.classification == REMINDER
 
     def get(self, name: str) -> Optional[str]:
         """An extracted field, or None if absent or not extracted."""

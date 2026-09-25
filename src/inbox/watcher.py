@@ -127,6 +127,16 @@ class PassResult:
     def confirmations(self) -> List[Observation]:
         return [o for o in self.observations if o.match.is_confirmation]
 
+    def expiries(self) -> List[Observation]:
+        """Invitations whose window closed unbooked, with the client REMOVED.
+
+        Pushed like an invitation rather than filed with the rest: the journal
+        still says that registration succeeded, so an expiry nobody reads leaves
+        a client queued for something they are no longer in — and nothing
+        retries them.
+        """
+        return [o for o in self.observations if o.match.is_expired]
+
 
 # --------------------------------------------------------------------------- #
 # IMAP                                                                         #
