@@ -514,7 +514,7 @@ def run_probe(source: str, dest: str,
 
         if person is not None:
             expected_name = _client_name(person)
-            expected_reference = _journal_reference(route, person.id)
+            expected_reference = _stored_reference(route, person)
             row, reason = match_row(
                 result.rows, reference=expected_reference, name=expected_name)
             result.matched = row
@@ -568,6 +568,20 @@ def run_probe(source: str, dest: str,
 
 def _handover(page, route: str, why: str, seconds: int = 0) -> None:
     """Stop, SAVE THE PAGE, say what is needed, and wait for a human.
+
+    *** RECONNAISSANCE ONLY. NEVER PART OF AN AUTOMATED BOOKING. ***
+
+    This exists to capture the DOM of pages nobody has mapped yet, with a human
+    sitting at the keyboard. It is reachable only from the probe, only behind
+    --keep-open, and src/booking/runner.py does not import it — an unattended
+    run must FAIL, journal the failure and release the browser, never sit
+    waiting for an operator who is not there.
+
+    Blocking a scheduled run on human input would hold the account's session and
+    the run lock open for as long as the timeout allows, turning one bad
+    selector into a stalled queue. If a future runner ever needs to pause for a
+    human, that is a queue state to be recorded and picked up later, not a
+    sleep() inside the run.
 
     The alternative — tearing the session down and asking the operator to run
     it again — is what restricted two accounts in two days: every invocation is
@@ -729,13 +743,33 @@ def _client_name(person) -> str:
     return f"{first} {last}".strip()
 
 
-def _journal_reference(route: str, registrant_id: str) -> str:
-    """The reference recorded when this client was registered, if any.
+def _stored_reference(route: str, person) -> str:
+    """This client's VFS reference, from their file or from the journal.
 
-    This is the exact join: the confirmation email's Unique Reference Number is
-    the same value the dashboard shows as Group Reference Number, so a stored
-    reference identifies the row without any name matching at all.
+    THE CLIENT FILE WINS. The journal records what THIS system registered, and
+    that is not always the live entry: an entry created by hand never appears in
+    it, and an entry it did create can since have expired. On 2026-09-25 the
+    journal's only reference for a client was one VFS had already expired, while
+    the live invitation belonged to a hand-made entry the journal had never
+    seen. Preferring the journal there would have matched the dead row or
+    nothing at all.
+
+    Either way this is the exact join: the confirmation email's Unique Reference
+    Number is the same value the dashboard shows as Group Reference Number, so a
+    stored reference identifies the row with no name matching at all.
     """
+    if person is not None:
+        own = str(person.get("vfs_reference") or "").strip()
+        if own:
+            log.info(f"Using the reference stored on the client file: {own}")
+            return own
+    return _journal_reference(route, getattr(person, "id", "") or "")
+
+
+def _journal_reference(route: str, registrant_id: str) -> str:
+    """The reference this system recorded when it registered the client."""
+    if not registrant_id:
+        return ""
     try:
         from src.waitlist import journal
 

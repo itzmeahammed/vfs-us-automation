@@ -375,5 +375,34 @@ class TestOutcome(unittest.TestCase):
                         FakeRegistrant(), live=True)
 
 
+
+
+class TestTheRunnerNeverWaitsForAHuman(unittest.TestCase):
+    """An unattended run must fail and release, never block on an operator."""
+
+    def test_the_runner_does_not_import_the_probes_handover(self):
+        """Reconnaissance helpers must not leak into the booking path.
+
+        `_handover` holds the browser open so a person can finish a step by
+        hand — invaluable while mapping unknown pages, and wrong inside a
+        scheduled run: it would pin the account's session and the run lock for
+        the length of its timeout, turning one bad selector into a stalled
+        queue with nobody watching.
+
+        If a runner ever needs a human, that belongs in the queue as a recorded
+        state to pick up later, not as a sleep() inside the run.
+        """
+        import inspect
+
+        from src.booking import runner as runner_mod
+
+        source = inspect.getsource(runner_mod)
+        for forbidden in ("_handover", "_hold_open", "keep_open", "input("):
+            self.assertNotIn(
+                forbidden, source,
+                f"{forbidden!r} appeared in runner.py — an unattended booking "
+                "run must never wait for a human.")
+
+
 if __name__ == "__main__":
     unittest.main()
