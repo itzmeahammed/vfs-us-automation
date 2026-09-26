@@ -404,6 +404,7 @@ def run_probe(source: str, dest: str,
               keep_open: bool = False,
               hold_seconds: int = 0,
               entry: str = "",
+              combo: str = "",
               walk: bool = False,
               to_step: Optional[str] = None) -> ProbeResult:
     """Log in, read the dashboard, report. Clicks nothing, changes nothing.
@@ -539,7 +540,8 @@ def run_probe(source: str, dest: str,
             result.match_reason = reason
 
         if walk:
-            result.walk = _do_walk(page, route, result, to_step, entry)
+            result.walk = _do_walk(page, route, result, to_step, entry,
+                                   _walk_values(route, combo, person))
 
             # A walk that stopped short is exactly when the session is worth
             # most: the page it could not pass is on screen, logged in, one
@@ -670,8 +672,42 @@ def _hold_open(seconds: int = 0) -> None:
         pass
 
 
+def _walk_values(route: str, combo: str, person) -> Dict[str, Any]:
+    """The mapping a form step's {{placeholders}} resolve against.
+
+    Built with the same waitlist context builder the registration path uses, so
+    a combo label becomes the centre/category/sub-category the dropdowns need.
+    That split matters here: those three come from the COMBINATION, not from the
+    client — which is why a live-slot booking can be walked with no client file
+    at all, as long as a combo is named.
+    """
+    try:
+        from src.utils.route_schema import get_route_schema
+        from src.waitlist import context as ctx_mod
+
+        parts = {}
+        if combo:
+            source, _, dest = route.partition("-")
+            schema = get_route_schema(source, dest)
+            for entry in schema.get("slot_check", {}).get("combinations", []):
+                label = str(entry.get("label", "")).strip()
+                if label.lower() == combo.strip().lower():
+                    parts = dict(entry)
+                    break
+            if not parts:
+                log.warning(
+                    f"Combo {combo!r} is not in config/routes/{route}.json — "
+                    "the centre/category dropdowns will have no value.")
+
+        return ctx_mod.build(person, route=route, combo=combo,
+                             combo_parts=parts)
+    except Exception as e:                                  # noqa: BLE001
+        log.warning(f"Could not build the walk context: {e}")
+        return {}
+
+
 def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
-             entry: str = "waitlist"):
+             entry: str = "waitlist", values: Optional[Dict[str, Any]] = None):
     """Click 'Book Now' on the chosen row, then walk the booking pages.
 
     Only reached with --walk. Everything it does is REVERSIBLE: confirmed with
@@ -698,7 +734,8 @@ def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
     if entry == booking_config.ENTRY_NEW:
         log.info(f"Live-slot flow ({entry}) — no dashboard row to resume; "
                  "walking from the entry step.")
-        return walk_flow(page, route, to_step=to_step, entry=entry)
+        return walk_flow(page, route, to_step=to_step, entry=entry,
+                         values=values or {})
 
     # Prefer the client's own row; otherwise the only bookable one. Never guess
     # between several — the same rule the runner will follow.

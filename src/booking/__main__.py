@@ -132,6 +132,7 @@ def cmd_probe(args) -> int:
             keep_open=args.keep_open,
         hold_seconds=getattr(args, 'hold_seconds', 0),
         entry=getattr(args, 'entry', '') or '',
+        combo=getattr(args, 'combo', '') or '',
             walk=args.walk,
             to_step=args.to_step,
         )
@@ -235,6 +236,11 @@ def main(argv: List[str] = None) -> int:
         help="click 'Book Now' and walk the booking pages, reporting what is "
              "offered. REVERSIBLE — the slot is not reserved, and it stops "
              "before the committing step.")
+    probe.add_argument(
+        "--combo", default="",
+        help="which combination to book, e.g. 'Norway Visa Application Center "
+             "- Dubai - Tourist'. Supplies the centre/category/sub-category "
+             "dropdowns; required for the 'new' flow.")
     probe.add_argument(
         "--entry", choices=["waitlist", "new"], default="",
         help="which way in: 'waitlist' resumes an invited application, 'new' "

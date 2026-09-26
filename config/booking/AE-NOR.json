@@ -21,10 +21,42 @@
       "name": "appointment_details",
       "type": "form",
       "url_contains": "appointment",
-      "fields": [],
+      "fields": [
+        {
+          "name": "centre",
+          "label": "Choose your Application Centre",
+          "widget": "mat-select",
+          "selector": "mat-select[formcontrolname='centerCode']",
+          "value": "{{centre}}",
+          "required": true,
+          "_comment": "REAL DOM, captured 2026-09-26. formcontrolname is the stable handle: the visible ids are positional (mat-select-value-1, -3) and renumber whenever Angular redraws the page, so pinning those would break on a page that merely re-rendered."
+        },
+        {
+          "name": "category",
+          "label": "Choose your appointment category",
+          "widget": "mat-select",
+          "selector": "mat-select[formcontrolname='visaCategoryCode']",
+          "value": "{{category}}",
+          "required": true,
+          "_comment": "NOTE the control is named visaCategoryCode while the label says 'appointment category'. Trusting the label order here would have swapped it with the sub-category, whose control is selectedSubvisaCategory — the two appear in the DOM in the opposite order to the page."
+        },
+        {
+          "name": "sub_category",
+          "label": "Choose your sub-category",
+          "widget": "mat-select",
+          "selector": "mat-select[formcontrolname='selectedSubvisaCategory']",
+          "value": "{{sub_category}}",
+          "required": true
+        }
+      ],
       "_comment": "The page the slot checker already reaches and reads. For a BOOKING it must be filled rather than read — centre, category, sub-category — and those three come from the combo, not from the client file.",
-      "_comment_fields": "EMPTY ON PURPOSE. The slot checker selects these dropdowns through its own code path (slot_check.py), which this step does not reuse yet. Populating them with guessed selectors would look like progress and fail on the first live run. Capture them from the walk, then fill this in.",
-      "_comment_combos": "Norway's real combinations, from config/routes/AE-NOR.json: 'Norway Visa Application Center - Abu Dhabi - Tourist' and '... - Dubai - Tourist'. The two Business variants are disabled there."
+      "_comment_combos": "Norway's real combinations, from config/routes/AE-NOR.json: 'Norway Visa Application Center - Abu Dhabi - Tourist' and '... - Dubai - Tourist'. The two Business variants are disabled there.",
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      },
+      "_comment_submit": "Rendered disabled=\"true\" until all three dropdowns are chosen, so the click must wait for it to enable rather than fire blind.",
+      "_comment_values": "centre/category/sub_category come from the COMBO, not the client file: ctx.build() puts the selected combination's parts into the context. For 'Norway Visa Application Center - Dubai - Tourist' that is centre='Norway Visa Application Center - Dubai', category='Short Stay', sub_category='Tourist'."
     },
     {
       "name": "select_slot",
@@ -40,5 +72,6 @@
     }
   ],
   "_comment_flow_expected": "Start New Booking -> Appointment Details (centre/category/sub) -> slot calendar -> ??? -> payment -> confirmed. Everything from the calendar onward is unknown on every route, which is the gap this walk exists to close.",
-  "_comment_next": "Walk it with:  python -m src.booking probe -sc AE -dc NOR --walk --keep-open --hold 1800  — one login, capturing every page. Then write the real selectors, move commits to payment, and only then set enabled."
+  "_comment_next": "Walk it with:  python -m src.booking probe -sc AE -dc NOR --walk --keep-open --hold 1800  — one login, capturing every page. Then write the real selectors, move commits to payment, and only then set enabled.",
+  "_comment_flow_real": "CONFIRMED from the live page, 2026-09-26. VFS's own progress bar reads: 1 Appointment Details -> 2 Your Details -> 3 Book Appointment -> 4 Services -> 5 Review. FIVE steps, which settles the '5-6 steps' the notes guessed at, and shows the slot calendar is step 3 of 5 rather than the end."
 }

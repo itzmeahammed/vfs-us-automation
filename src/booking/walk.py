@@ -321,7 +321,8 @@ def _capture_html(page, step_name: str, route: str = "") -> str:
 
 
 def walk_flow(page, route: str, to_step: Optional[str] = None,
-              dry_run: bool = True, entry: str = "waitlist") -> WalkResult:
+              dry_run: bool = True, entry: str = "waitlist",
+              values: Optional[Dict[str, Any]] = None) -> WalkResult:
     """Walk the configured booking steps from wherever the page currently is.
 
     `dry_run` (default) refuses to submit the committing step — the run stops in
@@ -356,6 +357,8 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
 
             if step.get("type") == "slot_pick":
                 _do_slot_pick(page, step, report, timeout_ms)
+            elif step.get("type") == "form" and step.get("fields"):
+                _fill_form(page, step, report, values or {}, timeout_ms)
             elif step.get("scroll_to_bottom"):
                 page.mouse.wheel(0, 20000)
                 page.wait_for_timeout(500)
@@ -401,6 +404,28 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             return result
 
     return result
+
+
+def _fill_form(page, step: Dict[str, Any], report: StepReport,
+               values: Dict[str, Any], timeout_ms: int) -> None:
+    """Fill a form step's fields, reusing the waitlist field engine.
+
+    The walk could not fill anything before this, which made it useless on the
+    live-slot flow: Norway's first page is three mandatory dropdowns and its
+    Continue button stays disabled until all three are chosen, so a walk that
+    only reads pages stops dead on step 1 of 5.
+
+    waitlist.fields already drives eight widget types on this exact portal
+    across seven routes, including the cdk-overlay dance a mat-select needs. A
+    second implementation here would be a second set of bugs on the same pages.
+    """
+    from src.waitlist import fields as fields_mod
+
+    specs = step.get("fields") or []
+    fields_mod.fill_all(page, specs, values, timeout_ms)
+    report.found["filled"] = [f.get("name") for f in specs]
+    log.info(f"  filled {len(specs)} field(s): "
+             f"{', '.join(str(f.get('name')) for f in specs)}")
 
 
 def _do_slot_pick(page, step: Dict[str, Any], report: StepReport,
