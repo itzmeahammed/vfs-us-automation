@@ -1,0 +1,44 @@
+{
+  "_comment": "UAE -> Norway booking. THE FIRST ROUTE BUILT FOR THE LIVE-SLOT FLOW. Norway has open slots, so there is no invitation, no 12-hour window and no email dependency — which makes it the cheapest place to learn the pages that every route shares: pick a slot, pay, confirm. Nobody has seen those on ANY route yet.",
+  "extends": "_default",
+  "enabled": false,
+  "_comment_enabled": "OFF, and it stays off until the whole flow has been walked in a browser. The selectors below are SCAFFOLDING — inherited guesses plus what the slot checker already proves — not captured DOM. A route is armed only when its committing step is known to be in the right place, and for Norway that means seeing the payment page.",
+  "_comment_why_new_flow": "The live-slot flow, not the waitlist one. Nothing exists to resume: 'Start New Booking' CREATES the application, so there is no dashboard row to find and no identity to assert. That removes the riskiest part of booking (picking the wrong client's row) and leaves the part nobody has mapped (what happens after a slot is chosen).",
+  "steps": [
+    {
+      "name": "start_booking",
+      "type": "start_booking",
+      "entry": "new",
+      "submit": {
+        "selector": "button:has-text('Start New Booking')"
+      },
+      "_comment": "PROVEN SELECTOR, borrowed rather than guessed: src/vfs_bot/slot_check.py:265 clicks exactly this on every hourly run across every route, so it is the one element here that is already known to work. It lands on Appointment Details.",
+      "_comment_entry": "Marked explicitly even though the type implies it. This is the step the whole flow hangs off, and being able to read the mode without knowing the inference rules is worth the line.",
+      "before": "appointment_details",
+      "_comment_before": "POSITION MATTERS. A new step with no before/after is APPENDED, which put this after the committing slot pick — the flow would have picked a slot for an application it had not created yet. Steps run in order, so the entry step must be anchored to the front of the flow explicitly."
+    },
+    {
+      "name": "appointment_details",
+      "type": "form",
+      "url_contains": "appointment",
+      "fields": [],
+      "_comment": "The page the slot checker already reaches and reads. For a BOOKING it must be filled rather than read — centre, category, sub-category — and those three come from the combo, not from the client file.",
+      "_comment_fields": "EMPTY ON PURPOSE. The slot checker selects these dropdowns through its own code path (slot_check.py), which this step does not reuse yet. Populating them with guessed selectors would look like progress and fail on the first live run. Capture them from the walk, then fill this in.",
+      "_comment_combos": "Norway's real combinations, from config/routes/AE-NOR.json: 'Norway Visa Application Center - Abu Dhabi - Tourist' and '... - Dubai - Tourist'. The two Business variants are disabled there."
+    },
+    {
+      "name": "select_slot",
+      "type": "slot_pick",
+      "commits": true,
+      "_comment_commits": "PROVISIONAL, and almost certainly in the wrong place — exactly as it is for AE-CHE. Selecting a slot reserves nothing; the booking exists only once payment completes. This flag sits here because config validation requires exactly one committing step per flow and the payment step has never been seen. MOVE IT to payment once this walk captures that page. That move is the single most important outcome of running Norway.",
+      "_comment_selectors": "Inherited from _default, which describes Angular Material. Switzerland turned out to use FullCalendar instead (config/booking/AE-CHE.json), so assume nothing here matches until the walk says so."
+    },
+    {
+      "name": "confirmation",
+      "remove": true,
+      "_comment": "REMOVED, deliberately, and for the same reason it is removed from AE-CHE: a guessed step at the END of a flow is the most dangerous kind, because it would read some other page as success and journal a booking that never happened. Better that the walk stops at a page it does not recognise. Re-add it with real selectors once the pages after the slot pick are captured."
+    }
+  ],
+  "_comment_flow_expected": "Start New Booking -> Appointment Details (centre/category/sub) -> slot calendar -> ??? -> payment -> confirmed. Everything from the calendar onward is unknown on every route, which is the gap this walk exists to close.",
+  "_comment_next": "Walk it with:  python -m src.booking probe -sc AE -dc NOR --walk --keep-open --hold 1800  — one login, capturing every page. Then write the real selectors, move commits to payment, and only then set enabled."
+}

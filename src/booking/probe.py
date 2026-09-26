@@ -403,6 +403,7 @@ def run_probe(source: str, dest: str,
               proxy: Optional[str] = None,
               keep_open: bool = False,
               hold_seconds: int = 0,
+              entry: str = "",
               walk: bool = False,
               to_step: Optional[str] = None) -> ProbeResult:
     """Log in, read the dashboard, report. Clicks nothing, changes nothing.
@@ -461,6 +462,23 @@ def run_probe(source: str, dest: str,
              f"{proxy_pool.label(proxy_url) if proxy_url else 'local IP'} ({how})")
     if proxy_url:
         _check_budget()
+
+    # Which way in. Defaults to whatever the route actually supports, so a
+    # live-slot-only route is not silently probed as a waitlist resume (and
+    # told it has no rows), and a waitlist route is not asked to create an
+    # application nobody wanted.
+    supported = booking_config.entry_modes(route)
+    if not entry:
+        entry = (booking_config.ENTRY_NEW
+                 if supported == [booking_config.ENTRY_NEW]
+                 else booking_config.ENTRY_WAITLIST)
+    entry = entry.strip().lower()
+    if supported and entry not in supported:
+        raise BookingConfigError(
+            f"{route} does not support the '{entry}' flow. It supports: "
+            f"{', '.join(supported)}. A flow needs its own entry step, not "
+            "just a shared tail.")
+    log.info(f"Entry flow: {entry}")
 
     url = get_config_value("vfs-url", route)
     if not url:
@@ -521,7 +539,7 @@ def run_probe(source: str, dest: str,
             result.match_reason = reason
 
         if walk:
-            result.walk = _do_walk(page, route, result, to_step)
+            result.walk = _do_walk(page, route, result, to_step, entry)
 
             # A walk that stopped short is exactly when the session is worth
             # most: the page it could not pass is on screen, logged in, one
@@ -652,7 +670,8 @@ def _hold_open(seconds: int = 0) -> None:
         pass
 
 
-def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str]):
+def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
+             entry: str = "waitlist"):
     """Click 'Book Now' on the chosen row, then walk the booking pages.
 
     Only reached with --walk. Everything it does is REVERSIBLE: confirmed with
@@ -665,6 +684,21 @@ def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str]):
     from src.booking import config as booking_config
     from src.booking.walk import WalkResult, walk_flow
     from src.waitlist.register import _click
+
+    # THE LIVE-SLOT FLOW HAS NO DASHBOARD ROW TO OPEN.
+    #
+    # Everything below this block is about resuming an application VFS already
+    # created: find the client's row, check it is invited, click Book Now. A
+    # 'new' flow has none of that — the slot is open to anyone and
+    # "Start New Booking" CREATES the application — so it goes straight to
+    # walk_flow, whose first step is the entry step itself.
+    #
+    # Without this the probe would refuse a perfectly good Norway run with
+    # "0 bookable rows", which is true and completely beside the point.
+    if entry == booking_config.ENTRY_NEW:
+        log.info(f"Live-slot flow ({entry}) — no dashboard row to resume; "
+                 "walking from the entry step.")
+        return walk_flow(page, route, to_step=to_step, entry=entry)
 
     # Prefer the client's own row; otherwise the only bookable one. Never guess
     # between several — the same rule the runner will follow.
@@ -685,7 +719,7 @@ def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str]):
         log.warning(reason)
         return WalkResult(stopped_at="dashboard_resume", reason=reason)
 
-    step = next((s for s in booking_config.steps_for(route)
+    step = next((s for s in booking_config.steps_for(route, entry)
                  if s.get("type") == "dashboard_resume"), {})
 
     # INVITED IS NOT BOOKABLE. The card can say "Waitlist Status: SLOTS

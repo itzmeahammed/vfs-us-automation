@@ -321,7 +321,7 @@ def _capture_html(page, step_name: str, route: str = "") -> str:
 
 
 def walk_flow(page, route: str, to_step: Optional[str] = None,
-              dry_run: bool = True) -> WalkResult:
+              dry_run: bool = True, entry: str = "waitlist") -> WalkResult:
     """Walk the configured booking steps from wherever the page currently is.
 
     `dry_run` (default) refuses to submit the committing step — the run stops in
@@ -335,7 +335,7 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
     from src.waitlist.register import _await_page, _click
 
     result = WalkResult()
-    steps = booking_config.steps_for(route)
+    steps = booking_config.steps_for(route, entry)
 
     for step in steps:
         name = step.get("name", "?")

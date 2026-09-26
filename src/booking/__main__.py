@@ -131,6 +131,7 @@ def cmd_probe(args) -> int:
             proxy=args.proxy_url,
             keep_open=args.keep_open,
         hold_seconds=getattr(args, 'hold_seconds', 0),
+        entry=getattr(args, 'entry', '') or '',
             walk=args.walk,
             to_step=args.to_step,
         )
@@ -234,6 +235,11 @@ def main(argv: List[str] = None) -> int:
         help="click 'Book Now' and walk the booking pages, reporting what is "
              "offered. REVERSIBLE — the slot is not reserved, and it stops "
              "before the committing step.")
+    probe.add_argument(
+        "--entry", choices=["waitlist", "new"], default="",
+        help="which way in: 'waitlist' resumes an invited application, 'new' "
+             "creates one from a live slot. Defaults to what the route "
+             "supports.")
     probe.add_argument(
         "--hold", dest="hold_seconds", type=int, default=0, metavar="SECONDS",
         help="with --keep-open, hold the session this long instead of waiting "
