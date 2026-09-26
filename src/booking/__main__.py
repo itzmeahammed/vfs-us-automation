@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import List
 
@@ -27,11 +28,35 @@ from src.booking import config as booking_config
 from src.booking.errors import BookingConfigError
 
 
+#: Where a probe's log lands, in addition to the console.
+LOG_FILE = os.path.join("logs", "booking.log")
+
+
 def _setup_logging(verbose: bool) -> None:
+    """Log to the console AND to logs/booking.log.
+
+    The file is the point. basicConfig alone writes to stderr, and a probe is
+    routinely run detached — in the background, over SSH, from a scheduler —
+    where stderr goes nowhere. A live run that fails then leaves no trace of
+    WHY, which cost a whole diagnosis cycle on 2026-09-26: the dropdown that
+    failed had already logged the options it WAS offered, and that message was
+    thrown away.
+
+    Appends rather than truncates: consecutive runs of the same flow are
+    exactly what you want to compare when one of them behaves differently.
+    """
+    handlers = [logging.StreamHandler()]
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
+    except Exception as e:                                  # noqa: BLE001
+        print(f"(could not open {LOG_FILE}: {e})", file=sys.stderr)
+
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s | %(levelname)-8s | %(message)s",
         datefmt="%H:%M:%S",
+        handlers=handlers,
     )
 
 

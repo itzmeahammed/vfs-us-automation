@@ -456,7 +456,23 @@ def _fill_form(page, step: Dict[str, Any], report: StepReport,
     from src.waitlist import fields as fields_mod
 
     specs = step.get("fields") or []
-    fields_mod.fill_all(page, specs, values, timeout_ms)
+
+    # fill_all's 4th argument is WHERE — a label for log messages — not a
+    # timeout. Both booking call sites passed timeout_ms into it, which does
+    # not crash; it just writes "Field X (45000)" into every log line, which is
+    # worse than useless when a field fails and the log is all you have.
+    #
+    # Filled ONE AT A TIME with a settle between, because these dropdowns are
+    # DEPENDENT: Norway's sub-category list is fetched only after a category is
+    # chosen, so filling them back to back races an empty panel. fill_all has
+    # no pause between fields.
+    for index, spec in enumerate(specs):
+        if spec.get("disabled"):
+            continue
+        fields_mod.fill_one(page, spec, values,
+                            where=f"{step.get('name', '?')}.{spec.get('name')}")
+        if index < len(specs) - 1:
+            _settle(page, "letting a dependent field load")
     report.found["filled"] = [f.get("name") for f in specs]
     log.info(f"  filled {len(specs)} field(s): "
              f"{', '.join(str(f.get('name')) for f in specs)}")

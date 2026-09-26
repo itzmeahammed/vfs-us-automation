@@ -263,7 +263,8 @@ def _step_form(ctx: "_StepContext") -> None:
 
     specs = ctx.step.get("fields") or []
     if specs:
-        fields_mod.fill_all(ctx.page, specs, ctx.values, ctx.timeout_ms)
+        # 4th arg is WHERE (a log label), not a timeout — see walk._fill_form.
+        fields_mod.fill_all(ctx.page, specs, ctx.values, where=ctx.name)
 
     if ctx.step.get("scroll_to_bottom"):
         # Some pages put Continue below the fold; without this the click misses.

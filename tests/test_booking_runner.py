@@ -315,7 +315,7 @@ class TestClientData(unittest.TestCase):
         self.enterContext(mock.patch.object(runner, "_submit"))
         self.enterContext(mock.patch(
             "src.waitlist.fields.fill_all",
-            side_effect=lambda page, specs, values, timeout: captured.update(values)))
+            side_effect=lambda page, specs, values, **kw: captured.update(values)))
 
         runner.book(FakePage(), "AE-CHE", FakeRegistrant(), live=True)
 
