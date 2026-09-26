@@ -245,3 +245,116 @@ def test_the_services_step_scrolls_before_continuing():
     booking_config.clear_cache()
     step = next(s for s in booking_config.steps_for("AE-CHE") if s["name"] == "services")
     assert step["scroll_to_bottom"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Slot strategy                                                                #
+# --------------------------------------------------------------------------- #
+#
+# "strategy" sat in the configs from the day they were written and nothing read
+# it: _do_slot_pick always took dates[0]. A route asking for anything else was
+# silently ignored, which is the worst kind of config key — present, documented,
+# and inert.
+
+
+class _StrategyPage:
+    """Records which date and time index were chosen."""
+
+    def __init__(self, dates, times):
+        self._dates = dates
+        self._times = times
+        self.picked_date = None
+        self.picked_index = None
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+def _run_strategy(monkeypatch, strategy, dates, times):
+    from src.booking import walk as walk_mod
+
+    page = _StrategyPage(dates, times)
+    report = walk_mod.StepReport(name="select_slot")
+
+    monkeypatch.setattr(walk_mod, "available_dates", lambda p, c: list(dates))
+    monkeypatch.setattr(walk_mod, "available_times", lambda p, s: list(times))
+    monkeypatch.setattr(walk_mod, "current_month", lambda p, c: "October 2026")
+    monkeypatch.setattr(walk_mod, "_settle", lambda p, why="": None)
+
+    def fake_pick_date(p, calendar, date, timeout_ms):
+        p.picked_date = date
+
+    def fake_pick_time(p, slots, index=0, timeout_ms=0):
+        p.picked_index = index
+        return times[index]
+
+    monkeypatch.setattr(walk_mod, "pick_date", fake_pick_date)
+    monkeypatch.setattr(walk_mod, "pick_time", fake_pick_time)
+
+    step = {"name": "select_slot", "strategy": strategy,
+            "calendar": {}, "time_slots": {}}
+    walk_mod._do_slot_pick(page, step, report, 1000)
+    return page, report
+
+
+def test_earliest_takes_the_first_date_and_time(monkeypatch):
+    dates = ["2026-10-05", "2026-10-20", "2026-10-28"]
+    page, report = _run_strategy(monkeypatch, "earliest", dates,
+                                 ["09:00", "11:45", "14:30"])
+
+    assert page.picked_date == "2026-10-05"
+    assert page.picked_index == 0
+    assert report.found["chosen_time"] == "09:00"
+
+
+def test_latest_takes_the_last_date_and_time(monkeypatch):
+    """The far end of the calendar, for both the date AND the time.
+
+    Choosing the latest date but the earliest time would be a plausible
+    half-implementation and quietly wrong.
+    """
+    dates = ["2026-10-05", "2026-10-20", "2026-10-28"]
+    page, report = _run_strategy(monkeypatch, "latest", dates,
+                                 ["09:00", "11:45", "14:30"])
+
+    assert page.picked_date == "2026-10-28"
+    assert page.picked_index == 2
+    assert report.found["chosen_time"] == "14:30"
+
+
+def test_a_single_offer_works_under_either_strategy(monkeypatch):
+    """One date and one time is the common real case — Norway had exactly that.
+
+    An off-by-one in the 'latest' index would pass the multi-slot test above
+    and fail here, which is the run that actually matters.
+    """
+    for strategy in ("earliest", "latest"):
+        page, _ = _run_strategy(monkeypatch, strategy,
+                                ["2026-10-28"], ["11:45"])
+        assert page.picked_date == "2026-10-28"
+        assert page.picked_index == 0
+
+
+def test_an_unknown_strategy_is_refused(monkeypatch):
+    from src.waitlist.errors import WaitlistStepError
+
+    with pytest.raises(WaitlistStepError, match="Unknown slot strategy"):
+        _run_strategy(monkeypatch, "cheapest", ["2026-10-28"], ["11:45"])
+
+
+def test_the_shipped_norway_config_asks_for_latest():
+    """Pinned because it is a TESTING choice that must be revisited.
+
+    'latest' takes the least contended slot, which is right for a trial run and
+    wrong for a client: a waitlist slot is not held while the remaining pages
+    are walked, so speed is what wins one. This test is where that decision is
+    visible.
+    """
+    from src.utils.config_reader import initialize_config
+    from src.booking import config as booking_config
+
+    initialize_config()
+    booking_config.clear_cache()
+    step = next(s for s in booking_config.steps_for("AE-NOR", "new")
+                if s.get("type") == "slot_pick")
+    assert step.get("strategy") == "latest"

@@ -56,6 +56,17 @@ ENABLE_TIMEOUT_MS = 20000
 #: the first month reports "no slots" while the portal is showing plenty.
 DEFAULT_MAX_MONTHS_AHEAD = 4
 
+#: How to choose among the dates and times on offer.
+#:
+#:   earliest  the soonest appointment. The default, and right for a waitlist
+#:             invitation: the slot is not held while the remaining pages are
+#:             walked, so a competitor can take it at any moment.
+#:   latest    the furthest out. Useful when a client needs time to prepare
+#:             documents, and safer to TEST with — the far end of the calendar
+#:             is the least contended, so a trial run is least likely to take a
+#:             slot somebody else wanted today.
+SLOT_STRATEGIES = frozenset({"earliest", "latest"})
+
 
 @dataclass
 class StepReport:
@@ -468,7 +479,23 @@ def _do_slot_pick(page, step: Dict[str, Any], report: StepReport,
             f"({', '.join(months_seen)}). Another applicant may have taken "
             "them, or they may be further ahead than max_months_ahead.")
 
-    chosen_date = dates[0]        # 'earliest' — the slot is not held, so speed wins
+    # WHICH date, from the step's strategy. The config carried "strategy" from
+    # the day it was written and nothing read it — the walk always took
+    # dates[0] — so a route asking for anything else was silently ignored.
+    strategy = str(step.get("strategy")
+                   or (slots or {}).get("strategy")
+                   or "earliest").strip().lower()
+    if strategy not in SLOT_STRATEGIES:
+        raise WaitlistStepError(
+            f"Unknown slot strategy {strategy!r}. One of: "
+            f"{', '.join(sorted(SLOT_STRATEGIES))}.")
+
+    # available_dates() returns them sorted, so the ends of the list are the
+    # earliest and latest offered.
+    chosen_date = dates[0] if strategy == "earliest" else dates[-1]
+    report.found["strategy"] = strategy
+    log.info(f"Strategy '{strategy}' of {len(dates)} date(s) -> {chosen_date}")
+
     _settle(page, "before picking a date")
     pick_date(page, calendar, chosen_date, timeout_ms)
     report.found["chosen_date"] = chosen_date
@@ -479,9 +506,12 @@ def _do_slot_pick(page, step: Dict[str, Any], report: StepReport,
     report.found["available_times"] = times
     log.info(f"Date offers {len(times)} time(s): {', '.join(times) or 'none'}")
 
-    chosen_time = pick_time(page, slots, index=0, timeout_ms=timeout_ms)
+    # The same strategy decides the TIME. Times come back in the order the page
+    # lists them, which is chronological, so index 0 and -1 are first and last.
+    index = 0 if strategy == "earliest" else max(0, len(times) - 1)
+    chosen_time = pick_time(page, slots, index=index, timeout_ms=timeout_ms)
     report.found["chosen_time"] = chosen_time
-    log.info(f"Picked time {chosen_time}")
+    log.info(f"Picked time {chosen_time} (index {index})")
 
 
 def _await_enabled_safe(page, submit: Any) -> None:

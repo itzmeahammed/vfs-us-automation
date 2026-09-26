@@ -160,7 +160,7 @@
         "row": "tr.hidden-item",
         "time_cell": "td[id^='tv']",
         "select": "label.ba-slot-radio-label",
-        "strategy": "earliest",
+        "strategy": "latest",
         "_comment_row": "The class reads 'hidden-item' but these are the VISIBLE slot rows — presumably an Angular animation class. Do not filter on the name.",
         "_comment_select": "The radio is tabindex=-1 and visually replaced by its label, so the LABEL is what must be clicked.",
         "_comment_evidence": "Captured: one slot, td id='tv0' -> 11:45, with label.ba-slot-radio-label.standard bound to STRadio1."
@@ -171,7 +171,9 @@
       },
       "_comment_submit": "disabled=\"true\" until a date AND a time are chosen, so the click must wait for it to enable rather than fire blind.",
       "commits": false,
-      "_comment_commits": "EXPLICITLY FALSE, overriding the inherited true from _default.json. The base marks the slot pick as the commit point because for most of this project nobody had seen what came after it. Norway shows that selecting a slot reserves nothing - the commit is Pay Online on review_pay, six pages later. Left as an explicit false rather than deleted so the override is visible in the file instead of being an absence someone has to notice."
+      "_comment_commits": "EXPLICITLY FALSE, overriding the inherited true from _default.json. The base marks the slot pick as the commit point because for most of this project nobody had seen what came after it. Norway shows that selecting a slot reserves nothing - the commit is Pay Online on review_pay, six pages later. Left as an explicit false rather than deleted so the override is visible in the file instead of being an absence someone has to notice.",
+      "strategy": "latest",
+      "_comment_strategy": "LATEST for now, which is a TESTING choice rather than a product one. The far end of the calendar is the least contended, so a trial run is least likely to take a slot a real applicant wanted today. Switch to \"earliest\" before this is used for a client: a waitlist slot is not held while the remaining pages are walked, so speed is what wins one."
     },
     {
       "name": "services",
