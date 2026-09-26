@@ -37,10 +37,39 @@ BOOKING_DIR = os.path.join("config", "booking")
 STEP_TYPES = frozenset({
     "dashboard_resume",   # find the waitlisted application, open it
     "identity_assert",    # verify the opened application is the right client
+    "start_booking",      # create a NEW application (the live-slot entry)
     "form",               # fill fields and submit (the waitlist behaviour)
     "slot_pick",          # choose a date/time — THE COMMITTING STEP
     "confirm",            # read the confirmation, capture the reference
 })
+
+#: The two ways a booking begins. Both end in the same tail — pick a slot, pay,
+#: confirm — and differ only in how the application is reached.
+#:
+#:   WAITLIST   VFS invited this client, so the application ALREADY EXISTS.
+#:              Find their row on the dashboard, prove it is theirs, resume it.
+#:              Identity is the hard part and it must be exact.
+#:
+#:   NEW        A slot is open to anyone, so there is nothing to find and
+#:              nothing to identify: "Start New Booking" CREATES the
+#:              application. Speed is the hard part — the slot is in the public
+#:              pool and someone else is looking at it too.
+#:
+#: Modelled as data rather than as two runners because everything after the
+#: entry is identical, and two code paths over one flow is how they drift.
+ENTRY_WAITLIST = "waitlist"
+ENTRY_NEW = "new"
+ENTRY_MODES = frozenset({ENTRY_WAITLIST, ENTRY_NEW})
+
+#: Step types that only make sense for one entry mode. Checked at load time:
+#: a 'new' flow that tries to assert identity is asserting against a row it
+#: just created, which proves nothing; a 'waitlist' flow that starts a new
+#: booking abandons the invitation it was called to use.
+ENTRY_ONLY_TYPES = {
+    "dashboard_resume": ENTRY_WAITLIST,
+    "identity_assert": ENTRY_WAITLIST,
+    "start_booking": ENTRY_NEW,
+}
 
 #: Steps that may carry "commits": true. Marking anything else is almost
 #: certainly a mistake, and a mistake here is the expensive kind.
@@ -186,6 +215,79 @@ def _resolve(config: Dict[str, Any], seen: List[str]) -> Dict[str, Any]:
 # Validation                                                                   #
 # --------------------------------------------------------------------------- #
 
+def _validate_entry_flows(route: str, steps: List[Dict[str, Any]]) -> None:
+    """Each entry mode must be independently executable.
+
+    A step belongs to a mode when it declares `"entry"`, and is shared
+    otherwise. That makes it easy to write a config which reads fine as a whole
+    and is broken for one flow — a commit step declared only on the waitlist
+    side leaves the live-slot flow with no point of no return, and nothing in a
+    whole-file check would notice.
+    """
+    # A config must be executable by SOMEBODY. Checked once, over the whole
+    # file, because the per-mode loop below deliberately skips a mode the
+    # config does not describe — and a file describing no mode at all would
+    # then pass every check while being unrunnable.
+    if not any(s.get("commits") for s in steps):
+        raise BookingConfigError(
+            f"'{route}': no step is marked \"commits\": true. Exactly one step "
+            "must be flagged as the point of no return — for booking that is "
+            "normally the slot_pick, where the slot actually leaves the pool."
+        )
+
+    for mode in sorted(ENTRY_MODES):
+        flow = [s for s in steps if step_entry(s) in (None, mode)]
+
+        # A mode this config does not describe at all is not an error: most
+        # routes will start life supporting only the waitlist flow.
+        own = [s for s in flow if step_entry(s) == mode]
+        committing = [s["name"] for s in flow if s.get("commits")]
+        if not own and not committing:
+            continue
+
+        names = [s.get("name", "?") for s in flow]
+
+        if not committing:
+            raise BookingConfigError(
+                f"'{route}' ({mode}): no step is marked \"commits\": true. "
+                "Exactly one step must be the point of no return — for booking "
+                "that is normally the slot_pick, where the slot leaves the pool."
+            )
+        if len(committing) > 1:
+            raise BookingConfigError(
+                f"'{route}' ({mode}): {len(committing)} steps are marked "
+                f"\"commits\": true ({', '.join(committing)}). Exactly one is allowed."
+            )
+
+        # A step that only makes sense for the OTHER mode.
+        for step in flow:
+            step_type = step.get("type")
+            required = ENTRY_ONLY_TYPES.get(step_type)
+            declared = (step.get("entry") or "").strip().lower()
+            if required and declared and declared != required:
+                raise BookingConfigError(
+                    f"'{route}' ({mode}) step '{step.get('name')}': a "
+                    f"'{step_type}' step belongs to the '{required}' flow. "
+                    f"Mark it \"entry\": \"{required}\" so it is skipped here — "
+                    "asserting identity against an application this flow just "
+                    "created proves nothing, and starting a new booking in the "
+                    "waitlist flow abandons the invitation it was called to use."
+                )
+
+        # An identity_assert AFTER the commit verifies nothing that can still
+        # be undone: the value of click-then-check is that the check happens
+        # while backing out is still free.
+        commit_at = names.index(committing[0])
+        for index, step in enumerate(flow):
+            if step.get("type") == "identity_assert" and index > commit_at:
+                raise BookingConfigError(
+                    f"'{route}' ({mode}) step '{step['name']}': an "
+                    f"identity_assert must come BEFORE the committing step "
+                    f"'{committing[0]}'. Verifying after the commit cannot "
+                    "prevent a wrong booking."
+                )
+
+
 def _validate(route: str, config: Dict[str, Any]) -> None:
     """Refuses a config that could not be executed safely.
 
@@ -244,29 +346,13 @@ def _validate(route: str, config: Dict[str, Any]) -> None:
     # nothing is journalled as committed (so a taken slot leaves no trace), or
     # two steps both claim to be the point of no return and the write-ahead
     # marker lands in the wrong place.
-    if not committing:
-        raise BookingConfigError(
-            f"'{route}': no step is marked \"commits\": true. Exactly one step "
-            f"must be flagged as the point of no return — for booking that is "
-            f"normally the slot_pick, where the slot actually leaves the pool."
-        )
-    if len(committing) > 1:
-        raise BookingConfigError(
-            f"'{route}': {len(committing)} steps are marked \"commits\": true "
-            f"({', '.join(committing)}). Exactly one is allowed."
-        )
-
-    # An identity_assert AFTER the commit verifies nothing that can still be
-    # undone: the whole value of click-then-check is that the check happens while
-    # backing out is still free.
-    commit_at = names.index(committing[0])
-    for index, step in enumerate(steps):
-        if step.get("type") == "identity_assert" and index > commit_at:
-            raise BookingConfigError(
-                f"'{route}' step '{step['name']}': an identity_assert must come "
-                f"BEFORE the committing step '{committing[0]}'. Verifying after "
-                f"the commit cannot prevent a wrong booking."
-            )
+    #
+    # Checked PER ENTRY MODE, not over the raw list. One config describes both
+    # ways in, so a route with a slot_pick in each flow has two committing
+    # steps in the file and exactly one in either flow — counting the file
+    # would reject a correct config, and counting only one flow would let the
+    # other ship with none.
+    _validate_entry_flows(route, steps)
 
     identity = config.get("identity")
     if identity is not None and not isinstance(identity, dict):
@@ -296,21 +382,83 @@ def get(route: str) -> Dict[str, Any]:
     return config
 
 
-def steps_for(route: str) -> List[Dict[str, Any]]:
-    """Just the step list."""
-    return get(route).get("steps", [])
+def steps_for(route: str, entry: str = ENTRY_WAITLIST) -> List[Dict[str, Any]]:
+    """The steps for one ENTRY MODE, in order.
 
+    A route config describes both ways in. A step may declare `"entry": "new"`
+    or `"entry": "waitlist"` to belong to one of them; a step that declares
+    nothing is SHARED and runs in both, which is what the whole tail — pick a
+    slot, pay, confirm — actually is.
 
-def commit_step_name(route: str) -> str:
-    """The name of the step that is the point of no return.
-
-    Validation guarantees exactly one, so this cannot return None for a config
-    that loaded.
+    Defaults to the waitlist flow because that is the one with an invitation
+    attached, and a caller that forgot to say should get the conservative path
+    rather than one that creates a new application.
     """
-    for step in steps_for(route):
+    entry = (entry or ENTRY_WAITLIST).strip().lower()
+    if entry not in ENTRY_MODES:
+        raise BookingConfigError(
+            f"Unknown entry mode {entry!r}. One of: "
+            f"{', '.join(sorted(ENTRY_MODES))}.")
+
+    return [s for s in get(route).get("steps", [])
+            if step_entry(s) in (None, entry)]
+
+
+def step_entry(step: Dict[str, Any]) -> Optional[str]:
+    """Which entry mode a step belongs to, or None when it is shared.
+
+    An explicit `"entry"` wins. Otherwise it is INFERRED from the step type,
+    because some types can only ever belong to one flow — a dashboard_resume is
+    a waitlist step whether or not anyone said so.
+
+    Inferring rather than demanding keeps existing configs working and keeps
+    the common case silent: a route that only serves the waitlist flow needs no
+    annotation at all, and the tail — slot_pick, form, confirm — stays shared
+    by saying nothing, which is what it is.
+    """
+    declared = (step.get("entry") or "").strip().lower()
+    if declared:
+        return declared
+    return ENTRY_ONLY_TYPES.get(step.get("type"))
+
+
+def entry_modes(route: str) -> List[str]:
+    """Which entry modes this route can actually serve.
+
+    A mode is supported when selecting it yields a flow with a committing step;
+    a config that only ever describes the waitlist path reports just that,
+    rather than pretending it can book a live slot and failing at run time.
+    """
+    supported = []
+    for mode in sorted(ENTRY_MODES):
+        try:
+            steps = steps_for(route, mode)
+        except BookingConfigError:
+            continue
+        if not any(s.get("commits") for s in steps):
+            continue
+
+        # A mode also needs its OWN way in, or the flow begins wherever the
+        # browser happens to be standing. Sharing the tail is the point of this
+        # design; sharing the entry is a config that has not been written yet.
+        required = [t for t, m in ENTRY_ONLY_TYPES.items() if m == mode]
+        if required and not any(s.get("type") in required for s in steps):
+            continue
+        supported.append(mode)
+    return supported
+
+
+def commit_step_name(route: str, entry: str = ENTRY_WAITLIST) -> str:
+    """The name of the step that is the point of no return, for this entry.
+
+    Validation guarantees exactly one per mode, so this cannot return None for
+    a config that loaded.
+    """
+    for step in steps_for(route, entry):
         if step.get("commits"):
             return step["name"]
-    raise BookingConfigError(f"'{route}': no committing step (should be unreachable).")
+    raise BookingConfigError(
+        f"'{route}' ({entry}): no committing step (should be unreachable).")
 
 
 def identity_policy(route: str) -> Dict[str, Any]:

@@ -90,10 +90,19 @@ def cmd_status(args) -> int:
             policy = booking_config.identity_policy(route)
             enabled = booking_config.is_enabled(route)
 
-            print(f"{route}  [{'ENABLED' if enabled else 'disabled'}]")
-            for step in steps:
-                mark = " <-- COMMITS" if step.get("commits") else ""
-                print(f"    {step.get('type', '?'):18} {step['name']}{mark}")
+            modes = booking_config.entry_modes(route)
+            print(f"{route}  [{'ENABLED' if enabled else 'disabled'}]  "
+                  f"flows: {', '.join(modes) or 'NONE'}")
+
+            # Per flow, because they no longer share a step list: a waitlist
+            # booking resumes an application VFS already made, a live-slot
+            # booking creates one. Printing the file's raw steps would show a
+            # sequence neither flow actually runs.
+            for mode in modes:
+                print(f"  {mode}:")
+                for step in booking_config.steps_for(route, mode):
+                    mark = " <-- COMMITS" if step.get("commits") else ""
+                    print(f"    {step.get('type', '?'):18} {step['name']}{mark}")
             print(f"    identity: min_confidence={policy['min_confidence']}, "
                   f"require_unique={policy['require_unique_match']}")
             print()

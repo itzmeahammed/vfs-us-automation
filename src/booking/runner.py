@@ -206,6 +206,24 @@ def _step_dashboard_resume(ctx: "_StepContext") -> None:
     _click(ctx.page, open_spec, f"step '{ctx.name}' open row", ctx.timeout_ms)
 
 
+def _step_start_booking(ctx: "_StepContext") -> None:
+    """Create a NEW application — the live-slot entry.
+
+    The mirror image of dashboard_resume. There is no row to find and no
+    identity to assert, because nothing exists yet: this click is what brings
+    the application into being.
+
+    That also makes it the flow with no safety net. A waitlist booking can
+    click the wrong row and detect it before committing; here the only thing
+    that can be wrong is which client's data gets typed in, and that is settled
+    before the browser starts, not on the page.
+    """
+    submit = ctx.step.get("submit") or {"role": "button",
+                                        "name": "Start New Booking"}
+    _click(ctx.page, submit, f"step '{ctx.name}' start booking", ctx.timeout_ms)
+    ctx.page.wait_for_timeout(2000)
+
+
 def _step_identity_assert(ctx: "_StepContext") -> None:
     """Prove the opened application really belongs to this client.
 
@@ -333,6 +351,7 @@ def raise_slot_gone(detail: str) -> None:
 STEP_HANDLERS: Dict[str, Callable[["_StepContext"], None]] = {
     "dashboard_resume": _step_dashboard_resume,
     "identity_assert": _step_identity_assert,
+    "start_booking": _step_start_booking,
     "form": _step_form,
     "slot_pick": _step_slot_pick,
     "confirm": _step_confirm,
@@ -420,6 +439,7 @@ def _capture(ctx: "_StepContext", label: str) -> None:
 # --------------------------------------------------------------------------- #
 
 def book(page, route: str, registrant, *, account: str = "",
+         entry: str = booking_config.ENTRY_WAITLIST,
          expected_reference: str = "", deadline_epoch: Optional[float] = None,
          values: Optional[Dict[str, Any]] = None,
          live: bool = False) -> BookingRun:
@@ -471,9 +491,9 @@ def book(page, route: str, registrant, *, account: str = "",
         raise InvitationExpiredError(run.reason)
 
     expected_name = _client_name(registrant)
-    commit_name = booking_config.commit_step_name(route)
+    commit_name = booking_config.commit_step_name(route, entry)
     log.info(
-        f"Booking: {route} / {registrant.id} "
+        f"Booking: {route} / {registrant.id} [{entry}] "
         f"{'[LIVE]' if live else '[DRY RUN]'} (commit step: '{commit_name}')"
     )
 
@@ -481,7 +501,7 @@ def book(page, route: str, registrant, *, account: str = "",
     committed = False
 
     try:
-        for step in booking_config.steps_for(route):
+        for step in booking_config.steps_for(route, entry):
             name = step.get("name", "?")
             if step.get("disabled"):
                 log.debug(f"Step '{name}' disabled — skipped.")
@@ -498,7 +518,7 @@ def book(page, route: str, registrant, *, account: str = "",
 
             # dashboard_resume starts wherever login left us; the rest gate on
             # their own URL or text.
-            if step.get("type") != "dashboard_resume":
+            if step.get("type") not in ("dashboard_resume", "start_booking"):
                 _await_page(page, step, ctx.timeout_ms)
 
             log.info(f"Booking step '{name}' ({step.get('type')})...")

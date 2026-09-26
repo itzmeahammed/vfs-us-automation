@@ -321,3 +321,105 @@ def test_check_reports_every_problem(config_dir):
     write(config_dir, "AE-BAD", {"steps": [{"name": "x", "type": "form"}]})
     problems = booking_config.check()
     assert len(problems) == 1 and "AE-BAD" in problems[0]
+
+
+# --------------------------------------------------------------------------- #
+# Entry modes — one config, two ways in                                        #
+# --------------------------------------------------------------------------- #
+#
+# A booking begins either from an INVITATION (the application exists; find the
+# client's row and resume it) or from a LIVE SLOT (nothing exists; create it).
+# Everything after that — pick a slot, pay, confirm — is identical, so the two
+# are modelled as one config with a shared tail rather than two runners.
+
+
+def _both_flows():
+    return {"steps": [
+        {"name": "resume", "type": "dashboard_resume"},
+        {"name": "verify", "type": "identity_assert"},
+        {"name": "start", "type": "start_booking"},
+        {"name": "pick", "type": "slot_pick", "commits": True},
+        {"name": "done", "type": "confirm"},
+    ]}
+
+
+def test_each_flow_gets_its_own_entry_and_a_shared_tail(config_dir):
+    write(config_dir, "AE-XXX", _both_flows())
+
+    waitlist = [s["name"] for s in booking_config.steps_for("AE-XXX", "waitlist")]
+    new = [s["name"] for s in booking_config.steps_for("AE-XXX", "new")]
+
+    assert waitlist == ["resume", "verify", "pick", "done"]
+    assert new == ["start", "pick", "done"]
+
+
+def test_entry_is_inferred_from_the_step_type(config_dir):
+    """A dashboard_resume is a waitlist step whether or not anyone said so.
+
+    Inferring rather than demanding an annotation keeps the common case silent:
+    a route serving only the invitation flow needs no entry key anywhere, and
+    the shared tail stays shared by saying nothing — which is what it is.
+    """
+    write(config_dir, "AE-XXX", {"steps": [
+        {"name": "resume", "type": "dashboard_resume"},
+        {"name": "pick", "type": "slot_pick", "commits": True},
+    ]})
+
+    assert [s["name"] for s in booking_config.steps_for("AE-XXX", "new")] == ["pick"]
+    assert booking_config.step_entry({"type": "dashboard_resume"}) == "waitlist"
+    assert booking_config.step_entry({"type": "slot_pick"}) is None
+
+
+def test_a_flow_without_its_own_entry_is_not_reported_as_supported(config_dir):
+    """Sharing the tail is the design; sharing the ENTRY is an unwritten config.
+
+    Without this, a waitlist-only route would advertise live-slot booking and
+    then start the flow from wherever the browser happened to be standing.
+    """
+    write(config_dir, "AE-XXX", {"steps": [
+        {"name": "resume", "type": "dashboard_resume"},
+        {"name": "pick", "type": "slot_pick", "commits": True},
+    ]})
+
+    assert booking_config.entry_modes("AE-XXX") == ["waitlist"]
+
+
+def test_both_modes_are_reported_when_both_are_described(config_dir):
+    write(config_dir, "AE-XXX", _both_flows())
+    assert booking_config.entry_modes("AE-XXX") == ["new", "waitlist"]
+
+
+def test_a_commit_step_confined_to_one_flow_breaks_the_other(config_dir):
+    """The failure this per-mode validation exists to catch.
+
+    The file has a committing step, so a whole-file check passes — but the
+    live-slot flow has none, and would walk to the end without ever reaching a
+    point of no return.
+    """
+    write(config_dir, "AE-XXX", {"steps": [
+        {"name": "resume", "type": "dashboard_resume"},
+        {"name": "start", "type": "start_booking"},
+        {"name": "pick", "type": "slot_pick", "commits": True,
+         "entry": "waitlist"},
+    ]})
+
+    with pytest.raises(BookingConfigError, match=r"\(new\).*commits"):
+        booking_config.get("AE-XXX")
+
+
+def test_an_explicitly_mistagged_step_is_refused(config_dir):
+    """Asserting identity in the 'new' flow proves nothing: the row was just
+    created by this same run."""
+    write(config_dir, "AE-XXX", {"steps": [
+        {"name": "verify", "type": "identity_assert", "entry": "new"},
+        {"name": "pick", "type": "slot_pick", "commits": True},
+    ]})
+
+    with pytest.raises(BookingConfigError, match="belongs to the 'waitlist' flow"):
+        booking_config.get("AE-XXX")
+
+
+def test_an_unknown_entry_mode_is_refused(config_dir):
+    write(config_dir, "AE-XXX", minimal())
+    with pytest.raises(BookingConfigError, match="Unknown entry mode"):
+        booking_config.steps_for("AE-XXX", "sideways")
