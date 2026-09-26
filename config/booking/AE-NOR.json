@@ -20,33 +20,34 @@
     {
       "name": "appointment_details",
       "type": "form",
-      "url_contains": "appointment",
+      "url_contains": "application-detail",
       "fields": [
         {
           "name": "centre",
           "label": "Choose your Application Centre",
           "widget": "mat-select",
-          "selector": "mat-select[formcontrolname='centerCode']",
           "value": "{{centre}}",
           "required": true,
-          "_comment": "REAL DOM, captured 2026-09-26. formcontrolname is the stable handle: the visible ids are positional (mat-select-value-1, -3) and renumber whenever Angular redraws the page, so pinning those would break on a page that merely re-rendered."
+          "_comment": "Addressed by \"control\" (the Angular formcontrolname), NOT by \"selector\". That choice routes the fill through slot_check.select_mat_dropdown, which the hourly slot checker uses on THESE SAME dropdowns on every run: it waits for the panel to populate (options arrive async, often behind a spinner and only after the parent dropdown API call), escalates a click an overlay intercepts, and logs the options that WERE offered when a value does not match. A raw \"selector\" takes the weaker generic path instead, which opened the overlay and found no options - all three dropdowns were left empty on the 2026-09-26 run.",
+          "control": "centerCode"
         },
         {
           "name": "category",
           "label": "Choose your appointment category",
           "widget": "mat-select",
-          "selector": "mat-select[formcontrolname='visaCategoryCode']",
           "value": "{{category}}",
           "required": true,
-          "_comment": "NOTE the control is named visaCategoryCode while the label says 'appointment category'. Trusting the label order here would have swapped it with the sub-category, whose control is selectedSubvisaCategory — the two appear in the DOM in the opposite order to the page."
+          "_comment": "Addressed by \"control\" (the Angular formcontrolname), NOT by \"selector\". That choice routes the fill through slot_check.select_mat_dropdown, which the hourly slot checker uses on THESE SAME dropdowns on every run: it waits for the panel to populate (options arrive async, often behind a spinner and only after the parent dropdown API call), escalates a click an overlay intercepts, and logs the options that WERE offered when a value does not match. A raw \"selector\" takes the weaker generic path instead, which opened the overlay and found no options - all three dropdowns were left empty on the 2026-09-26 run.",
+          "control": "visaCategoryCode"
         },
         {
           "name": "sub_category",
           "label": "Choose your sub-category",
           "widget": "mat-select",
-          "selector": "mat-select[formcontrolname='selectedSubvisaCategory']",
           "value": "{{sub_category}}",
-          "required": true
+          "required": true,
+          "control": "selectedSubvisaCategory",
+          "_comment": "Addressed by \"control\" (the Angular formcontrolname), NOT by \"selector\". That choice routes the fill through slot_check.select_mat_dropdown, which the hourly slot checker uses on THESE SAME dropdowns on every run: it waits for the panel to populate (options arrive async, often behind a spinner and only after the parent dropdown API call), escalates a click an overlay intercepts, and logs the options that WERE offered when a value does not match. A raw \"selector\" takes the weaker generic path instead, which opened the overlay and found no options - all three dropdowns were left empty on the 2026-09-26 run."
         }
       ],
       "_comment": "The page the slot checker already reaches and reads. For a BOOKING it must be filled rather than read — centre, category, sub-category — and those three come from the combo, not from the client file.",
@@ -56,13 +57,13 @@
         "name": "Continue"
       },
       "_comment_submit": "Rendered disabled=\"true\" until all three dropdowns are chosen, so the click must wait for it to enable rather than fire blind.",
-      "_comment_values": "centre/category/sub_category come from the COMBO, not the client file: ctx.build() puts the selected combination's parts into the context. For 'Norway Visa Application Center - Dubai - Tourist' that is centre='Norway Visa Application Center - Dubai', category='Short Stay', sub_category='Tourist'."
+      "_comment_values": "centre/category/sub_category come from the COMBO, not the client file: ctx.build() puts the selected combination's parts into the context. For 'Norway Visa Application Center - Dubai - Tourist' that is centre='Norway Visa Application Center - Dubai', category='Short Stay', sub_category='Tourist'.",
+      "_comment_url": "OBSERVED: /are/en/nor/application-detail. It was previously \"appointment\", which NEVER matches that URL - so the step timed out waiting for a page it was already on, and never reached the dropdowns at all. The page is titled \"Appointment Details\" while its route is application-detail; trusting the heading over the address bar is what caused this."
     },
     {
       "name": "your_details",
       "type": "form",
       "after": "appointment_details",
-      "url_contains": "applicant",
       "_comment": "STEP 2 of 5. REAL DOM, supplied 2026-09-26. Angular's app-dynamic-form renders EVERY possible control as an <app-dynamic-control> wrapper and leaves the unused ones as empty comment placeholders, so the inputs cannot be addressed positionally. They are found by their visible LABEL, which is what the waitlist field engine already does.",
       "fields": [
         {
@@ -120,25 +121,25 @@
         "role": "button",
         "name": "Save"
       },
-      "_comment_submit": "'Save', NOT 'Continue'. This page offers Cancel / Save / Update, and the Update button is hidden. Clicking Continue here matches nothing."
+      "_comment_submit": "'Save', NOT 'Continue'. This page offers Cancel / Save / Update, and the Update button is hidden. Clicking Continue here matches nothing.",
+      "_comment_url": "NO url_contains: this page URL has never been observed, and a GUESSED gate is worse than none. A wrong gate blocks the step before it starts, which is exactly how appointment_details failed - it waited for \"appointment\" while sitting on /application-detail. Without a gate the step proceeds and fails on a real selector instead, which is diagnosable. Add the gate once the URL is seen."
     },
     {
       "name": "details_summary",
       "type": "form",
       "after": "your_details",
-      "url_contains": "applicant",
       "fields": [],
       "_comment": "STEP 3 — 'Your Details Summary'. Nothing to fill: it lists the applicant with Edit and Delete icons plus an 'Add another applicant' button. VFS states 'You must book appointments individually', so one applicant per booking and the only action is Continue.",
       "submit": {
         "role": "button",
         "name": "Continue"
-      }
+      },
+      "_comment_url": "NO url_contains: this page URL has never been observed, and a GUESSED gate is worse than none. A wrong gate blocks the step before it starts, which is exactly how appointment_details failed - it waited for \"appointment\" while sitting on /application-detail. Without a gate the step proceeds and fails on a real selector instead, which is diagnosable. Add the gate once the URL is seen."
     },
     {
       "name": "select_slot",
       "type": "slot_pick",
       "after": "details_summary",
-      "url_contains": "book-appointment",
       "_comment": "STEP 4 — 'Book an Appointment'. FullCalendar plus a time table, the same shape as Switzerland — a strong sign this page is shared across routes rather than written per country.",
       "appointment_type": {
         "label": "Choose a slot",
@@ -173,19 +174,20 @@
       "commits": false,
       "_comment_commits": "EXPLICITLY FALSE, overriding the inherited true from _default.json. The base marks the slot pick as the commit point because for most of this project nobody had seen what came after it. Norway shows that selecting a slot reserves nothing - the commit is Pay Online on review_pay, six pages later. Left as an explicit false rather than deleted so the override is visible in the file instead of being an absence someone has to notice.",
       "strategy": "latest",
-      "_comment_strategy": "LATEST for now, which is a TESTING choice rather than a product one. The far end of the calendar is the least contended, so a trial run is least likely to take a slot a real applicant wanted today. Switch to \"earliest\" before this is used for a client: a waitlist slot is not held while the remaining pages are walked, so speed is what wins one."
+      "_comment_strategy": "LATEST for now, which is a TESTING choice rather than a product one. The far end of the calendar is the least contended, so a trial run is least likely to take a slot a real applicant wanted today. Switch to \"earliest\" before this is used for a client: a waitlist slot is not held while the remaining pages are walked, so speed is what wins one.",
+      "_comment_url": "NO url_contains: this page URL has never been observed, and a GUESSED gate is worse than none. A wrong gate blocks the step before it starts, which is exactly how appointment_details failed - it waited for \"appointment\" while sitting on /application-detail. Without a gate the step proceeds and fails on a real selector instead, which is diagnosable. Add the gate once the URL is seen."
     },
     {
       "name": "services",
       "type": "form",
       "after": "select_slot",
-      "url_contains": "services",
       "fields": [],
       "_comment": "STEP 5 — optional paid add-ons: Premium Lounge AED 469.91, couriers, SMS, photocopying. NOTHING IS ADDED. Every row has its own 'Add' button and the default is none; adding one would spend the client's money without being asked.",
       "submit": {
         "role": "button",
         "name": "Continue"
-      }
+      },
+      "_comment_url": "NO url_contains: this page URL has never been observed, and a GUESSED gate is worse than none. A wrong gate blocks the step before it starts, which is exactly how appointment_details failed - it waited for \"appointment\" while sitting on /application-detail. Without a gate the step proceeds and fails on a real selector instead, which is diagnosable. Add the gate once the URL is seen."
     },
     {
       "name": "review_pay",
@@ -199,10 +201,12 @@
           "name": "accept_terms",
           "label": "I accept the",
           "widget": "checkbox",
-          "index": 0,
           "value": true,
           "required": true,
-          "_comment": "Terms and Conditions. MANDATORY: 'Pay Online' is disabled=\"true\" until this is ticked."
+          "_comment": "Terms and Conditions. MANDATORY: 'Pay Online' is disabled=\"true\" until this is ticked.",
+          "wrapper": "div.ot-checkbox",
+          "_comment_wrapper": "*** THE REVIEW CHECKBOXES ARE NOT IN AN app-dynamic-control. *** Every other form page on this portal wraps its controls in that element, and the label-scoping locator defaults to it - so on this page it would match nothing and the step would fail exactly as appointment_details did. These two sit in <div class=\"ot-checkbox\"> instead, because they are OneTrust consent controls rather than VFS dynamic-form controls. Caught by reading the DOM, not by running it.",
+          "_comment_index": "No index: each checkbox has its OWN div.ot-checkbox wrapper, so the label alone identifies it. An index here would look inside a single wrapper that holds only one control."
         },
         {
           "name": "marketing_consent",
@@ -211,7 +215,9 @@
           "value": false,
           "required": false,
           "if_present": true,
-          "_comment": "*** OPTIONAL, AND DELIBERATELY LEFT UNTICKED. *** This is marketing consent given on a real person's behalf. It is not required to book, so ticking it would consent them to something they never asked for. A human ticking it by hand is the operator's choice; it is not the bot's to make."
+          "_comment": "*** OPTIONAL, AND DELIBERATELY LEFT UNTICKED. *** This is marketing consent given on a real person's behalf. It is not required to book, so ticking it would consent them to something they never asked for. A human ticking it by hand is the operator's choice; it is not the bot's to make.",
+          "wrapper": "div.ot-checkbox",
+          "_comment_wrapper": "*** THE REVIEW CHECKBOXES ARE NOT IN AN app-dynamic-control. *** Every other form page on this portal wraps its controls in that element, and the label-scoping locator defaults to it - so on this page it would match nothing and the step would fail exactly as appointment_details did. These two sit in <div class=\"ot-checkbox\"> instead, because they are OneTrust consent controls rather than VFS dynamic-form controls. Caught by reading the DOM, not by running it."
         }
       ],
       "submit": {

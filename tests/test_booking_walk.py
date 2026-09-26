@@ -358,3 +358,40 @@ def test_the_shipped_norway_config_asks_for_latest():
     step = next(s for s in booking_config.steps_for("AE-NOR", "new")
                 if s.get("type") == "slot_pick")
     assert step.get("strategy") == "latest"
+
+
+def test_the_walk_honours_the_portals_stated_dwell(monkeypatch):
+    """Norway prints "wait 4 seconds before saving"; Switzerland asks for 32.
+
+    The walk ignored dwell_seconds entirely, so a config setting it was
+    silently disobeyed and Save would be rejected for submitting too early.
+    """
+    from src.booking import walk as walk_mod
+
+    waited = []
+    monkeypatch.setattr(walk_mod, "_dwell",
+                        lambda page, step, key, why: waited.append(
+                            (key, step.get(key))))
+    monkeypatch.setattr(walk_mod, "_capture_html", lambda *a, **k: "")
+    # _await_page and _click are imported INSIDE walk_flow, so they must be
+    # patched where they are defined rather than on this module.
+    monkeypatch.setattr("src.waitlist.register._await_page",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(walk_mod, "_await_enabled_safe", lambda *a, **k: None)
+    monkeypatch.setattr(walk_mod, "_fill_form", lambda *a, **k: None)
+    monkeypatch.setattr("src.waitlist.register._click", lambda *a, **k: None)
+
+    step = {"name": "your_details", "type": "form", "dwell_seconds": 10,
+            "fields": [{"name": "x", "label": "X", "widget": "text"}],
+            "submit": {"role": "button", "name": "Save"}}
+    monkeypatch.setattr("src.booking.config.steps_for",
+                        lambda route, entry="waitlist": [step])
+
+    page = type("P", (), {"url": "u", "wait_for_timeout": lambda s, ms: None,
+                          "mouse": None})()
+    monkeypatch.setattr(walk_mod, "_page_text", lambda p, limit=400: "")
+
+    walk_mod.walk_flow(page, "AE-NOR", entry="new", values={})
+
+    assert ("dwell_seconds", 10) in waited, (
+        f"the portal's stated wait was not honoured; saw {waited}")

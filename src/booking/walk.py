@@ -366,6 +366,9 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             # arrives, which is the state a config has to describe.
             report.html_path = _capture_html(page, name, route)
 
+            _dwell(page, step, "settle_seconds",
+                   "letting the page settle before filling")
+
             if step.get("type") == "slot_pick":
                 _do_slot_pick(page, step, report, timeout_ms)
             elif step.get("type") == "form" and step.get("fields"):
@@ -373,6 +376,14 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             elif step.get("scroll_to_bottom"):
                 page.mouse.wheel(0, 20000)
                 page.wait_for_timeout(500)
+
+            # THE PORTAL'S OWN STATED MINIMUM, and it is enforced: Norway's
+            # "Your Details" renders "Warning: Please wait 4 seconds before
+            # saving your details and continuing", and Switzerland's asks for
+            # 32. Submitting early is rejected. The walk ignored this key
+            # entirely, so a config that set it was silently disobeyed.
+            _dwell(page, step, "dwell_seconds",
+                   "the portal requires it before submitting")
 
             if step.get("commits") and dry_run:
                 report.ok = True
@@ -415,6 +426,18 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             return result
 
     return result
+
+
+def _dwell(page, step: Dict[str, Any], key: str, why: str) -> None:
+    """Wait the number of seconds a step configures, if any.
+
+    Delegates to registration's implementation rather than repeating it: both
+    halves are waiting on the same portal for the same reason, and two copies
+    of a timing rule is how they drift apart.
+    """
+    from src.waitlist.register import _dwell as waitlist_dwell
+
+    waitlist_dwell(page, step, key, why)
 
 
 def _fill_form(page, step: Dict[str, Any], report: StepReport,
