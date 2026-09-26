@@ -59,19 +59,173 @@
       "_comment_values": "centre/category/sub_category come from the COMBO, not the client file: ctx.build() puts the selected combination's parts into the context. For 'Norway Visa Application Center - Dubai - Tourist' that is centre='Norway Visa Application Center - Dubai', category='Short Stay', sub_category='Tourist'."
     },
     {
+      "name": "your_details",
+      "type": "form",
+      "after": "appointment_details",
+      "url_contains": "applicant",
+      "_comment": "STEP 2 of 5. REAL DOM, supplied 2026-09-26. Angular's app-dynamic-form renders EVERY possible control as an <app-dynamic-control> wrapper and leaves the unused ones as empty comment placeholders, so the inputs cannot be addressed positionally. They are found by their visible LABEL, which is what the waitlist field engine already does.",
+      "fields": [
+        {
+          "name": "first_name",
+          "label": "First Name",
+          "widget": "text",
+          "value": "{{first_name|upper}}",
+          "required": true,
+          "_comment": "maxlength=60. The input carries appuppercase, so VFS uppercases it regardless; doing it here keeps what we send identical to what the page displays."
+        },
+        {
+          "name": "last_name",
+          "label": "Last Name",
+          "widget": "text",
+          "value": "{{last_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "passport_number",
+          "label": "Passport Number",
+          "widget": "text",
+          "value": "{{passport_number|upper}}",
+          "required": true,
+          "_comment": "maxlength=30."
+        },
+        {
+          "name": "phone_country_code",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 0,
+          "value": "{{phone_country_code}}",
+          "required": true,
+          "_comment": "TWO inputs share ONE 'Contact number' label — maxlength=3 then maxlength=15 — so they are addressed by index under that label. The same shape Switzerland already has."
+        },
+        {
+          "name": "phone_number",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 1,
+          "value": "{{phone_number}}",
+          "required": true
+        },
+        {
+          "name": "email",
+          "label": "Email",
+          "widget": "text",
+          "value": "{{email}}",
+          "required": true,
+          "_comment": "type=email, maxlength=50. This is the address VFS sends the invitation to, which is why it has to match the account mailbox the watcher reads."
+        }
+      ],
+      "dwell_seconds": 10,
+      "_comment_dwell": "*** THE PAGE ENFORCES A WAIT. *** It renders 'Warning: Please wait 4 seconds before saving your details and continuing'. Saving early is rejected. Switzerland's equivalent page demands 32s, so this number is PER ROUTE and must be read off the page rather than assumed. 10s gives margin over the stated 4 without inventing a longer delay.",
+      "submit": {
+        "role": "button",
+        "name": "Save"
+      },
+      "_comment_submit": "'Save', NOT 'Continue'. This page offers Cancel / Save / Update, and the Update button is hidden. Clicking Continue here matches nothing."
+    },
+    {
+      "name": "details_summary",
+      "type": "form",
+      "after": "your_details",
+      "url_contains": "applicant",
+      "fields": [],
+      "_comment": "STEP 3 — 'Your Details Summary'. Nothing to fill: it lists the applicant with Edit and Delete icons plus an 'Add another applicant' button. VFS states 'You must book appointments individually', so one applicant per booking and the only action is Continue.",
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      }
+    },
+    {
       "name": "select_slot",
       "type": "slot_pick",
+      "after": "details_summary",
+      "url_contains": "book-appointment",
+      "_comment": "STEP 4 — 'Book an Appointment'. FullCalendar plus a time table, the same shape as Switzerland — a strong sign this page is shared across routes rather than written per country.",
+      "appointment_type": {
+        "label": "Choose a slot",
+        "if_present": true,
+        "_comment": "A single mat-radio-button, already checked in the captured page. Declared so a route offering several types can name one."
+      },
+      "calendar": {
+        "container": "full-calendar",
+        "month_title": ".fc-toolbar-title",
+        "next_month": "button.fc-next-button",
+        "prev_month": "button.fc-prev-button",
+        "available_day": "td.fc-daygrid-day.date-availiable",
+        "day_date_attribute": "data-date",
+        "_comment_available_day": "*** date-availiable HAS THREE i's. *** VFS's own typo, in Norway's markup exactly as in Switzerland's. Matching the correct spelling finds nothing, and the run then reports no slots while the page is showing one.",
+        "_comment_evidence": "Captured 2026-09-26: the calendar opened on OCTOBER with exactly one available day, data-date=2026-10-28, carrying <div class=\"fc-event-title\">availiable</div>. Every other October day is a plain fc-daygrid-day. This is why the month search matters — a walk reading only the current month would have found nothing."
+      },
+      "time_slots": {
+        "container": "table.ba-slot-table",
+        "row": "tr.hidden-item",
+        "time_cell": "td[id^='tv']",
+        "select": "label.ba-slot-radio-label",
+        "strategy": "earliest",
+        "_comment_row": "The class reads 'hidden-item' but these are the VISIBLE slot rows — presumably an Angular animation class. Do not filter on the name.",
+        "_comment_select": "The radio is tabindex=-1 and visually replaced by its label, so the LABEL is what must be clicked.",
+        "_comment_evidence": "Captured: one slot, td id='tv0' -> 11:45, with label.ba-slot-radio-label.standard bound to STRadio1."
+      },
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      },
+      "_comment_submit": "disabled=\"true\" until a date AND a time are chosen, so the click must wait for it to enable rather than fire blind.",
+      "commits": false,
+      "_comment_commits": "EXPLICITLY FALSE, overriding the inherited true from _default.json. The base marks the slot pick as the commit point because for most of this project nobody had seen what came after it. Norway shows that selecting a slot reserves nothing - the commit is Pay Online on review_pay, six pages later. Left as an explicit false rather than deleted so the override is visible in the file instead of being an absence someone has to notice."
+    },
+    {
+      "name": "services",
+      "type": "form",
+      "after": "select_slot",
+      "url_contains": "services",
+      "fields": [],
+      "_comment": "STEP 5 — optional paid add-ons: Premium Lounge AED 469.91, couriers, SMS, photocopying. NOTHING IS ADDED. Every row has its own 'Add' button and the default is none; adding one would spend the client's money without being asked.",
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      }
+    },
+    {
+      "name": "review_pay",
+      "type": "form",
+      "after": "services",
       "commits": true,
-      "_comment_commits": "PROVISIONAL, and almost certainly in the wrong place — exactly as it is for AE-CHE. Selecting a slot reserves nothing; the booking exists only once payment completes. This flag sits here because config validation requires exactly one committing step per flow and the payment step has never been seen. MOVE IT to payment once this walk captures that page. That move is the single most important outcome of running Norway.",
-      "_comment_selectors": "Inherited from _default, which describes Angular Material. Switzerland turned out to use FullCalendar instead (config/booking/AE-CHE.json), so assume nothing here matches until the walk says so."
+      "url_contains": "review-pay",
+      "_comment": "'Review' — the last page before money moves.",
+      "fields": [
+        {
+          "name": "accept_terms",
+          "label": "I accept the",
+          "widget": "checkbox",
+          "index": 0,
+          "value": true,
+          "required": true,
+          "_comment": "Terms and Conditions. MANDATORY: 'Pay Online' is disabled=\"true\" until this is ticked."
+        },
+        {
+          "name": "marketing_consent",
+          "label": "Yes, I agree to receive future communication",
+          "widget": "checkbox",
+          "value": false,
+          "required": false,
+          "if_present": true,
+          "_comment": "*** OPTIONAL, AND DELIBERATELY LEFT UNTICKED. *** This is marketing consent given on a real person's behalf. It is not required to book, so ticking it would consent them to something they never asked for. A human ticking it by hand is the operator's choice; it is not the bot's to make."
+        }
+      ],
+      "submit": {
+        "selector": "button#trigger"
+      },
+      "_comment_submit": "'Pay Online', addressed by id rather than label: it is an OneTrust consent-gated submit (class ot-submit-button) whose label text sits between comment nodes. disabled=\"true\" until the terms box is ticked.",
+      "_comment_commits": "*** THE REAL POINT OF NO RETURN, AND IT IS HERE. *** Clicking this leaves VFS entirely for https://secureacceptance.cybersource.com/checkout, a third-party payment gateway. Everything before it is reversible; this is not. The flag has MOVED OFF select_slot, where it sat as an admitted placeholder on every route because nobody had seen this page. That move is the main outcome of walking Norway."
     },
     {
       "name": "confirmation",
       "remove": true,
-      "_comment": "REMOVED, deliberately, and for the same reason it is removed from AE-CHE: a guessed step at the END of a flow is the most dangerous kind, because it would read some other page as success and journal a booking that never happened. Better that the walk stops at a page it does not recognise. Re-add it with real selectors once the pages after the slot pick are captured."
+      "_comment": "Still removed. What follows 'Pay Online' is the CyberSource gateway, not a VFS confirmation page, so there is no VFS page here to describe yet."
     }
   ],
   "_comment_flow_expected": "Start New Booking -> Appointment Details (centre/category/sub) -> slot calendar -> ??? -> payment -> confirmed. Everything from the calendar onward is unknown on every route, which is the gap this walk exists to close.",
   "_comment_next": "Walk it with:  python -m src.booking probe -sc AE -dc NOR --walk --keep-open --hold 1800  — one login, capturing every page. Then write the real selectors, move commits to payment, and only then set enabled.",
-  "_comment_flow_real": "CONFIRMED from the live page, 2026-09-26. VFS's own progress bar reads: 1 Appointment Details -> 2 Your Details -> 3 Book Appointment -> 4 Services -> 5 Review. FIVE steps, which settles the '5-6 steps' the notes guessed at, and shows the slot calendar is step 3 of 5 rather than the end."
+  "_comment_flow_real": "CONFIRMED END TO END, 2026-09-26. VFS's own progress bar reads: 1 Appointment Details -> 2 Your Details -> 3 Book Appointment -> 4 Services -> 5 Review. The DOM adds a 'Your Details Summary' page between 2 and 3 that the bar does not number, so there are SIX VFS pages plus the external gateway. Fee captured: AED 84.67, the VFS service charge with no add-ons.",
+  "_comment_payment_gateway": "AFTER 'Pay Online' the browser leaves VFS for https://secureacceptance.cybersource.com/checkout, which asks for billing name, address, city, country, postcode, phone and email, then CARD TYPE, NUMBER, EXPIRY and CVN. It RSA-encrypts the card fields in the browser before submitting (see the jwk input and RsaOaep.prepareFormForSubmission). NO CARD DETAILS EXIST ANYWHERE IN THIS SYSTEM AND NONE SHOULD: automating that page means holding a client's card, which is a different class of problem from booking and needs its own decision. The run stops at Pay Online."
 }
