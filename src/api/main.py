@@ -368,16 +368,28 @@ async def security_headers(request: Request, call_next: Any) -> Any:
 # --------------------------------------------------------------------------
 
 
+from src.api.accounts import router as accounts_router         # noqa: E402
+from src.api.booking import router as booking_router           # noqa: E402
 from src.api.clients import router as clients_router          # noqa: E402
 from src.api.clients import routes_router                     # noqa: E402
+from src.api.config_view import router as config_router       # noqa: E402
+from src.api.inbox import router as inbox_router              # noqa: E402
+from src.api.pipeline import router as pipeline_router        # noqa: E402
 from src.api.status import router as status_router            # noqa: E402
+from src.api.webhooks import router as webhooks_router        # noqa: E402
 
 # Client management, route readiness, and operational status. Imported after
 # `app` exists so the routers can be attached; each carries its own
 # require_token dependency.
+app.include_router(accounts_router)
 app.include_router(clients_router)
 app.include_router(routes_router)
 app.include_router(status_router)
+app.include_router(pipeline_router)
+app.include_router(config_router)
+app.include_router(webhooks_router)
+app.include_router(inbox_router)
+app.include_router(booking_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
@@ -498,6 +510,10 @@ async def trigger_waitlist(
 )
 async def list_jobs(
     limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(
+        default=0, ge=0,
+        description="Skip the first N jobs (for pagination).",
+    ),
     needs_attention: bool = Query(
         default=False,
         description="Return only jobs with an unresolved submit or an outcome "
@@ -505,15 +521,17 @@ async def list_jobs(
                     "again until a human verifies the VFS account.",
     ),
 ) -> JobListResponse:
-    """Recent jobs, most recent first."""
-    records = job_manager.recent(limit if not needs_attention else 100)
+    """Recent jobs, most recent first. Supports offset-based pagination."""
+    fetch_count = offset + limit if not needs_attention else 100
+    records = job_manager.recent(fetch_count)
     if needs_attention:
-        records = [r for r in records if r.needs_attention][:limit]
+        records = [r for r in records if r.needs_attention]
+    page = records[offset:offset + limit]
     active = job_manager.active_job
     return JobListResponse(
-        count=len(records),
+        count=len(page),
         active_job_id=active.job_id if active else None,
-        jobs=[JobResponse(**r.to_dict()) for r in records],
+        jobs=[JobResponse(**r.to_dict()) for r in page],
     )
 
 

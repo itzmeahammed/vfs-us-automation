@@ -40,12 +40,16 @@ from fastapi import (
 from src.api.schemas import (
     ClientCreateRequest,
     ClientDetailResponse,
+    ClientJournalResponse,
     ClientListResponse,
     ClientPatchRequest,
     ClientSummary,
     ClientWriteResponse,
+    JournalRow,
     ProblemModel,
     RouteReadinessResponse,
+    RouteSummary,
+    RoutesListResponse,
 )
 from src.api.security import require_token
 
@@ -689,6 +693,49 @@ async def list_documents(client_id: str) -> Dict[str, Any]:
     return {"client_id": client_id, "count": len(held), "documents": held}
 
 
+@router.get(
+    "/{client_id}/journal",
+    response_model=ClientJournalResponse,
+    dependencies=[Depends(require_token)],
+)
+def get_client_journal(client_id: str) -> ClientJournalResponse:
+    """Full registration history for one client, newest first.
+
+    Returns every journal row for this registrant_id across all routes and
+    combos. The list endpoint's `?include=journal` returns only the latest
+    entry; this returns the complete trail.
+    """
+    from src.waitlist import journal, store
+
+    try:
+        store.get_raw(client_id)
+    except store.ClientNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=str(exc)) from exc
+
+    rows = []
+    for row in reversed(journal.entries()):
+        if (row.get("registrant_id") or "").lower() != client_id.lower():
+            continue
+        rows.append(JournalRow(
+            route=str(row.get("route", "")),
+            combo=str(row.get("combo", "")),
+            registrant_id=str(row.get("registrant_id", "")),
+            status=str(row.get("status", "")),
+            vfs_reference=row.get("vfs_reference"),
+            account=row.get("account"),
+            reason=str(row.get("reason") or ""),
+            started_at=str(row.get("started_at") or ""),
+            finished_at=str(row.get("finished_at") or ""),
+        ))
+
+    return ClientJournalResponse(
+        client_id=client_id,
+        count=len(rows),
+        rows=rows,
+    )
+
+
 @router.delete(
     "/{client_id}/documents",
     dependencies=[Depends(require_token)],
@@ -710,6 +757,48 @@ async def delete_documents(client_id: str) -> Dict[str, Any]:
 # --------------------------------------------------------------------------
 
 routes_router = APIRouter(prefix="/routes", tags=["routes"])
+
+
+@routes_router.get(
+    "",
+    response_model=RoutesListResponse,
+    dependencies=[Depends(require_token)],
+)
+def list_routes() -> RoutesListResponse:
+    """All configured routes with readiness summary and client count.
+
+    The web app needs this to populate a route picker before it can call
+    GET /routes/{route}/readiness for the form fields.
+    """
+    from src.waitlist import store, validate
+
+    route_ids: List[str] = []
+    try:
+        from src.utils.config_reader import get_config_section
+        route_ids = sorted(
+            r.upper() for r in (get_config_section("vfs-url") or {})
+        )
+    except Exception:                              # noqa: BLE001
+        log.exception("Could not read the route list from the bot config.")
+
+    summaries: List[RouteSummary] = []
+    for route_id in route_ids:
+        try:
+            readiness = validate.route_readiness(route_id)
+            clients = store.list_ids(route=route_id)
+            summaries.append(RouteSummary(
+                route=route_id,
+                ready=readiness.ready,
+                combos=readiness.combos,
+                clients=len(clients),
+                problems=[p.message for p in readiness.problems],
+            ))
+        except Exception as exc:                   # noqa: BLE001
+            summaries.append(RouteSummary(
+                route=route_id, ready=False, problems=[str(exc)],
+            ))
+
+    return RoutesListResponse(count=len(summaries), routes=summaries)
 
 
 @routes_router.get(

@@ -414,6 +414,7 @@ class JobManager:
         extra_args: Optional[List[str]] = None,
         payload: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
+        command_override: Optional[List[str]] = None,
     ) -> Tuple[JobRecord, bool]:
         """Spawn the configured job and return immediately.
 
@@ -423,6 +424,8 @@ class JobManager:
             payload: Caller-supplied metadata, echoed back in status responses.
             idempotency_key: When supplied and already seen, the ORIGINAL job is
                 returned instead of spawning a second one.
+            command_override: When set, replaces the configured job_command
+                entirely (used by booking trigger which runs a different CLI).
 
         Returns:
             (record, replayed). `replayed` is True when an idempotency key
@@ -433,7 +436,10 @@ class JobManager:
             JobStartError: the process would not start at all (caller: 500).
         """
         settings = self._settings
-        command: List[str] = [*settings.job_command, *(extra_args or [])]
+        if command_override is not None:
+            command = [*command_override, *(extra_args or [])]
+        else:
+            command = [*settings.job_command, *(extra_args or [])]
 
         async with self._lock:
             # -- Idempotent replay -------------------------------------------

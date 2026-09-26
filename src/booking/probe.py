@@ -687,6 +687,33 @@ def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str]):
 
     step = next((s for s in booking_config.steps_for(route)
                  if s.get("type") == "dashboard_resume"), {})
+
+    # INVITED IS NOT BOOKABLE. The card can say "Waitlist Status: SLOTS
+    # AVAILABLE" and still render Book Now dead, because VFS requires the visa
+    # application form to be completed first — "Visa Application form Status -
+    # Not Initiated" sits on the same card, and the span carries
+    # class="...disabled-book-now".
+    #
+    # Checked HERE, on the dashboard, rather than discovered later: without it
+    # the walk clicks a dead span, waits out a 30s timeout on a calendar that
+    # never loaded, and reports a slot_pick selector failure — sending the
+    # investigation after the wrong problem entirely. That happened on
+    # 2026-09-25 and cost a login against a rate-limited account.
+    blocked = (step.get("row") or {}).get("blocked_marker")
+    if blocked:
+        try:
+            html = page.content()
+        except Exception:                                   # noqa: BLE001
+            html = ""
+        if blocked in html:
+            reason = (
+                f"row {row.index} shows SLOTS AVAILABLE but Book Now is "
+                f"disabled ('{blocked}'). VFS wants the visa application form "
+                "completed first — open 'Edit Form' on the card and fill it. "
+                "Nothing here is a selector fault.")
+            log.warning(reason)
+            return WalkResult(stopped_at="dashboard_resume", reason=reason)
+
     open_spec = (step.get("row") or {}).get("open") or {"role": "button",
                                                         "name": "Book Now"}
 

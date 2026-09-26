@@ -26,6 +26,8 @@ from src.api.schemas import (
     ResolveRequest,
     StatusResponse,
     SwitchState,
+    SwitchesUpdateRequest,
+    SwitchesUpdateResponse,
 )
 from src.api.security import require_token
 
@@ -251,3 +253,92 @@ def resolve_entry(payload: ResolveRequest) -> Dict[str, Any]:
     log.info("Resolved %s/%s/%s as %s via API.", payload.route, payload.combo,
              payload.registrant_id, payload.status)
     return {"resolved": True, "entry": result.to_dict()}
+
+
+# --------------------------------------------------------------------------
+# Switches (operational toggles)
+# --------------------------------------------------------------------------
+
+# The INI keys that correspond to each switch field.
+_SWITCH_INI_KEYS = {
+    "register_enabled": "register_enabled",
+    "dry_run": "dry_run",
+    "auto_trigger_enabled": "auto_trigger_enabled",
+    "auto_trigger_dry_run": "auto_trigger_dry_run",
+    "max_per_run": "max_per_run",
+    "max_per_day": "max_per_day",
+}
+
+
+def _write_ini_switches(updates: Dict[str, Any]) -> None:
+    """Write switch values to config/config.local.ini [waitlist] section.
+
+    Uses configparser to read-modify-write the local override file, so other
+    sections and keys are preserved. The file is the gitignored local override
+    that wins over config/config.ini.
+    """
+    import configparser
+    import os
+
+    ini_path = os.path.join("config", "config.local.ini")
+    parser = configparser.ConfigParser()
+    parser.read(ini_path, encoding="utf-8")
+
+    if not parser.has_section("waitlist"):
+        parser.add_section("waitlist")
+
+    for field_name, value in updates.items():
+        ini_key = _SWITCH_INI_KEYS.get(field_name)
+        if ini_key is None:
+            continue
+        # Booleans -> lowercase string for INI
+        if isinstance(value, bool):
+            parser.set("waitlist", ini_key, str(value).lower())
+        else:
+            parser.set("waitlist", ini_key, str(value))
+
+    with open(ini_path, "w", encoding="utf-8") as fh:
+        parser.write(fh)
+
+
+@router.patch(
+    "/status/switches",
+    response_model=SwitchesUpdateResponse,
+    dependencies=[Depends(require_token)],
+)
+def update_switches(payload: SwitchesUpdateRequest) -> SwitchesUpdateResponse:
+    """Toggle operational switches (register_enabled, dry_run, etc.).
+
+    Writes to config/config.local.ini and reloads settings so the change
+    takes effect immediately. Only the fields you send are changed.
+    """
+    sent = payload.model_fields_set or set()
+    updates = {k: v for k, v in payload.model_dump().items()
+               if k in sent and v is not None}
+
+    if not updates:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Empty update — send at least one switch to change.",
+        )
+
+    _write_ini_switches(updates)
+
+    # Reload so the in-memory settings reflect the new values.
+    from src.utils.config_reader import initialize_config
+    initialize_config()
+    try:
+        from src.settings import reload_settings
+        reload_settings()
+    except Exception:                              # noqa: BLE001
+        pass
+
+    log.info("Switches updated via API: %s", ", ".join(
+        f"{k}={v}" for k, v in updates.items()))
+
+    new_switches = _switches()
+    return SwitchesUpdateResponse(
+        updated=sorted(updates.keys()),
+        switches=new_switches,
+        message=f"{len(updates)} switch(es) updated.",
+    )

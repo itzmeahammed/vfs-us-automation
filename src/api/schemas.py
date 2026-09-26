@@ -672,3 +672,349 @@ class ResolveRequest(BaseModel):
             raise ValueError("status must be 'success' or 'failed' — resolving "
                              "replaces an ambiguous state with a checked fact.")
         return v
+
+
+# --------------------------------------------------------------------------- #
+# Routes listing                                                               #
+# --------------------------------------------------------------------------- #
+
+
+class RouteSummary(BaseModel):
+    """One route in the routes listing."""
+
+    route: str
+    ready: bool
+    combos: List[str] = Field(default_factory=list)
+    clients: int = 0
+    problems: List[str] = Field(default_factory=list)
+
+
+class RoutesListResponse(BaseModel):
+    """All configured routes."""
+
+    count: int
+    routes: List[RouteSummary] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline overview                                                            #
+# --------------------------------------------------------------------------- #
+
+
+class PipelineResponse(BaseModel):
+    """Full pipeline snapshot — clients, journal, routes, mailboxes, health."""
+
+    generated_at: float
+    clients: List[Dict[str, Any]] = Field(default_factory=list)
+    waitlist_rows: List[Dict[str, Any]] = Field(default_factory=list)
+    waitlist_routes: List[Dict[str, Any]] = Field(default_factory=list)
+    booking_routes: List[Dict[str, Any]] = Field(default_factory=list)
+    inbox_routes: List[Dict[str, Any]] = Field(default_factory=list)
+    mailboxes: List[Dict[str, Any]] = Field(default_factory=list)
+    health: List[Dict[str, Any]] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    totals: Dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# Read-only config                                                             #
+# --------------------------------------------------------------------------- #
+
+
+class ConfigResponse(BaseModel):
+    """Operational settings, secrets stripped."""
+
+    schedule: Dict[str, Any] = Field(default_factory=dict)
+    timeouts: Dict[str, Any] = Field(default_factory=dict)
+    retry: Dict[str, Any] = Field(default_factory=dict)
+    browser: Dict[str, Any] = Field(default_factory=dict)
+    account_safety: Dict[str, Any] = Field(default_factory=dict)
+    waitlist: Dict[str, Any] = Field(default_factory=dict)
+    webhook: Dict[str, Any] = Field(default_factory=dict)
+    inbox: Dict[str, Any] = Field(default_factory=dict)
+    bandwidth: Dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# Client journal                                                               #
+# --------------------------------------------------------------------------- #
+
+
+class JournalRow(BaseModel):
+    """One registration attempt from the waitlist journal."""
+
+    route: str = ""
+    combo: str = ""
+    registrant_id: str = ""
+    status: str = ""
+    vfs_reference: Optional[str] = None
+    account: Optional[str] = None
+    reason: str = ""
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
+class ClientJournalResponse(BaseModel):
+    """Full registration history for one client."""
+
+    client_id: str
+    count: int
+    rows: List[JournalRow] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Webhook management                                                           #
+# --------------------------------------------------------------------------- #
+
+
+class WebhookTestResponse(BaseModel):
+    """Result of a webhook test ping."""
+
+    delivered: bool
+    event: str = ""
+    attempts: int = 0
+    status_code: Optional[int] = None
+    error: str = ""
+    skipped: bool = False
+
+
+class WebhookDeadletterResponse(BaseModel):
+    """How many webhook deliveries failed."""
+
+    count: int
+    configured: bool
+
+
+# --------------------------------------------------------------------------- #
+# Inbox reconcile                                                              #
+# --------------------------------------------------------------------------- #
+
+
+class ReconcileProposal(BaseModel):
+    """One journal row a confirmation email could settle."""
+
+    registrant_id: str
+    route: str
+    combo: str
+    reference: Optional[str] = None
+    new_status: str = ""
+    action: str = ""
+    blocked_reason: str = ""
+    will_apply: bool = False
+
+
+class ReconcileRequest(BaseModel):
+    """Body of POST /inbox/reconcile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dry_run: bool = Field(
+        default=True,
+        description="True (default) shows what WOULD be settled without "
+                    "writing anything. Send false to apply.",
+    )
+
+
+class ReconcileResponse(BaseModel):
+    """Result of an inbox reconcile pass."""
+
+    mailboxes_checked: int = 0
+    mailboxes_failed: List[str] = Field(default_factory=list)
+    messages_seen: int = 0
+    proposals: List[ReconcileProposal] = Field(default_factory=list)
+    applied: int = 0
+    dry_run: bool = True
+
+
+# --------------------------------------------------------------------------- #
+# Booking status                                                               #
+# --------------------------------------------------------------------------- #
+
+
+class BookingRouteStatus(BaseModel):
+    """One route's booking pipeline state."""
+
+    route: str
+    enabled: bool = False
+    commit_step: str = ""
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class BookingClientStatus(BaseModel):
+    """One client's booking phase."""
+
+    client_id: str
+    route: str
+    status: str = ""
+    vfs_reference: Optional[str] = None
+    phase: str = ""
+    needs_attention: bool = False
+
+
+class BookingStatusResponse(BaseModel):
+    """Booking pipeline overview."""
+
+    routes: List[BookingRouteStatus] = Field(default_factory=list)
+    clients: List[BookingClientStatus] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Switches (operational toggles)                                               #
+# --------------------------------------------------------------------------- #
+
+
+class SwitchesUpdateRequest(BaseModel):
+    """Partial update of operational switches. Only supplied fields change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    register_enabled: Optional[bool] = Field(
+        default=None,
+        description="Master switch. False = nothing registers.",
+    )
+    dry_run: Optional[bool] = Field(
+        default=None,
+        description="Global dry-run: walk the flow, never submit.",
+    )
+    auto_trigger_enabled: Optional[bool] = Field(
+        default=None,
+        description="Slot checker may fire waitlist runs.",
+    )
+    auto_trigger_dry_run: Optional[bool] = Field(
+        default=None,
+        description="Auto-triggered runs stop before submitting.",
+    )
+    max_per_run: Optional[int] = Field(
+        default=None, ge=1, le=50,
+        description="Max registrations per invocation.",
+    )
+    max_per_day: Optional[int] = Field(
+        default=None, ge=1, le=200,
+        description="Max registrations per calendar day.",
+    )
+
+
+class SwitchesUpdateResponse(BaseModel):
+    """Result of toggling switches."""
+
+    updated: List[str] = Field(
+        default_factory=list,
+        description="Which switches were changed.",
+    )
+    switches: SwitchState
+    message: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# Account health                                                               #
+# --------------------------------------------------------------------------- #
+
+
+class AccountRouteHealth(BaseModel):
+    """One route's health for one account."""
+
+    route: str
+    cooldown_until: float = 0
+    fails: int = 0
+    last_reason: str = ""
+    benched: bool = False
+
+
+class AccountHealth(BaseModel):
+    """Health state for one VFS account."""
+
+    email: str
+    disabled: bool = False
+    disabled_reason: str = ""
+    routes: List[AccountRouteHealth] = Field(default_factory=list)
+
+
+class AccountHealthResponse(BaseModel):
+    """All accounts' circuit-breaker state."""
+
+    count: int
+    accounts: List[AccountHealth] = Field(default_factory=list)
+
+
+class AccountClearResponse(BaseModel):
+    """Result of clearing an account's health state."""
+
+    email: str
+    route: Optional[str] = None
+    cleared: bool
+
+
+class AccountBenchRequest(BaseModel):
+    """Bench an account on a route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: str = Field(description="Route to bench on, e.g. AE-CHE.")
+    hours: int = Field(default=2, ge=1, le=168, description="Hours to bench.")
+    reason: str = Field(default="benched via API", max_length=280)
+
+
+# --------------------------------------------------------------------------- #
+# Booking trigger                                                              #
+# --------------------------------------------------------------------------- #
+
+
+class BookingTriggerRequest(BaseModel):
+    """Body of POST /trigger/booking."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: Optional[str] = Field(
+        default=None,
+        description="Route id, e.g. AE-CHE.",
+        examples=["AE-CHE"],
+    )
+    registrant: Optional[str] = Field(
+        default=None,
+        description="Single client id.",
+    )
+    dry_run: bool = Field(
+        default=True,
+        description="True (default): walk the flow but stop before committing.",
+    )
+    walk: bool = Field(
+        default=False,
+        description="If true, click 'Book Now' and walk the booking pages "
+                    "(still stops before commit unless dry_run=false).",
+    )
+    reason: Optional[str] = Field(
+        default=None, max_length=280,
+        description="Free-text note recorded with the job.",
+    )
+
+    @field_validator("route")
+    @classmethod
+    def _validate_route(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip().upper()
+        if not _ROUTE_RE.match(v):
+            raise ValueError("route must look like 'AE-CHE'.")
+        return v
+
+    @field_validator("registrant")
+    @classmethod
+    def _validate_registrant(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not _ID_RE.match(v):
+            raise ValueError("registrant must be a strict slug.")
+        return v
+
+    def to_cli_args(self) -> List[str]:
+        """Render as argv for the booking probe command."""
+        args: List[str] = []
+        if self.route:
+            source, _, dest = self.route.partition("-")
+            args += ["--source", source, "--dest", dest]
+        if self.registrant:
+            args += ["--registrant", self.registrant]
+        if self.walk:
+            args.append("--walk")
+        return args
