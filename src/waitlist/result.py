@@ -32,6 +32,20 @@ class Status:
     NEEDS_ATTENTION = (PENDING, UNKNOWN)
 
 
+
+def _run_id() -> str:
+    """The ambient run id, resolved lazily.
+
+    Imported inside the function on purpose: src.waitlist.result is imported
+    very early by the CLI, and a module-level import of run_context here would
+    fix the id before the entry point has had a chance to adopt an inherited
+    VFS_RUN_ID. Resolving at construction time reads it after that.
+    """
+    from src.utils.run_context import run_id
+
+    return run_id()
+
+
 @dataclass
 class WaitlistResult:
     """One registration attempt, start to finish."""
@@ -47,6 +61,13 @@ class WaitlistResult:
     finished_at: Optional[str] = None
     screenshots: List[str] = field(default_factory=list)
     steps_completed: List[str] = field(default_factory=list)
+    #: The run that produced this row — the join key to the API job, the JSONL
+    #: log and the runs/ folder. A default_factory rather than a required field
+    #: so every existing construction site keeps working and still gets a
+    #: correct id: the factory reads the ambient run, which is the run doing
+    #: the constructing. Rows written before this existed read back as "" via
+    #: from_dict's known-field filter.
+    run_id: str = field(default_factory=lambda: _run_id())
 
     @property
     def committed(self) -> bool:
@@ -68,6 +89,7 @@ class WaitlistResult:
 
     def to_dict(self) -> dict:
         return {
+            "run_id": self.run_id,
             "route": self.route,
             "combo": self.combo,
             "registrant_id": self.registrant_id,

@@ -641,20 +641,42 @@ def _page_text(page, limit: int = 400) -> str:
         return ""
 
 
-#: Where captured DOM lands, per route: captured/AE-CHE/, captured/AE-ESP/, …
+#: Where a run's artifacts land:  runs/AE-NOR/<run_id>/
 #:
-#: Per-route rather than one flat folder because capturing is something every
-#: new country goes through, not a one-off for Switzerland. Twelve countries'
-#: pages in one directory, distinguishable only by a timestamp prefix, would be
-#: unusable exactly when it matters — mid-window, looking for the page that
-#: broke last night's walk.
-CAPTURE_ROOT = "captured"
+#: Per-route because capturing is something every new country goes through, not
+#: a one-off for Switzerland. Twelve countries' pages in one directory,
+#: distinguishable only by a timestamp prefix, would be unusable exactly when
+#: it matters — mid-window, looking for the page that broke last night's walk.
+#:
+#: Per-RUN inside that because the run_id is the join key to everything else. A
+#: screenshot is only evidence if you can tell which run produced it; with the
+#: id in the path, one folder name takes you to that run's log lines
+#: (`jq 'select(.run_id=="<id>")' logs/app.jsonl`), its journal rows, and its
+#: API job. The previous flat layout grew to 199 loose files under screenshots/
+#: with no way back to the run, which is the same as having none.
+#:
+#: It also makes retention trivial: a run folder is the unit you delete, so
+#: nothing has to reason about which of 199 files belonged together.
+CAPTURE_ROOT = "runs"
 
 
-def capture_dir(route: str = "") -> str:
-    """The capture directory for a route. Falls back to the root if unknown."""
+def capture_dir(route: str = "", run: str = "") -> str:
+    """The artifact directory for one run of one route: runs/<ROUTE>/<run_id>/.
+
+    `run` defaults to the ambient run id, which is what every caller wants —
+    they are, by definition, inside the run whose artifacts they are writing.
+    It stays an argument so a caller reconstructing an OLD run's path (an
+    endpoint serving artifacts, say) can ask for that one instead.
+    """
+    from src.utils.run_context import run_id
+
     route = (route or "").strip().upper()
-    return os.path.join(CAPTURE_ROOT, route) if route else CAPTURE_ROOT
+    run = (run or "").strip() or run_id()
+    parts = [CAPTURE_ROOT]
+    if route:
+        parts.append(route)
+    parts.append(run)
+    return os.path.join(*parts)
 
 
 # --------------------------------------------------------------------------- #
@@ -974,7 +996,8 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                 report.detail = "payment submitted"
                 result.steps.append(report)
                 result.stopped_at = name
-                result.reason = "payment submitted — see logs/payments.jsonl"
+                from src.payment.journal import JOURNAL_FILE as _PAY_JOURNAL
+                result.reason = f"payment submitted — see {_PAY_JOURNAL}"
                 return result
 
             if step.get("commits") and dry_run:

@@ -43,6 +43,10 @@ class _BudgetCase(unittest.TestCase):
         self._cwd = os.getcwd()
         self._tmp = tempfile.mkdtemp(prefix="bw-budget-test-")
         os.chdir(self._tmp)
+        # STATE_FILE is state/bandwidth_budget.json, so seeding it by hand
+        # needs the directory. The module creates it on its own first write;
+        # these tests write it directly, before that has happened.
+        os.makedirs(os.path.dirname(bb.STATE_FILE) or ".", exist_ok=True)
         self.addCleanup(shutil.rmtree, self._tmp, True)
         self.addCleanup(os.chdir, self._cwd)
 
@@ -160,6 +164,7 @@ class TestDisabled(_BudgetCase):
 
 class TestFailsOpen(_BudgetCase):
     def test_corrupt_state_does_not_stop_runs(self):
+        os.makedirs(os.path.dirname(bb.STATE_FILE) or ".", exist_ok=True)
         with open(bb.STATE_FILE, "w", encoding="utf-8") as f:
             f.write("{not json at all")
         self.assertEqual(bb.used_mb(), 0.0)

@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.api.config import ApiSettings, get_settings
+from src.utils import run_context
 from src.api.jobstore import JobStore, prune_logs, reconcile
 
 log = logging.getLogger("vfs.api.jobs")
@@ -158,6 +159,13 @@ class JobRecord:
     command: List[str]
     status: JobStatus
     started_at: datetime
+    # The join key across every record system: this job, the child's log lines,
+    # its journal rows and its runs/ folder all carry it. Equal to job_id for
+    # API-triggered runs — the API mints one id and uses it for both, so there
+    # is no mapping table to consult. Kept as its own field anyway, because a
+    # manually-started run has a run_id and no job_id, and code that correlates
+    # should read the field that means "correlate on this".
+    run_id: str = ""
     pid: Optional[int] = None
     finished_at: Optional[datetime] = None
     exit_code: Optional[int] = None
@@ -183,6 +191,7 @@ class JobRecord:
         """JSON-safe view for API responses."""
         return {
             "job_id": self.job_id,
+            "run_id": self.run_id or self.job_id,
             "status": self.status.value,
             "command": self.command,
             "pid": self.pid,
@@ -224,6 +233,9 @@ class JobRecord:
                 return None
             return cls(
                 job_id=job_id,
+                # Older records predate run_id; fall back to job_id, which is
+                # what a new record would have used anyway.
+                run_id=str(data.get("run_id") or job_id),
                 command=list(data.get("command") or []),
                 status=status,
                 started_at=started,
@@ -479,8 +491,13 @@ class JobManager:
             job_id = secrets.token_hex(8)
             log_path = self._prepare_log_path(job_id)
 
+            # ONE id for the job and the run. The child is told this id via
+            # VFS_RUN_ID and stamps it on every log line and journal row it
+            # writes, so GET /jobs/{id}/trace can gather the whole story
+            # without a mapping table.
             record = JobRecord(
                 job_id=job_id,
+                run_id=job_id,
                 command=command,
                 status=JobStatus.RUNNING,
                 started_at=datetime.now(timezone.utc),
@@ -490,7 +507,7 @@ class JobManager:
             )
 
             try:
-                process = await self._spawn(command, log_path)
+                process = await self._spawn(command, log_path, run_id=job_id)
             except (OSError, ValueError) as exc:
                 # The exec itself failed — missing interpreter, bad cwd, etc.
                 # Nothing is tracked, so the next trigger is free to retry.
@@ -519,7 +536,7 @@ class JobManager:
         return record, False
 
     async def _spawn(
-        self, command: List[str], log_path: Path
+        self, command: List[str], log_path: Path, *, run_id: str = ""
     ) -> asyncio.subprocess.Process:
         """Start the child with stdout+stderr redirected to `log_path`."""
         settings = self._settings
@@ -534,6 +551,12 @@ class JobManager:
             child_env = os.environ.copy()
             child_env["PYTHONUNBUFFERED"] = "1"
             child_env["VFS_TRIGGERED_BY"] = "webhook-api"
+            # The correlation key. src/utils/run_context.run_id() reads this,
+            # so the child adopts our id instead of minting its own — which is
+            # the entire mechanism by which the chain survives the process
+            # boundary. Must match run_context.ENV_VAR.
+            if run_id:
+                child_env[run_context.ENV_VAR] = run_id
             # The shared secret must never reach the child.
             child_env.pop("VFSAPI_SECRET_TOKEN", None)
 

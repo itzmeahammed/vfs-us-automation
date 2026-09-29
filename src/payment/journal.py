@@ -30,10 +30,22 @@ import os
 import time
 from typing import Any, Dict
 
+from src.utils import run_context, state_paths
+
 log = logging.getLogger(__name__)
 
-JOURNAL_DIR = os.path.join("logs")
-JOURNAL_FILE = os.path.join(JOURNAL_DIR, "payments.jsonl")
+# A durable LEDGER, not a log — so it belongs in state/ beside the waitlist
+# journal, not in logs/ where a retention sweep prunes by age. Deleting a log
+# costs you a diagnosis; deleting this costs you the only record that a card
+# may have been charged.
+#
+# state_file() moves an existing logs/payments.jsonl here once, so the history
+# of past payments survives the relocation rather than appearing to be empty —
+# which would read as "no unanswered payments" on the endpoint whose entire job
+# is to say otherwise.
+JOURNAL_DIR = state_paths.STATE_DIR
+JOURNAL_FILE = state_paths.state_file(
+    "payments.jsonl", legacy=os.path.join("logs", "payments.jsonl"))
 
 #: Keys that must never be written, however they arrive. A belt to the braces
 #: of "the caller does not pass them" — this file is the one place a card value
@@ -64,6 +76,10 @@ def append(row: Dict[str, Any]) -> str:
 
     record = _clean(row)
     record.setdefault("at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    # The join key. An unanswered payment is the worst thing in this system to
+    # investigate, and this is what turns that investigation into one query:
+    # the same id is on the API job, every log line, and the screenshots folder.
+    record.setdefault("run_id", run_context.run_id())
 
     line = json.dumps(record, ensure_ascii=False)
     with open(JOURNAL_FILE, "a", encoding="utf-8") as fh:

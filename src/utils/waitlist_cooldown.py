@@ -28,7 +28,12 @@ import time
 
 from src.utils.config_reader import get_config_value
 
-STATE_FILE = "waitlist_cooldown.json"
+from src.utils import state_paths
+
+#: Under state/ with the other machine-written files. state_file()
+#: moves a root-level waitlist_cooldown.json there once, so an existing
+#: file keeps its contents instead of silently resetting.
+STATE_FILE = state_paths.state_file("waitlist_cooldown.json")
 DEFAULT_COOLDOWN_HOURS = 2.0
 
 
@@ -60,6 +65,14 @@ def _load() -> dict:
 def _save(data: dict) -> None:
     tmp = STATE_FILE + ".tmp"
     try:
+        # STATE_FILE lives under state/, which may not exist yet on a fresh
+        # checkout or a first deploy. Creating it here rather than at import
+        # keeps a read-only import side-effect-free, and means the first WRITE
+        # is what makes the directory — so a process that only reads never
+        # creates an empty state/ it does not need.
+        parent = os.path.dirname(STATE_FILE)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, STATE_FILE)  # atomic on the same filesystem

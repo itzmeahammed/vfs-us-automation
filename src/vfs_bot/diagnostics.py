@@ -13,8 +13,15 @@ from datetime import datetime
 
 from src.settings import settings
 from src.utils.config_reader import get_config_value
+from src.utils.run_context import run_id
 
-SCREENSHOT_DIR = "screenshots"
+#: Slot-checker screenshots: runs/<run_id>/. Under runs/ with the booking
+#: artifacts so there is ONE tree of per-run evidence, and per-run rather than
+#: one flat folder so a screenshot can be traced back to the run that took it
+#: — the old layout reached 199 loose files with no way back to a run, which is
+#: the same as having none. `_ROUTE_CODE` still goes in the FILENAME, so a
+#: multi-route run keeps its routes distinguishable inside one folder.
+SCREENSHOT_DIR = os.path.join("runs", run_id())
 
 # Destination country code for the run in progress (e.g. 'GRC', 'ITA'), inserted
 # into timestamped screenshot names so evidence is easy to attribute per route.
