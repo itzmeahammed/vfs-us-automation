@@ -218,6 +218,18 @@ def _fill_native_select(page, spec, value, timeout_ms):
     locator.select_option(label=str(value))
 
 
+class _AlreadySet(Exception):
+    """A widget found the control already in the wanted state and did nothing.
+
+    Raised rather than returned so it cannot be dropped by a handler that
+    forgets to propagate it: every handler already returns None on success, so
+    a return value would be indistinguishable from "did the work".
+
+    fill_one catches it and reports "left as it is" instead of "set", and does
+    not count the field as written.
+    """
+
+
 def _fill_checkbox(page, spec, value, timeout_ms):
     """Ticks/unticks only when the current state differs — never toggles blindly.
 
@@ -255,8 +267,20 @@ def _fill_checkbox(page, spec, value, timeout_ms):
         current = False
 
     if current == want:
-        logging.debug(f"Checkbox {described} already {'ticked' if want else 'clear'}.")
-        return
+        # ALREADY IN THE WANTED STATE — and say so at INFO, not DEBUG.
+        #
+        # This is the marketing-consent case on review-pay, where the config
+        # asks for false and the box ships clear. The handler correctly does
+        # nothing, but fill_one used to log "set marketing_consent (checkbox)"
+        # regardless, and fill_all counted it: the 2026-09-28 run reported
+        # "filled 2 field(s): accept_terms, marketing_consent" having ticked
+        # exactly one box.
+        #
+        # On any other field that is a cosmetic inaccuracy. Here it is not —
+        # this is marketing consent given on a real person's behalf, and a log
+        # claiming the bot set it is the opposite of what happened. What the
+        # operator needs to read back is that it was LEFT alone.
+        raise _AlreadySet(f"already {'ticked' if want else 'clear'}")
 
     box_wrapper.scroll_into_view_if_needed(timeout=5000)
 
@@ -558,6 +582,10 @@ def fill_one(page, spec: Dict[str, Any], context: Dict[str, Any],
 
     try:
         handler(page, spec, value, timeout_ms)
+    except _AlreadySet as e:
+        # NOT written. Reported honestly and NOT counted — see _AlreadySet.
+        logging.info(f"  {_label(spec)} {e} — left as it is.")
+        return None
     except (WaitlistStepError, WaitlistConfigError):
         raise
     except Exception as e:

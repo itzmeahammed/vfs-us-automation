@@ -65,12 +65,83 @@ def _await_page(page, step: Dict[str, Any], timeout_ms: int) -> None:
 
     text = step.get("wait_for_text")
     if text:
-        try:
-            page.get_by_text(text, exact=False).first.wait_for(timeout=timeout_ms)
-        except Exception as e:
-            raise WaitlistStepError(
-                f"Step '{step['name']}': page never showed '{text}': {e}"
-            ) from e
+        # CASE-INSENSITIVE, and whitespace-tolerant.
+        #
+        # get_by_text(exact=False) is a SUBSTRING match but still CASE
+        # SENSITIVE, which is a genuinely surprising pairing. AE-NOR's
+        # details_summary gate waits for "Add another applicant"; a page
+        # rendering "Add Another Applicant" — or breaking the phrase across
+        # lines, which Angular does when the button wraps — matched nothing and
+        # burned the full 45s before failing.
+        #
+        # A gate exists to answer "am I on the right page". It should not be
+        # defeated by capitalisation, so the words are matched with \s+ between
+        # them and the case ignored. Distinctness is unaffected: the reason
+        # this phrase was chosen over the heading is that "Your Details
+        # Summary" CONTAINS "Your Details", and that is a substring problem,
+        # not a case one.
+        import re as _re
+
+        # A LIST MEANS "any of these". VFS words the same page differently
+        # between routes and revisions — AE-NOR's summary was configured
+        # against "Add another applicant" and the live page also identifies
+        # itself by an "Applicant 1" heading. Accepting either keeps the gate
+        # specific (both phrases appear ONLY on the summary) without loosening
+        # it to a substring that the form page would also match.
+        wanted = text if isinstance(text, (list, tuple)) else [text]
+        wanted = [str(w) for w in wanted if str(w).strip()]
+        if not wanted:
+            return
+
+        patterns = [
+            _re.compile(r"\s+".join(_re.escape(word) for word in w.split()),
+                        _re.IGNORECASE)
+            for w in wanted
+        ]
+
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            for pattern, phrase in zip(patterns, wanted):
+                try:
+                    if page.get_by_text(pattern).first.is_visible():
+                        logging.debug(f"Page gate matched {phrase!r}.")
+                        return
+                except Exception:                           # noqa: BLE001
+                    continue
+            page.wait_for_timeout(500)
+
+        shown = " or ".join(repr(w) for w in wanted)
+        raise WaitlistStepError(
+            f"Step '{step['name']}': page never showed {shown}. "
+            f"{_page_says(page)}"
+        )
+
+
+def _page_says(page) -> str:
+    """A short account of what IS on the page, for a failed gate's message.
+
+    Without it the operator learns only that the expected text was absent, and
+    the next move is to re-run with captures on — which costs a login against
+    VFS's ~3-in-a-window block. The headings are almost always enough to say
+    whether the walk is on the wrong page or the right page with drifted
+    wording.
+    """
+    try:
+        found = []
+        headings = page.locator("h1, h2, h3, mat-card-title, .mat-card-title")
+        for i in range(min(headings.count(), 4)):
+            line = (headings.nth(i).inner_text() or "").strip()
+            line = " ".join(line.split())
+            if line and line not in found:
+                found.append(line)
+        if found:
+            return "The page is showing: " + " | ".join(found) + "."
+    except Exception:                                       # noqa: BLE001
+        pass
+    try:
+        return f"Still at {page.url}."
+    except Exception:                                       # noqa: BLE001
+        return "Could not read the page."
 
 
 def _click(page, spec: Any, what: str, timeout_ms: int) -> None:
@@ -95,21 +166,133 @@ def _click(page, spec: Any, what: str, timeout_ms: int) -> None:
     locator.wait_for(state="visible", timeout=timeout_ms)
     locator.scroll_into_view_if_needed(timeout=5000)
 
-    # Same click ladder the login flow uses: normal, then force, then JS
-    # dispatch — a force-click can still time out on a slow Xvfb box.
-    for how, kwargs in (("normal", {"timeout": timeout_ms}),
-                        ("force", {"force": True, "timeout": timeout_ms})):
-        try:
-            locator.click(**kwargs)
-            logging.debug(f"{what}: clicked ({how}).")
-            return
-        except Exception as e:
-            logging.debug(f"{what}: {how} click failed ({e}); trying next.")
+    # ── A DISABLED CONTROL IS A HARD STOP, NEVER A FORCE-CLICK. ──────────────
+    #
+    # force=True does not enable a disabled button. It skips Playwright's
+    # actionability check and dispatches a click at the element's coordinates;
+    # a disabled <button> swallows it, no handler runs, and the page does not
+    # change. Playwright still reports success, because the click WAS
+    # dispatched — so the old ladder logged "clicked (force)" and walked on
+    # believing it had submitted.
+    #
+    # The damage is not the failed click, it is the LIE. The run then blocked
+    # in the next step's _await_page waiting for a navigation that was never
+    # coming, and surfaced 45s later as a page-gate timeout somewhere
+    # unrelated to the real fault. Observed live on 'appointment_details'
+    # 2026-09-29: the button was disabled="true" for the full 45s wait, was
+    # "force-clicked", and the run then hung on wait_for_url.
+    #
+    # A disabled submit means the FORM IS INCOMPLETE — a required field empty,
+    # a consent unticked, a countdown unfinished, async validation failing. So
+    # say that, with whatever the page itself is complaining about, and stop.
+    if _looks_disabled(locator):
+        raise WaitlistStepError(
+            f"{what}: the control is still DISABLED, so the form is not "
+            f"complete — clicking it would do nothing. "
+            f"{_why_disabled(page, locator)}"
+        )
+
+    # Normal, then JS dispatch. Force is deliberately NOT in this ladder: the
+    # only thing it buys over a normal click is bypassing actionability, and
+    # every actionability failure we have actually seen here was the element
+    # being genuinely unclickable. Where an overlay legitimately covers a LIVE
+    # control (the slot radio painting over its own label), that is handled in
+    # walk._click_slot, which knows the control is enabled first.
+    try:
+        locator.click(timeout=timeout_ms)
+        logging.debug(f"{what}: clicked.")
+        return
+    except Exception as e:
+        logging.debug(f"{what}: normal click failed ({e}); trying JS dispatch.")
+
+    # Re-check before the fallback: 45s of retries is long enough for the page
+    # to have disabled the button underneath us (a countdown restarting, a
+    # field being cleared by validation). Dispatching into that is the same lie.
+    if _looks_disabled(locator):
+        raise WaitlistStepError(
+            f"{what}: the control became DISABLED while waiting to click it. "
+            f"{_why_disabled(page, locator)}"
+        )
+
     try:
         locator.evaluate("el => el.click()")
         logging.debug(f"{what}: clicked (JS dispatch).")
     except Exception as e:
         raise WaitlistStepError(f"{what}: could not click: {e}") from e
+
+
+def _why_disabled(page, locator) -> str:
+    """Best-effort account of WHY a control is disabled, for the error message.
+
+    Reads what the page is already showing a human: visible validation errors,
+    and any required field left empty. None of this is load-bearing — it is
+    diagnosis, and every part is wrapped because a page that has just failed is
+    exactly the page most likely to fail again when questioned.
+
+    Without this the operator gets "the button is disabled" and has to re-run
+    to find out why, and a re-run costs a login against VFS's ~3-in-a-window
+    block. The answer is almost always on screen already.
+    """
+    parts = []
+
+    try:
+        attrs = []
+        if locator.get_attribute("disabled") is not None:
+            attrs.append('disabled="true"')
+        if (locator.get_attribute("aria-disabled") or "").lower() == "true":
+            attrs.append('aria-disabled="true"')
+        if "mat-mdc-button-disabled" in (locator.get_attribute("class") or ""):
+            attrs.append("mat-mdc-button-disabled")
+        if attrs:
+            parts.append("Button state: " + ", ".join(attrs) + ".")
+    except Exception:                                       # noqa: BLE001
+        pass
+
+    # Angular Material renders validation failures into mat-error; VFS also
+    # uses .invalid-feedback. Both are only in the DOM when actually showing.
+    try:
+        errors = page.locator("mat-error, .mat-mdc-form-field-error, "
+                              ".invalid-feedback").filter(visible=True)
+        texts = []
+        for i in range(min(errors.count(), 6)):
+            text = (errors.nth(i).inner_text() or "").strip()
+            if text and text not in texts:
+                texts.append(text)
+        if texts:
+            parts.append("Page is showing: " + " | ".join(texts) + ".")
+    except Exception:                                       # noqa: BLE001
+        pass
+
+    # An empty required input is the commonest cause and the page does not
+    # always say so until it is touched.
+    try:
+        empty = page.evaluate(
+            """() => Array.from(document.querySelectorAll(
+                 'input[required],select[required],'
+                 + 'input[aria-required=\"true\"],select[aria-required=\"true\"]'))
+                 .filter(el => !el.value && el.offsetParent !== null)
+                 .map(el => el.id || el.name || el.getAttribute('formcontrolname'))
+                 .filter(Boolean).slice(0, 8)"""
+        )
+        if empty:
+            parts.append("Required and still empty: " + ", ".join(empty) + ".")
+    except Exception:                                       # noqa: BLE001
+        pass
+
+    # An unticked consent box disables the submit on review-pay and reports no
+    # error at all — the page just stays inert, which is the hardest case to
+    # diagnose from a log.
+    try:
+        boxes = page.locator("input[type='checkbox']").filter(visible=True)
+        unticked = sum(1 for i in range(min(boxes.count(), 10))
+                       if not boxes.nth(i).is_checked())
+        if unticked:
+            parts.append(f"{unticked} visible checkbox(es) not ticked.")
+    except Exception:                                       # noqa: BLE001
+        pass
+
+    return (" ".join(parts) if parts
+            else "The page gave no visible reason; see the captured HTML.")
 
 
 def _await_enabled(page, spec: Any, timeout_ms: int) -> None:
@@ -152,9 +335,14 @@ def _await_enabled(page, spec: Any, timeout_ms: int) -> None:
                          "(portal countdown)...")
         page.wait_for_timeout(500)
 
+    # NOT "attempting the click anyway" — that is what _click used to do, via
+    # force=True, and it silently did nothing while reporting success. _click
+    # now refuses a disabled control and explains why, so this is a warning
+    # that the step is ABOUT TO FAIL, not that it is about to be papered over.
     logging.warning(
         f"Submit '{spec['name']}' still disabled after "
-        f"{timeout_ms // 1000}s — attempting the click anyway.")
+        f"{timeout_ms // 1000}s — the form is not complete. "
+        "The click will be refused rather than forced.")
 
 
 def _looks_disabled(locator) -> bool:

@@ -350,25 +350,91 @@ def wait_with_captcha_check(page, total_ms: int, step_ms: int = 3000) -> None:
 # ===== VFS's own 'please wait' reminder dialog ===============================
 
 
+class BlockingDialogError(Exception):
+    """A VFS modal that means STOP, not "click Continue".
+
+    Carries the dialog's own text: the operator has to decide what to do about
+    the account, and the portal's exact wording is the evidence.
+    """
+
+
+#: Phrases that make a dialog a HARD STOP rather than an interstitial.
+#:
+#:     ═══ WHY THIS LIST EXISTS AND WHY IT IS NOT A CONFIG ═══
+#:
+#: Observed live 2026-09-29 on athul@travnook.com, mid-booking:
+#:
+#:     "We have received your booking request and your payment is under
+#:      process. Kindly check status of your booking upto 5 hours."
+#:
+#: That modal matched this function's OLD keyword list ("received", "please")
+#: and its only button is labelled Continue — so the dismisser would have
+#: clicked it and walked straight on into booking a SECOND appointment and
+#: charging the card a SECOND time, for an account that already had one in
+#: flight. It did not, purely because the modal happened to render after the
+#: step's dismiss pass had already run. Timing, not logic.
+#:
+#: These live in code rather than a route config on purpose: they are not
+#: country-specific wording to be tuned, they are the conditions under which
+#: this software must refuse to act. A config file is something an operator
+#: edits to make a run go through, which is exactly the wrong affordance here.
+BLOCKING_PHRASES = (
+    "under process",
+    "already have an appointment",
+    "already booked",
+    "booking request and your payment",
+    "duplicate",
+    "pending payment",
+)
+
+
 def dismiss_wait_dialog(page) -> None:
     """
     Dismisses VFS's intermittent reminder dialogs that block a step — e.g.
     'Please wait for some time before saving and continuing'. These are
     mat-dialogs whose only action is a 'Continue' (or 'OK') button; clicking
     it lets the flow proceed. Silent no-op when none is present.
+
+    RAISES BlockingDialogError for dialogs that mean an action has already been
+    taken on this account (see BLOCKING_PHRASES). Those must never be clicked
+    through: the button says Continue, but continuing books twice.
+
+    Everything it does dismiss, it LOGS IN FULL at info. A modal that blocked a
+    step is something the operator needs to know appeared, and the text is how
+    the next blocking phrase gets discovered before it costs a double charge
+    rather than after.
     """
     try:
         dialog = page.locator("mat-dialog-container, .mat-mdc-dialog-container")
         if dialog.count() == 0 or not dialog.first.is_visible():
             return
-        text = (dialog.first.inner_text() or "").lower()
+        raw = (dialog.first.inner_text() or "").strip()
+        text = raw.lower()
     except Exception:
+        return
+
+    if not raw:
         return
 
     # Only handle the informational 'wait/reminder' dialogs here — leave the
     # Cloudflare captcha dialog to its dedicated handler.
     if "captcha" in text:
         return
+
+    # ── CHECKED BEFORE ANYTHING IS CLICKED. ─────────────────────────────────
+    # This ordering is the whole safety property: the blocking check must come
+    # before the dismiss loop, not after, or the click that must not happen has
+    # already happened.
+    for phrase in BLOCKING_PHRASES:
+        if phrase in text:
+            one_line = " ".join(raw.split())
+            raise BlockingDialogError(
+                f"VFS is reporting that this account already has a booking in "
+                f"progress, so continuing would book and charge a SECOND time. "
+                f"The portal says: \"{one_line}\" — check the account before "
+                f"running again."
+            )
+
     if not any(k in text for k in ("wait", "reminder", "received", "please")):
         return
 
@@ -376,12 +442,23 @@ def dismiss_wait_dialog(page) -> None:
         try:
             btn = dialog.first.get_by_role("button", name=label).first
             if btn.count() > 0 and btn.is_visible():
+                # INFO, with the text. These modals are invisible in a log
+                # otherwise, and "the step mysteriously took 45s" is what an
+                # undismissed one looks like from the outside.
+                one_line = " ".join(raw.split())
+                logging.info(
+                    f"  dismissed a VFS dialog via '{label}': {one_line[:200]}")
                 btn.click(timeout=5000)
-                logging.debug(f"Dismissed VFS reminder dialog via '{label}'.")
                 page.wait_for_timeout(1500)
                 return
+        except BlockingDialogError:
+            raise
         except Exception:
             continue
+
+    logging.warning(
+        "A VFS dialog is blocking the page and none of its buttons could be "
+        f"clicked: {' '.join(raw.split())[:200]}")
 
 
 # ===== ngx-ui-loader spinner =================================================
