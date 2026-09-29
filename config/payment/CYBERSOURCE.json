@@ -1,0 +1,110 @@
+{
+  "processor": "cybersource",
+  "name": "CyberSource Secure Acceptance",
+  "enabled": true,
+  "_comment_enabled": "ARMED 2026-09-28. Selectors verified against the real gateway DOM but NEVER EXERCISED — no run has reached this page. The first live run is the first test of every selector here.",
+  "_comment_status": "SELECTORS VERIFIED against the real gateway DOM, supplied by the operator 2026-09-28 from the popup window that opens after 'Pay Online'. This file previously held HYPOTHESES written from a prose description, and four of them were wrong — see _comment_corrections. Everything below is now read off the actual page.",
+  "_comment_corrections": "WHAT THE CAPTURE CAUGHT, all four of which would have failed on a live payment: (1) card_type is a RADIO GROUP, not a select — the hypothesised select[name=card_type] matched nothing; (2) the card type is a processor CODE, 001/002, not the word 'visa'; (3) the submit control is name='commit' value='Pay', not name='submit'; (4) City, Postcode and Address Line 2 are all aria-required='true' on this gateway, and the client record supplies none of them. This is exactly why selectors are captured rather than guessed.",
+  "url_contains": "secureacceptance.cybersource.com",
+  "_comment_encryption": "The gateway RSA-encrypts the card fields IN THE BROWSER before submitting. Confirmed in the capture: an <input type='hidden' id='jwk'> carries the RSA public key, each card input has a disabled sibling <input class='encrypted' name='__e.card_number'>, and a script#payEncInit intercepts form.onsubmit to run RsaOaep.prepareFormForSubmission before letting it through. So the bot types into the VISIBLE inputs and lets the page's own JavaScript encrypt, exactly as it does for a human. Never write to the __e.* inputs: that means reimplementing their crypto against an undocumented contract they can change without notice.",
+  "accepted_card_types": [
+    "visa",
+    "mastercard"
+  ],
+  "_comment_accepted": "ONLY these two. The captured radio group offers Visa (001) and Mastercard (002) and nothing else — no amex, despite card.py supporting it. Checked BEFORE anything is typed: a card the gateway does not take cannot be made to work by trying, and finding out mid-payment leaves a booking stranded on an unpaid page.",
+  "card_type_codes": {
+    "visa": "001",
+    "mastercard": "002"
+  },
+  "_comment_card_type_codes": "The processor's own codes. The word 'visa' selects nothing — the radio's value is '001'. This mapping belongs to the processor, so it lives here rather than in card.py or gateway.py.",
+  "card_fields": {
+    "type": "input[name='card_type'][value='{value}']",
+    "type_widget": "radio",
+    "number": "input#card_number",
+    "expiry_month": "select#card_expiry_month",
+    "expiry_year": "select#card_expiry_year",
+    "cvn": "input#card_cvn",
+    "name": "",
+    "_comment_type": "A RADIO GROUP, not a select. {value} is substituted with the processor code from card_type_codes above.",
+    "_comment_expiry": "Two selects. Month options are zero-padded ('01'..'12') and year options are four-digit ('2026'..'2047'), which is what card.py already produces — expiry_month is .zfill(2) and expiry_year is widened to four digits on load.",
+    "_comment_name": "Empty, and CORRECT for this gateway: the captured page has no cardholder-name field. The name is taken from the billing forename/surname.",
+    "_comment_cvn": "maxlength=4. The field accepts both 3- and 4-digit CVNs even though this gateway takes no amex."
+  },
+  "billing_fields": [
+    {
+      "name": "first_name",
+      "selector": "input#bill_to_forename",
+      "value_key": "first_name",
+      "required": true
+    },
+    {
+      "name": "last_name",
+      "selector": "input#bill_to_surname",
+      "value_key": "last_name",
+      "required": true
+    },
+    {
+      "name": "address_line_1",
+      "selector": "input#bill_to_address_line1",
+      "value_key": "address_line_1",
+      "required": true
+    },
+    {
+      "name": "address_line_2",
+      "selector": "input#bill_to_address_line2",
+      "value_key": "address_line_2",
+      "required": true,
+      "_comment": "Marked aria-required on the gateway, which is unusual for a second address line but is what the page says. The client record does supply this one."
+    },
+    {
+      "name": "city",
+      "selector": "input#bill_to_address_city",
+      "value_key": "city",
+      "required": true,
+      "_comment": "*** NOT ON THE CLIENT RECORD. *** Registration never collected a city, and this gateway marks it mandatory. See _comment_missing_client_fields."
+    },
+    {
+      "name": "country",
+      "selector": "select#bill_to_address_country",
+      "widget": "select",
+      "value_key": "country_code",
+      "required": true,
+      "_comment": "*** NOT ON THE CLIENT RECORD. *** The captured select offers exactly one option, AE (United Arab Emirates) — the gateway is scoped to the applying country, so this is effectively fixed per route. See _comment_missing_client_fields."
+    },
+    {
+      "name": "postcode",
+      "selector": "input#bill_to_address_postal_code",
+      "value_key": "postcode",
+      "required": true,
+      "_comment": "*** NOT ON THE CLIENT RECORD. *** Mandatory here, and its container is the data-dependent-field of the country select, so it may appear or vanish when country changes. See _comment_missing_client_fields."
+    },
+    {
+      "name": "phone",
+      "selector": "input#bill_to_phone",
+      "value_key": "phone_number",
+      "required": true
+    },
+    {
+      "name": "email",
+      "selector": "input#bill_to_email",
+      "value_key": "email",
+      "required": true
+    }
+  ],
+  "_comment_missing_client_fields": "*** THREE MANDATORY GATEWAY FIELDS HAVE NO SOURCE: city, country_code, postcode. *** The client record holds first_name, last_name, email, phone_number, address_line_1 and address_line_2 — and nothing else this page needs. A run would fill six of nine fields and stop on the seventh, with the booking already made and unpaid. These must be added to registration (or defaulted per route) BEFORE this config is enabled. Discovered offline from a captured DOM rather than on a live payment, which is the entire point of capturing first.",
+  "submit": "input[type='submit'][name='commit']",
+  "_comment_submit": "THE IRREVERSIBLE CLICK. name='commit', value='Pay', class='right complete pay_button' — NOT name='submit', which was the earlier guess and matches nothing. gateway.submit_payment fsyncs a journal row BEFORE this is clicked, and everything after it is read-only. Note the sibling: <input class='left cancelbutton' type='button' value='Cancel'> — addressing the submit by type alone would be ambiguous, so the name is part of the selector.",
+  "challenge_markers": [
+    "3dsecure",
+    "3ds",
+    "acs",
+    "secure-auth",
+    "verifiedbyvisa",
+    "securecode",
+    "challenge",
+    "cca",
+    "step-up",
+    "stepup"
+  ],
+  "_comment_challenge": "3-D SECURE. If the issuer challenges the payment, the gateway redirects to the BANK for an OTP sent to the cardholder's phone. A bot cannot complete that and must not try — it raises and leaves the browser open for a human, the same handover the booking walk uses at its commit boundary. Matched against the URL. Still a guess as to which marker appears, but the captured page shows this gateway expects challenges: it carries <input id='ccaRetryAction'> whose value is rewritten to the checkout path on load, which is the return address for a Cardinal Commerce (CCA) step-up. 'cca' and 'step-up' are in the list for that reason."
+}
