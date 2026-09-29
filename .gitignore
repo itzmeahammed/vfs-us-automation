@@ -8,9 +8,20 @@ env/
 
 # Runtime artifacts
 app.log
+# The queryable log. One JSON object per line, every line stamped with a
+# run_id. Same reason as app.log: machine-written, grows, never reviewed in a
+# diff.
+logs/app.jsonl
 # Per-day archive logs (logs/app-YYYY-MM-DD.log)
 logs/
+# Per-run artifacts: runs/<ROUTE>/<run_id>/. Replaces the old flat screenshots/
+# and captured/ trees. A run folder is the unit of retention, so this one line
+# covers every screenshot and DOM dump any run will ever write.
+runs/
+# Pre-consolidation locations, kept ignored so an old working tree does not
+# suddenly offer 199 screenshots for commit.
 screenshots/
+captured/
 # Windows Task Scheduler wrapper + test logs
 task_runner.log
 task_stdout.log
@@ -26,6 +37,10 @@ waitlist_cooldown.json.tmp
 bandwidth_budget.json
 bandwidth_budget.json.tmp
 # Waitlist registration journal (what was submitted, and when)
+# Machine-written state: the journals, account health, cooldowns, budgets.
+# ONE directory to back up or wipe. NOTE: state/ holds the waitlist and payment
+# journals, which are the durable record that a registration or a charge may
+# have happened — back this up, do not just delete it.
 state/
 # Client files hold PII (passport numbers, DOB) — never commit.
 # Only the *.example template is tracked.

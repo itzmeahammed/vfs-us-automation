@@ -24,32 +24,58 @@ browser stack, account pool and proxy pool:
 | Part | What it does | Status | Start here |
 |---|---|---|---|
 | **Slot checker** | Reads the earliest slot, reports to Telegram. Books nothing. | ✅ production | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| **Waitlist registration** | Puts a client on a VFS waitlist when no slot exists. | ✅ works live | [SYSTEM_GUIDE.md](SYSTEM_GUIDE.md), [addClient_Steps.md](addClient_Steps.md) |
-| **Post-invitation booking** | Sees the "slots available" email, books the appointment. | 🔶 foundations only | [PHASES.md](PHASES.md) |
+| **Waitlist registration** | Puts a client on a VFS waitlist when no slot exists. | ✅ works live | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| **Post-invitation booking** | Sees the "slots available" email, books and pays. | 🔶 code complete, commit path unexercised | [RUNBOOK.md](RUNBOOK.md) |
 
 ### Documentation map
 
-**Understanding the system**
-- [PHASES.md](PHASES.md) — one page: the whole waitlist → booking pipeline
-- [SYSTEM_GUIDE.md](SYSTEM_GUIDE.md) — a guided tour following one client end to end
-- [GLOSSARY.md](GLOSSARY.md) — the four safety switches and how they combine
-- [BOOKING_DESIGN.md](BOOKING_DESIGN.md) — why the booking half is shaped as it is
+Five documents. Everything else moved to [docs/archive/](docs/archive/), which
+has [an index explaining what each archived file was for](docs/archive/README.md)
+— nothing was deleted.
 
-**Doing the work**
-- [TASKS.md](TASKS.md) — **what to do next**, and what is blocked
-- [MEMORY.md](MEMORY.md) — settled facts and decisions; read before re-deriving
-- [keepInMind.md](keepInMind.md) — operating the inbox watcher
-- [addClient_Steps.md](addClient_Steps.md) — registering a new client
+| Read this | When |
+|---|---|
+| **README.md** (this file) | What is this, and what are the three parts |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | How it works end to end |
+| [COMMANDS.md](COMMANDS.md) | What do I type |
+| [RUNBOOK.md](RUNBOOK.md) | It broke, or I am about to spend money |
+| [TASKS.md](TASKS.md) | What is next |
 
-**Running it**
-- [COMMANDS.md](COMMANDS.md) — Windows · [EC2_COMMANDS.md](EC2_COMMANDS.md) — Linux/EC2
-- [MANUAL_TEST_RUNBOOK.md](MANUAL_TEST_RUNBOOK.md) — verifying the flow safely
-- [API_REFERENCE.md](API_REFERENCE.md) · [API_TUNNEL_SETUP.md](API_TUNNEL_SETUP.md) — the local trigger API
+### The API
 
-**Open work, written up but not started**
-- [OTP_RELAY_TASKS.md](OTP_RELAY_TASKS.md) — the Telegram OTP relay that blocks AE-ITA
-- [DOCUMENT_STORAGE_TASKS.md](DOCUMENT_STORAGE_TASKS.md) — passport-scan handling (built; §7 and §9 open)
-- [WAITLIST_TASKS.md](WAITLIST_TASKS.md) · [WAITLIST_AUTOMATION_TASKS.md](WAITLIST_AUTOMATION_TASKS.md) — mostly done, some open items
+The bot is driven over HTTP. 30 endpoints; the ones that matter:
+
+| Endpoint | What it does |
+|---|---|
+| `POST /booking/trigger` | Book: `mode` = `probe` \| `walk` \| `commit` |
+| `POST /trigger/waitlist` | Register a client on a waitlist |
+| `GET /jobs/{id}/stream` | Follow a run live (SSE) |
+| `GET /payments/unanswered` | **Check this after any crash** |
+| `GET /booking/status` | Routes and per-client phases |
+
+Full schema: run with `VFSAPI_ENABLE_DOCS=1` and open `/docs`. Usage examples
+are in [RUNBOOK.md](RUNBOOK.md#3-booking-through-the-api).
+
+### Where files live
+
+```
+config/     hand-edited, in git          you write these
+state/      machine-written, gitignored  BACK THIS UP — the journals live here
+logs/       app.jsonl (queryable) + app-YYYY-MM-DD.log + api_jobs/
+runs/       runs/<ROUTE>/<run_id>/       screenshots and DOM, per run
+docs/       archive/ + research/
+```
+
+Every run has one **`run_id`**, and every record of that run carries it — the
+API job, every log line, every journal row, and the artifacts folder. So one
+query reconstructs a whole run:
+
+```bash
+jq 'select(.run_id=="<id>")' logs/app.jsonl
+```
+
+That is the investigation procedure; see
+[RUNBOOK.md](RUNBOOK.md#1-the-run_id-how-to-investigate-anything).
 
 ---
 

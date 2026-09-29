@@ -1,8 +1,8 @@
 # Commands cheat-sheet
 
 Practical commands for running and monitoring the VFS slot checker on **Windows**.
-For the EC2 box see [EC2_COMMANDS.md](EC2_COMMANDS.md); for the waitlist and
-booking commands see [PHASES.md](PHASES.md).
+For the EC2 box see [EC2_COMMANDS.md](docs/archive/EC2_COMMANDS.md). When
+something breaks, or before a run that spends money, see [RUNBOOK.md](RUNBOOK.md).
 
 > Absorbed `quickCommands.md` (2026-09-14) — every command in it already
 > appeared here, usually with more context. One sheet per platform.
@@ -10,10 +10,110 @@ booking commands see [PHASES.md](PHASES.md).
 - Run all commands in **PowerShell** from the project root:
   `c:\Users\Universal\Documents\mufaddal\vfs-malta-slot-checker`
 - Scheduled task name: **`VFS Slot Checker`** (fires at **:29** and **:59** every hour).
-- Logs (project root): `app.log` (detailed), `task_runner.log` (per-tick history),
-  `task_stderr.log` (early-crash safety net).
+- Logs: `logs/app.jsonl` (**queryable — one JSON object per line, stamped with
+  the run_id**), `logs/app-YYYY-MM-DD.log` and `logs/booking.log` (human),
+  `logs/api_jobs/` (one file per API job), `task_runner.log` (per-tick history).
+- State: `state/` holds the waitlist and payment journals, account health and
+  cooldowns. **Back it up** — it is the only record that a registration or a
+  charge may have happened.
+- Artifacts: `runs/<ROUTE>/<run_id>/` — screenshots, and DOM with `--capture full`.
 
 ---
+
+## Booking: the three rungs
+
+`probe` -> `probe --walk` -> `probe --walk --commit`. Each is riskier than the
+last, and only the third spends money.
+
+```powershell
+# 1. READ-ONLY. Logs in, reads the dashboard, clicks nothing.
+python -m src.booking probe -sc AE -dc NOR
+
+# 2. REVERSIBLE. Clicks "Book Now", walks the pages, STOPS before committing.
+python -m src.booking probe -sc AE -dc NOR --walk --registrant mufaddal-nor
+
+# 3. NO UNDO. Books the appointment AND submits a real payment.
+python -m src.booking probe -sc AE -dc NOR --walk --commit `
+    --registrant mufaddal-nor `
+    --combo "Norway Visa Application Center - Dubai - Tourist"
+```
+
+Offline checks, no browser:
+
+```powershell
+python -m src.booking check      # validate config/booking/*.json
+python -m src.booking status     # what is configured
+```
+
+Useful flags on `probe`:
+
+| Flag | What it does |
+|---|---|
+| `--capture off\|failure\|full` | what to leave in `runs/`. `full` dumps every page's DOM — **never with `--commit`**: the payment page's DOM holds the card number |
+| `--to select_slot` | stop after one step, for capturing pages one at a time |
+| `--applicant k=v` | repeatable. **Required for `--entry new`** — the live-slot flow has no client roster, so the walk dies on "Your Details" without it |
+| `--entry waitlist\|new` | resume an invited application, or create one from a live slot |
+| `--keep-open --hold 600` | hold ONE login across several inspections. A fresh login per run is what trips VFS 429001 |
+| `--yes` | skip the `--commit` confirmation prompt (scheduled runs) |
+
+## Investigating a run: the run_id
+
+Every run prints its `run_id` on the first line, and **every record of that run
+carries it**.
+
+```powershell
+$RUN = "6abba7f4534aae"
+
+# every log line the run wrote
+jq "select(.run_id==\"$RUN\")" logs/app.jsonl
+
+# only its errors
+jq "select(.run_id==\"$RUN\" and .level==\"ERROR\")" logs/app.jsonl
+
+# did it register anyone? did it try to pay?
+jq "select(.run_id==\"$RUN\")" state/waitlist_journal.jsonl
+jq "select(.run_id==\"$RUN\")" state/payments.jsonl
+
+# what did it see?
+ls runs/*/$RUN/
+```
+
+## After any crash — check for unanswered payments
+
+```powershell
+python -m src.payment status
+```
+
+An unanswered payment may be a real charge with no recorded result. **Do not
+retry it** — check the gateway. See [RUNBOOK.md](RUNBOOK.md#0-the-one-thing-to-check-first-always).
+
+## Driving it over the API
+
+```bash
+TOKEN=...          # VFSAPI_SECRET_TOKEN
+API=localhost:8000
+
+# read-only
+curl -sX POST $API/booking/trigger -H "X-Webhook-Secret-Token: $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"route":"AE-NOR","mode":"probe"}'
+
+# follow it live
+curl -sN -H "X-Webhook-Secret-Token: $TOKEN" $API/jobs/<run_id>/stream
+
+# after a crash
+curl -sH "X-Webhook-Secret-Token: $TOKEN" $API/payments/unanswered | jq
+```
+
+`mode: commit` additionally needs `"confirm": "<same route>"` and an
+`Idempotency-Key` header. Full examples in
+[RUNBOOK.md](RUNBOOK.md#3-booking-through-the-api).
+
+Start the API:
+
+```powershell
+python -m src.api                                   # uses VFSAPI_* env vars
+$env:VFSAPI_ENABLE_DOCS=1; python -m src.api        # then open /docs
+```
 
 ## Run it now (on demand)
 
@@ -25,6 +125,10 @@ Start-ScheduledTask -TaskName "VFS Slot Checker"
 .\run_task.ps1
 ```
 ## Count total mb used in app.log
+
+> `logs/app.jsonl` is the queryable log now — `jq` it by `run_id` rather
+> than grepping text. The text log remains for tailing by eye.
+
 
 ```powershell
 (Select-String -Pattern "Total proxy traffic this run: ([\d.]+)" -Path ".\app.log") | ForEach-Object { [double]$_.Matches.Groups[1].Value } | Measure-Object -Sum | Select-Object -ExpandProperty Sum

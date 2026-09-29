@@ -1,33 +1,79 @@
 # TASKS — Post-Invitation Booking
 
-Task breakdown for the feature designed in [BOOKING_DESIGN.md](BOOKING_DESIGN.md).
+Task breakdown for the feature designed in [BOOKING_DESIGN.md](docs/archive/BOOKING_DESIGN.md).
 Read that first — it explains *why*. This file is *what to do, in what order*.
 
 **Status legend:** `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
-**Last updated:** 2026-09-03 — **Phases 1–5 foundations built and tested**
-(**1155 tests passing, 0 failures** — measured 2026-09-14). See
-[PHASES.md](PHASES.md) for the one-page overview.
-
-**Phase 0 (recon) is still open and now blocks the booking runner.** The booking
-configs describe pages nobody has opened in a browser; they ship `enabled: false`.
+**Last updated:** 2026-09-29 — **API can now complete a booking end to end**
+(**1769 tests passing, 1 skipped**). See [RUNBOOK.md](RUNBOOK.md) for how to
+drive it and what to do when it breaks.
 
 ---
 
-## How to use this file
+## Done 2026-09-29 — production hardening
 
-1. Work phases **in order**. Each ends somewhere shippable and testable.
-2. **Phase 0 gates everything.** Its three answers change the design of phases
-   4–7. Do not write booking code before it is done.
-3. Tick tasks as you go and update *Last updated*. Add discovered work rather
-   than silently doing it — the next session reads this file, not your memory.
-4. Anything that must survive across sessions goes in [MEMORY.md](MEMORY.md).
+- [x] **`POST /booking/trigger` was completely broken.** It emitted
+      `--source/--dest` against a parser defining `-sc/--source-country`, so
+      every booking trigger died in argparse before the browser opened. Fixed,
+      and `tests/test_api_booking_trigger.py` now feeds the rendered argv to
+      the real parser so the two files cannot drift again.
+- [x] **`dry_run` was accepted and silently ignored** — a caller sending
+      `dry_run: false` got a dry run while believing money had been spent.
+      Replaced with `mode: probe | walk | commit`. There is no default that
+      spends money, `commit` additionally requires `confirm == route`, and the
+      old field is now a 422 rather than a silent no-op.
+- [x] **`commit` guards, all refusals before a job is spawned:** `capture=full`
+      refused (the payment page's DOM holds the PAN), `to_step` refused (it
+      would half-book), `entry=new` requires `combo`, and a commit request is
+      logged at WARNING before the spawn.
+- [x] **`combo` / `entry` / `applicant` / `capture` / `to_step` now reach the
+      CLI.** Without `applicant` a live-slot walk dies on "Your Details".
+- [x] **One `run_id` threads through everything** — API job → child env
+      (`VFS_RUN_ID`) → every log line → every journal row → `runs/<ROUTE>/<id>/`.
+      Verified end to end against a real child process. `job_id == run_id` for
+      API-triggered runs, so there is no mapping table.
+- [x] **Logs are queryable.** `logs/app.jsonl`, one JSON object per line, every
+      line stamped with the `run_id` and any `extra=` fields.
+- [x] **`GET /payments/unanswered`** — the worst state the system can be in was
+      the one state a remote operator could not see. Fails CLOSED: an
+      unreadable journal reports `needs_attention: true`, never an empty list.
+- [x] **`GET /jobs/{id}/stream`** — follow a run live over SSE; ends itself at
+      a terminal status.
+- [x] **File layout consolidated.** `state/` (durable ledgers — back this up),
+      `logs/` (prunable), `runs/<ROUTE>/<run_id>/` (artifacts, one folder per
+      run), `docs/archive/` + `docs/research/`. The payment journal moved from
+      `logs/` to `state/`: it is a ledger, not a log, and a retention sweep must
+      never prune it.
+- [x] **23 root markdown files → 5.** Nothing deleted; all moved with `git mv`
+      and indexed in [docs/archive/README.md](docs/archive/README.md).
+- [x] **Six ground-truth DOM tests were silently skipping** because their
+      fixture lived in an untracked scratch folder. Moved to
+      `tests/fixtures/captured_dom/` and now tracked.
+- [x] **Fixed a latent `NameError`** in `cmd_probe`: the payment-declined and
+      blocked branches referenced `payment_journal` with no import in scope —
+      a traceback instead of instructions on the one path where money is at
+      stake.
 
-**Two rules that override convenience:**
+### Open, and next
 
-- Never let a run book the wrong person. Ambiguity → abort, alert, stop.
-- Never write browser-driving code for a page you have not first captured as a
-  fixture. Every live run costs an account and possibly a client's slot.
+- [!] **One real `mode: commit` run, verified end to end.** The pages after
+      `/che/services` have never been seen on an invited account, so everything
+      past the walk boundary is written but unexercised. This is the only
+      remaining blocker to production, and no amount of API work substitutes
+      for it.
+- [ ] Recapture Norway's appointment-details page into
+      `tests/fixtures/captured_dom/AE-NOR_appointment_details.html` to enable
+      the skipped assertion in `tests/test_booking_walk.py`.
+- [ ] A retention sweep for `runs/` and `logs/` (a run folder is the unit).
+- [ ] Monitor `GET /payments/unanswered` and alert on `needs_attention: true`.
+- [ ] Two client records lack a date range, so `python -m src.booking check`
+      exits 1: `mufaddal-calcuttawala-ae-che-656e31`,
+      `osama-che-82433277533`. Add `date_from`/`date_to`, or an explicit
+      `"slot_strategy": "earliest"`.
+- [ ] **There is one unanswered payment in `state/payments.jsonl`** from
+      2026-09-29 08:51 UTC (AE-NOR, no booking_ref). Check the gateway and
+      record the outcome.
 
 ---
 

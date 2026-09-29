@@ -5,7 +5,7 @@
 This document explains *behaviour and decisions*: what fires when, how an account
 and an IP are chosen, how Cloudflare is passed, what every possible outcome means,
 and who gets penalised for it. For *commands* see [COMMANDS.md](COMMANDS.md) and
-[EC2_COMMANDS.md](EC2_COMMANDS.md); for the *elevator pitch* see [README.md](README.md).
+[EC2_COMMANDS.md](docs/archive/EC2_COMMANDS.md); for the *elevator pitch* see [README.md](README.md).
 
 | | |
 |---|---|
