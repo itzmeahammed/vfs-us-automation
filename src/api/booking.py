@@ -1,7 +1,12 @@
 """Booking pipeline endpoints.
 
 GET  /booking/status  — read-only overview of booking routes + client phases
-POST /booking/trigger — spawn a booking probe as a background job
+POST /booking/trigger — spawn a booking run (probe | walk | commit)
+
+The trigger renders argv for `python -m src.booking probe`. Those flag names
+are a contract between two files in two languages with nothing in the type
+system connecting them, so they are asserted against the real parser in
+tests/test_api_booking_trigger.py rather than trusted.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status as http_st
 
 from src.api.schemas import (
     BookingClientStatus,
+    BookingMode,
     BookingRouteStatus,
     BookingStatusResponse,
     BookingTriggerRequest,
@@ -119,13 +125,33 @@ async def trigger_booking(
         max_length=200,
     ),
 ) -> TriggerResponse:
-    """Spawn a booking probe/walk as a background job.
+    """Spawn a booking run as a background job. Returns 202 immediately.
 
-    This runs `python -m src.booking probe` which logs in, reads the
-    dashboard, and reports what it found. With `walk: true` it also clicks
-    'Book Now' and walks the booking pages (still dry-run by default).
+    `mode` decides how far it goes, and nothing else does:
 
-    Same single-flight and idempotency as POST /trigger/waitlist.
+        probe    log in, read the dashboard, click nothing.        READ-ONLY
+        walk     click 'Book Now', walk the pages, stop at the
+                 committing step.                                  REVERSIBLE
+        commit   complete the booking and submit a real payment.   NO UNDO
+
+    `mode=commit` additionally requires `confirm` to equal `route`. That check
+    lives in the request model, so a malformed commit is a 422 before a job is
+    spawned, before a browser opens, and before an account session is spent.
+
+    Single-flight and Idempotency-Key behave exactly as on POST
+    /trigger/waitlist — and matter more here. A retried POST without an
+    Idempotency-Key is how you book twice.
+
+    The response carries `run_id`. Use it for:
+
+        GET /jobs/{run_id}          status and per-client results
+        GET /jobs/{run_id}/stream   follow the run live
+        GET /jobs/{run_id}/logs     the log after it finishes
+        GET /payments/unanswered    check this FIRST if the run died
+
+    and to grep the run out of the queryable log:
+
+        jq 'select(.run_id=="<run_id>")' logs/app.jsonl
     """
     from src.api.jobs import JobAlreadyRunningError, JobStartError
 
@@ -135,6 +161,18 @@ async def trigger_booking(
     # Build the booking probe command — a different CLI than the waitlist one
     booking_command = [sys.executable, "-m", "src.booking", "probe"]
     extra_args = payload.to_cli_args()
+
+    # An irreversible run is logged BEFORE it is spawned, at WARNING, naming
+    # who and what. If a card is charged, this line is the first evidence of
+    # the request that did it — and it has to exist even if the spawn then
+    # fails, which is why it is not logged alongside the success return below.
+    if payload.mode is BookingMode.COMMIT:
+        log.warning(
+            "COMMIT BOOKING REQUESTED — route=%s registrant=%s combo=%s "
+            "reason=%s. This submits a real payment.",
+            payload.route, payload.registrant or "-",
+            payload.combo or "-", payload.reason or "-",
+        )
 
     try:
         record, replayed = await job_manager.trigger(
@@ -157,7 +195,8 @@ async def trigger_booking(
         accepted=True,
         message=(
             "Replayed: this Idempotency-Key already started a job."
-            if replayed else "Booking probe started in the background."
+            if replayed else
+            f"Booking run started in the background (mode={payload.mode.value})."
         ),
         job=JobResponse(**record.to_dict()),
         replayed=replayed,

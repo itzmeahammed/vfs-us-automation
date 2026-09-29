@@ -108,8 +108,10 @@ def test_the_router_set_is_actually_mounted(api):
     """
     paths = {path for _, path in _documented_routes(api)}
 
-    for expected in ("/clients", "/booking/status", "/status", "/pipeline",
-                     "/accounts/health", "/config", "/inbox/reconcile"):
+    for expected in ("/clients", "/booking/status", "/booking/trigger",
+                     "/status", "/pipeline", "/accounts/health", "/config",
+                     "/inbox/reconcile", "/payments/unanswered",
+                     "/jobs/{job_id}/stream"):
         assert expected in paths, (
             f"{expected} is missing from the API. A router failed to mount, "
             "which does not raise — it just serves less.")

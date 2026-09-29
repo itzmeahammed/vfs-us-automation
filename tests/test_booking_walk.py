@@ -1,6 +1,6 @@
 """Reading the Switzerland booking calendar and slot table.
 
-Asserted against the REAL captured DOM (switzerland_booking/switzerland.html,
+Asserted against the REAL captured DOM (tests/fixtures/captured_dom/,
 2026-09-03) rather than invented markup, so a selector that would fail on the
 live page fails here first.
 
@@ -15,7 +15,13 @@ import pytest
 
 from src.booking.walk import available_dates, available_times, pick_time
 
-HTML_PATH = os.path.join("switzerland_booking", "switzerland.html")
+# The real captured DOM, kept IN THE TEST TREE rather than in a scratch
+# directory. It was previously read from switzerland_booking/, which was
+# untracked working material — so moving or cleaning that folder turned six
+# ground-truth assertions into silent skips. A fixture these tests cannot run
+# without belongs beside them.
+FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "captured_dom")
+HTML_PATH = os.path.join(FIXTURE_DIR, "AE-CHE_appointment_details.html")
 
 # What the real page (and the screenshot) actually show.
 REAL_DATES = ["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-11"]
@@ -711,9 +717,16 @@ def test_norway_dropdown_controls_match_the_captured_dom():
     import re
 
     capture = os.path.join(
-        "captured", "AE-NOR", "20260926_162933_appointment_details.html")
+        os.path.dirname(__file__), "fixtures", "captured_dom",
+        "AE-NOR_appointment_details.html")
     if not os.path.exists(capture):
-        pytest.skip("the captured appointment-details page is not in this tree")
+        # Norway's captured page has never been committed (it came from a live
+        # run into a gitignored folder). Recapture it with
+        #   python -m src.booking probe -sc AE -dc NOR --walk --capture full
+        # and copy the appointment-details HTML to the path above to enable
+        # this assertion.
+        pytest.skip("tests/fixtures/captured_dom/AE-NOR_appointment_details.html "
+                    "is not in this tree — see the comment above to recapture it")
 
     from src.utils.config_reader import initialize_config
     from src.booking import config as booking_config

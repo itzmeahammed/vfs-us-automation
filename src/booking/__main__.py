@@ -31,33 +31,39 @@ from src.booking.errors import BookingConfigError
 #: Where a probe's log lands, in addition to the console.
 LOG_FILE = os.path.join("logs", "booking.log")
 
+#: The queryable log. One JSON object per line, every line stamped with the
+#: run_id, so a run can be reconstructed exactly rather than guessed at from
+#: timestamps. This is the one to keep when disk is tight.
+JSON_LOG_FILE = os.path.join("logs", "app.jsonl")
+
 
 def _setup_logging(verbose: bool) -> None:
-    """Log to the console AND to logs/booking.log.
+    """Console + logs/booking.log + the queryable logs/app.jsonl.
 
-    The file is the point. basicConfig alone writes to stderr, and a probe is
-    routinely run detached — in the background, over SSH, from a scheduler —
-    where stderr goes nowhere. A live run that fails then leaves no trace of
-    WHY, which cost a whole diagnosis cycle on 2026-09-26: the dropdown that
-    failed had already logged the options it WAS offered, and that message was
-    thrown away.
+    The text file is the point for a human. basicConfig alone writes to stderr,
+    and a probe is routinely run detached — in the background, over SSH, from a
+    scheduler — where stderr goes nowhere. A live run that fails then leaves no
+    trace of WHY, which cost a whole diagnosis cycle on 2026-09-26: the
+    dropdown that failed had already logged the options it WAS offered, and
+    that message was thrown away.
 
-    Appends rather than truncates: consecutive runs of the same flow are
+    The JSONL file is the point for a machine. Every line carries the run_id,
+    so one query returns every line of one run:
+
+        jq 'select(.run_id=="<id>")' logs/app.jsonl
+
+    Both append rather than truncate: consecutive runs of the same flow are
     exactly what you want to compare when one of them behaves differently.
-    """
-    handlers = [logging.StreamHandler()]
-    try:
-        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-        handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
-    except Exception as e:                                  # noqa: BLE001
-        print(f"(could not open {LOG_FILE}: {e})", file=sys.stderr)
 
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%H:%M:%S",
-        handlers=handlers,
-    )
+    The run id is printed on the first line. When the API spawned this process
+    it was inherited from VFS_RUN_ID, so it equals the job_id the caller is
+    holding — which is what makes the API able to serve this run's trace.
+    """
+    from src.utils.log_setup import setup
+
+    run = setup(verbose=verbose, text_log=LOG_FILE, json_log=JSON_LOG_FILE)
+    logging.getLogger(__name__).info(
+        f"run_id={run}  (logs/app.jsonl, {LOG_FILE})")
 
 
 def _install_redaction() -> None:
@@ -293,6 +299,13 @@ def cmd_probe(args) -> int:
     """Log in and read the dashboard. Read-only unless --commit is given."""
     _install_redaction()
 
+    # Imported once for the whole function: several of the messages below name
+    # the payment journal's path, and they are read by an operator mid-incident.
+    # Naming it from the constant rather than hardcoding "logs/payments.jsonl"
+    # means the journal can move without sending someone to a file that is no
+    # longer there.
+    from src.payment import journal as payment_journal
+
     if getattr(args, "commit", False) and not getattr(args, "walk", False):
         print("--commit needs --walk.\n\n"
               "  Without --walk the probe is READ-ONLY: it logs in, reads the "
@@ -397,7 +410,7 @@ def cmd_probe(args) -> int:
         print("check whether the appointment was confirmed. Do that first.")
         print()
         print("The references above are what you quote to VFS or the bank.")
-        print("They are also in logs/payments.jsonl.")
+        print(f"They are also in {payment_journal.JOURNAL_FILE}.")
     elif getattr(result.walk, "blocked", False):
         # Loud, and phrased as an instruction. This is not a bug to
         # debug: VFS has said the account already has a booking in
@@ -417,8 +430,8 @@ def cmd_probe(args) -> int:
     if getattr(args, "commit", False):
         print("\nThis was a --commit run. If the payment step was reached, an "
               "appointment was booked and a card was charged — check "
-              "logs/payments.jsonl and the captures above. DO NOT re-run to "
-              "'try again' without confirming the outcome first.")
+              f"{payment_journal.JOURNAL_FILE} and the captures above. DO NOT "
+              "re-run to 'try again' without confirming the outcome first.")
     else:
         print("\nNo slot was reserved and no payment was made. The slot is not "
               "held at any point, so abandoning here costs only this attempt — "

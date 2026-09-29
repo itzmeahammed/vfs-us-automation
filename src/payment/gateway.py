@@ -469,4 +469,5 @@ def _record_outcome(journal, result: Dict[str, Any]) -> None:
         log.error(
             f"PAYMENT OUTCOME COULD NOT BE JOURNALLED: {e}. The payment WAS "
             f"submitted and its result was {result!r} — record this by hand "
-            "in logs/payments.jsonl, or it will show as unanswered forever.")
+            "in the payment journal under state/, or it will show as unanswered "
+            "forever.")

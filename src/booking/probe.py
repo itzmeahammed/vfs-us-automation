@@ -683,7 +683,7 @@ def run_probe(source: str, dest: str,
                 log.error(
                     f"*** {len(pending)} PAYMENT(S) SUBMITTED WITH NO RECORDED "
                     f"OUTCOME. *** Do NOT re-run this booking. Check the "
-                    f"gateway and logs/payments.jsonl before anything else — "
+                    f"gateway and {payment_journal.JOURNAL_FILE} before anything else — "
                     f"a retry double-charges.")
         except Exception:                                   # noqa: BLE001
             # Never let diagnosis swallow the interrupt.

@@ -24,8 +24,11 @@ Security posture, briefly:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +36,7 @@ from typing import Any, AsyncIterator, Dict
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from src.api import __version__
 from src.api.config import get_settings
@@ -42,6 +45,7 @@ from src.api.jobs import (
     JobManager,
     JobStartError,
     JobStatus,
+    TERMINAL_STATUSES,
     read_log_tail,
 )
 from src.api.schemas import (
@@ -60,6 +64,29 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 )
 log = logging.getLogger("vfs.api")
+
+# -- GET /jobs/{id}/stream tuning ------------------------------------------- #
+#: How often the log file is re-read. Short enough to feel live, long enough
+#: that a dozen watchers cost nothing.
+STREAM_POLL_SECONDS = 0.5
+#: Bytes per read. Caps what one pass can take when a job suddenly logs a great
+#: deal (a --capture full DOM dump, say).
+STREAM_CHUNK_BYTES = 64 * 1024
+#: Idle passes between heartbeat comments — 20 x 0.5s = every 10 seconds.
+STREAM_HEARTBEAT_TICKS = 20
+#: Hard ceiling on one connection. A booking walk is minutes, not hours, and an
+#: unbounded stream is a resource leak wearing a feature's clothes.
+STREAM_MAX_SECONDS = 3600
+
+
+def _sse(event: str, data: Dict[str, Any]) -> str:
+    """One Server-Sent Event frame.
+
+    json.dumps matters here beyond tidiness: an SSE `data:` field is
+    newline-delimited, so a log line containing a newline would otherwise be
+    read as two frames. JSON escapes it and the frame stays one frame.
+    """
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 # One manager for the process lifetime.
 job_manager = JobManager()
@@ -374,6 +401,7 @@ from src.api.clients import router as clients_router          # noqa: E402
 from src.api.clients import routes_router                     # noqa: E402
 from src.api.config_view import router as config_router       # noqa: E402
 from src.api.inbox import router as inbox_router              # noqa: E402
+from src.api.payments import router as payments_router        # noqa: E402
 from src.api.pipeline import router as pipeline_router        # noqa: E402
 from src.api.status import router as status_router            # noqa: E402
 from src.api.webhooks import router as webhooks_router        # noqa: E402
@@ -390,6 +418,7 @@ app.include_router(config_router)
 app.include_router(webhooks_router)
 app.include_router(inbox_router)
 app.include_router(booking_router)
+app.include_router(payments_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
@@ -606,6 +635,155 @@ def get_job_logs(
         line_count=len(tail),
         truncated=truncated,
         log_available=True,
+    )
+
+
+@app.get(
+    "/jobs/{job_id}/stream",
+    dependencies=[Depends(require_token)],
+    tags=["jobs"],
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def stream_job_log(
+    job_id: str,
+    from_start: bool = Query(
+        default=False,
+        description="Replay the log from byte 0 before following. Default "
+                    "follows from the end, like `tail -f`.",
+    ),
+) -> StreamingResponse:
+    """Follow a running job's log as Server-Sent Events.
+
+    GET /jobs/{id}/logs answers "what happened"; this answers "what is
+    happening". A booking walk takes minutes, and an operator watching one
+    should not have to poll a tail endpoint on a timer, re-reading the same
+    kilobytes to notice one new line.
+
+    Ends by itself when the job reaches a terminal status, so a client can loop
+    over the events and simply fall out rather than deciding when to stop.
+    Event names are `log`, `status` and `end`.
+
+    Two implementation notes, both load-bearing:
+
+    * The file is polled, not watched. A cross-platform file watch would mean
+      another dependency for a file this process's own child is appending to,
+      and the child writes unbuffered (PYTHONUNBUFFERED), so a short poll is
+      already near-live.
+    * A heartbeat comment is emitted while idle. Tunnels and reverse proxies
+      close connections that go quiet, and a comment keeps the stream alive
+      without the client having to interpret an empty event.
+    """
+    record = job_manager.get(job_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No job with id {job_id!r}.",
+        )
+
+    path = record.log_file
+
+    async def events() -> AsyncIterator[str]:
+        # Announce the run id first: it is the join key the caller needs in
+        # order to find this run's journal rows and screenshots folder.
+        yield _sse("status", {
+            "job_id": job_id,
+            "run_id": record.run_id or job_id,
+            "status": record.status.value,
+        })
+
+        if not path or not os.path.exists(path):
+            yield _sse("end", {"job_id": job_id, "reason": "no log file"})
+            return
+
+        offset = 0
+        if not from_start:
+            try:
+                offset = os.path.getsize(path)
+            except OSError:
+                offset = 0
+
+        idle_ticks = 0
+        last_status = record.status.value
+        # A hard ceiling on the connection. Without it, a client that opens a
+        # stream and never reads holds a task and a file handle indefinitely.
+        deadline = time.monotonic() + STREAM_MAX_SECONDS
+
+        while time.monotonic() < deadline:
+            chunk = ""
+            try:
+                size = os.path.getsize(path)
+                if size < offset:
+                    # Truncated or rotated under us. Start over rather than
+                    # reading from a stale offset into the middle of a line.
+                    offset = 0
+                if size > offset:
+                    with open(path, "rb") as handle:
+                        handle.seek(offset)
+                        raw = handle.read(STREAM_CHUNK_BYTES)
+                    offset += len(raw)
+                    chunk = raw.decode("utf-8", errors="replace")
+            except OSError as exc:
+                yield _sse("end", {"job_id": job_id,
+                                   "reason": f"log unreadable: {exc}"})
+                return
+
+            if chunk:
+                idle_ticks = 0
+                for line in chunk.splitlines():
+                    if line.strip():
+                        yield _sse("log", {"line": line})
+            else:
+                idle_ticks += 1
+
+            # Re-read the record each pass: the supervisor mutates it in place
+            # when the child exits, which is how this loop learns to stop.
+            current = job_manager.get(job_id)
+            current_status = current.status.value if current else last_status
+            if current_status != last_status:
+                last_status = current_status
+                yield _sse("status", {"job_id": job_id,
+                                      "status": current_status})
+
+            if current is not None and current.status in TERMINAL_STATUSES:
+                # One final drain: the child's last writes may have landed
+                # between the read above and its exit.
+                try:
+                    if os.path.getsize(path) > offset:
+                        with open(path, "rb") as handle:
+                            handle.seek(offset)
+                            tail = handle.read(STREAM_CHUNK_BYTES)
+                        for line in tail.decode("utf-8", errors="replace").splitlines():
+                            if line.strip():
+                                yield _sse("log", {"line": line})
+                except OSError:
+                    pass
+                yield _sse("end", {
+                    "job_id": job_id,
+                    "run_id": current.run_id or job_id,
+                    "status": current.status.value,
+                    "exit_code": current.exit_code,
+                    "outcome": current.outcome,
+                    "needs_attention": current.needs_attention,
+                })
+                return
+
+            if idle_ticks and idle_ticks % STREAM_HEARTBEAT_TICKS == 0:
+                yield ": heartbeat\n\n"
+
+            await asyncio.sleep(STREAM_POLL_SECONDS)
+
+        yield _sse("end", {"job_id": job_id,
+                           "reason": "stream time limit reached"})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Tells nginx not to buffer the stream into uselessness.
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
