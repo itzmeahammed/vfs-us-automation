@@ -63,8 +63,21 @@ class FakeRegistrant:
         self.route = "AE-CHE"
         self.combos = ["Dubai - SCHENGEN"]
         self.enabled = True
+        # A REAL client record must now carry an appointment date range: a
+        # booking with no window is refused rather than guessing "earliest",
+        # because a date nobody agreed to costs a charge and a lost slot. A
+        # stand-in without one is no longer a realistic client.
+        # A REAL client record must now say WHICH dates may be booked: a
+        # booking with no window is refused rather than guessing "earliest",
+        # because a date nobody agreed to costs a charge and a lost slot.
+        #
+        # These tests are about the COMMIT BOUNDARY, not about dates, so this
+        # stand-in states the strategy explicitly instead of a window — a
+        # window would also make every test depend on whatever dates the fake
+        # calendar happens to offer.
         self._data = {"first_name": first, "last_name": last,
-                      "passport_number": "X1234567"}
+                      "passport_number": "X1234567",
+                      "slot_strategy": "earliest"}
 
     def get(self, key, default=None):
         return self._data.get(key, default)

@@ -63,9 +63,11 @@
         "time_cell": "td[id^='tv']",
         "_comment_time": "td id='tv0' -> 11:15, 'tv1' -> 11:30, 'tv2' -> 11:45. The id index is the row number, and the text is the time.",
         "select": "label.ba-slot-radio-label",
-        "_comment_select": "The <input type=\"radio\" class=\"ba-slot-radio\"> is tabindex=-1 and visually replaced by its label, so the LABEL is what must be clicked. Clicking the input directly is intercepted.",
+        "select_inner": "div.ba-slot-radio-label-text1",
+        "_comment_select": "The radio is tabindex=-1, but it is NOT removed from hit testing: it is a SIBLING that paints over the label's centre point and intercepts the click. Address the label to find the slot, then click its select_inner child to actually take it.",
         "strategy": "earliest",
-        "_comment_strategy": "Take the first offered time. The slot is NOT held while the remaining steps run, so speed matters more than preference — a competitor may take it at any moment."
+        "_comment_strategy": "Take the first offered time. The slot is NOT held while the remaining steps run, so speed matters more than preference — a competitor may take it at any moment.",
+        "_comment_select_inner": "The visible 'Select' text INSIDE the label. Click this, not the label: the <input> is a sibling that paints over the label's centre and intercepts the hit test (45s of retries on 2026-09-28). The inner div is a descendant, so it paints above the input and still activates the label."
       },
       "submit": {
         "role": "button",

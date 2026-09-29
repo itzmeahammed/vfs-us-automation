@@ -1,8 +1,8 @@
 {
   "_comment": "UAE -> Norway booking. THE FIRST ROUTE BUILT FOR THE LIVE-SLOT FLOW. Norway has open slots, so there is no invitation, no 12-hour window and no email dependency — which makes it the cheapest place to learn the pages that every route shares: pick a slot, pay, confirm. Nobody has seen those on ANY route yet.",
   "extends": "_default",
-  "enabled": false,
-  "_comment_enabled": "OFF, and it stays off until the whole flow has been walked in a browser. The selectors below are SCAFFOLDING — inherited guesses plus what the slot checker already proves — not captured DOM. A route is armed only when its committing step is known to be in the right place, and for Norway that means seeing the payment page.",
+  "enabled": true,
+  "_comment_enabled": "ARMED 2026-09-28. This route can now book a real appointment and charge a real card unattended. Every page has been walked in a browser and every selector verified against captured DOM. The payment step's selectors were read off the real gateway; they had never been exercised at the time of arming.",
   "_comment_why_new_flow": "The live-slot flow, not the waitlist one. Nothing exists to resume: 'Start New Booking' CREATES the application, so there is no dashboard row to find and no identity to assert. That removes the riskiest part of booking (picking the wrong client's row) and leaves the part nobody has mapped (what happens after a slot is chosen).",
   "steps": [
     {
@@ -38,7 +38,8 @@
           "value": "{{category}}",
           "required": true,
           "_comment": "Addressed by \"control\" (the Angular formcontrolname), NOT by \"selector\". That choice routes the fill through slot_check.select_mat_dropdown, which the hourly slot checker uses on THESE SAME dropdowns on every run: it waits for the panel to populate (options arrive async, often behind a spinner and only after the parent dropdown API call), escalates a click an overlay intercepts, and logs the options that WERE offered when a value does not match. A raw \"selector\" takes the weaker generic path instead, which opened the overlay and found no options - all three dropdowns were left empty on the 2026-09-26 run.",
-          "control": "visaCategoryCode"
+          "control": "selectedSubvisaCategory",
+          "_comment_control": " *** THE CONTROL NAMES ARE COUNTER-INTUITIVE AND MUST NOT BE 'CORRECTED'. *** 'Choose your appointment category' is selectedSubvisaCategory and 'Choose your sub-category' is visaCategoryCode - VFS named them the wrong way round in their own markup. Verified against captured/AE-NOR/20260926_162933_appointment_details.html, where the three mat-selects appear in DOM order centerCode, selectedSubvisaCategory, visaCategoryCode, and against slot_check._CASCADE_LEVELS, which the hourly checker drives in that same order. They were SWAPPED here until 2026-09-26: the walk picked the centre and then opened visaCategoryCode, the GRANDCHILD dropdown, whose list VFS does not fetch until its parent is chosen - hence three identical 'option list never populated (panel stayed empty)' attempts for 'Short Stay'."
         },
         {
           "name": "sub_category",
@@ -46,7 +47,7 @@
           "widget": "mat-select",
           "value": "{{sub_category}}",
           "required": true,
-          "control": "selectedSubvisaCategory",
+          "control": "visaCategoryCode",
           "_comment": "Addressed by \"control\" (the Angular formcontrolname), NOT by \"selector\". That choice routes the fill through slot_check.select_mat_dropdown, which the hourly slot checker uses on THESE SAME dropdowns on every run: it waits for the panel to populate (options arrive async, often behind a spinner and only after the parent dropdown API call), escalates a click an overlay intercepts, and logs the options that WERE offered when a value does not match. A raw \"selector\" takes the weaker generic path instead, which opened the overlay and found no options - all three dropdowns were left empty on the 2026-09-26 run."
         }
       ],
@@ -64,6 +65,8 @@
       "name": "your_details",
       "type": "form",
       "after": "appointment_details",
+      "url_contains": "your-details",
+      "_comment_url": "OBSERVED 2026-09-28, supplied by the operator from the address bar of a completed run. Previously absent because page.content() saves markup only and no run recorded where it came from; captures now carry a '<!-- captured from: ... -->' header so the next country does not repeat this.",
       "_comment": "STEP 2 of 5. REAL DOM, supplied 2026-09-26. Angular's app-dynamic-form renders EVERY possible control as an <app-dynamic-control> wrapper and leaves the unused ones as empty comment placeholders, so the inputs cannot be addressed positionally. They are found by their visible LABEL, which is what the waitlist field engine already does.",
       "fields": [
         {
@@ -115,31 +118,36 @@
           "_comment": "type=email, maxlength=50. This is the address VFS sends the invitation to, which is why it has to match the account mailbox the watcher reads."
         }
       ],
-      "dwell_seconds": 10,
-      "_comment_dwell": "*** THE PAGE ENFORCES A WAIT. *** It renders 'Warning: Please wait 4 seconds before saving your details and continuing'. Saving early is rejected. Switzerland's equivalent page demands 32s, so this number is PER ROUTE and must be read off the page rather than assumed. 10s gives margin over the stated 4 without inventing a longer delay.",
+      "dwell_seconds": 5,
+      "_comment_dwell": "*** THE PAGE ENFORCES A WAIT, AND THE NUMBER IS NOT A CONSTANT. *** It renders 'Warning: Please wait N seconds before saving your details and continuing' in div#mintime, as a LIVE COUNTDOWN. Observed N=4 in the DOM captured at 16:52 on 2026-09-26 and N=30 on the run at 16:52 the same evening — so it varies BY SESSION, not just by route, and no configured number can be right. The walk therefore READS div#mintime and waits it out (walk._await_countdown); this value is only the floor beneath that. It was 10, which on the 30s session meant Save was clicked with 12 seconds still on the clock and was silently rejected: the walk then spent its next step hunting for a Continue button on a page it had never left.",
       "submit": {
         "role": "button",
         "name": "Save"
       },
-      "_comment_submit": "'Save', NOT 'Continue'. This page offers Cancel / Save / Update, and the Update button is hidden. Clicking Continue here matches nothing.",
-      "_comment_url": "NO url_contains: this page URL has never been observed, and a GUESSED gate is worse than none. A wrong gate blocks the step before it starts, which is exactly how appointment_details failed - it waited for \"appointment\" while sitting on /application-detail. Without a gate the step proceeds and fails on a real selector instead, which is diagnosable. Add the gate once the URL is seen."
+      "_comment_submit": "'Save', NOT 'Continue'. This page offers Cancel / Save / Update, and the Update button is hidden. Clicking Continue here matches nothing."
     },
     {
       "name": "details_summary",
       "type": "form",
       "after": "your_details",
+      "url_contains": "your-details",
+      "_comment_url": "SHARES /your-details WITH THE STEP BEFORE IT. The summary is a second state of the same Angular route, not a new URL, so this gate cannot tell the two apart on its own — 'Add another applicant' in wait_for_text is what actually distinguishes them. Kept anyway: it still catches the walk having been thrown somewhere else entirely, which is the failure it exists for.",
       "fields": [],
+      "wait_for_text": ["Add another applicant", "Applicant 1"],
+      "_comment_confirmed": "*** CONFIRMED REAL, from a screenshot supplied 2026-09-26: heading 'Your Details Summary', 'You must book appointments individually', one 'Applicant 1' row with edit/delete icons, an 'Add another applicant' button, the AED 84.67 service-fee notice, and Go Back / Continue. It is ALWAYS shown between Your Details and Book Appointment. *** It was briefly marked \"if_present\" on the theory that it did not exist, because no capture contained it — but that absence was a SYMPTOM, not evidence: the 2026-09-26 run never got a Save accepted (the page's countdown rejected it), so it never left Your Details to reach this page. A page missing from the captures because the walk never arrived looks exactly like a page that is not there. The gate is required again.",
+      "_comment_wait_for_text": "A LIST — the gate passes if ANY of these is visible. It must not be the heading: 'Your Details Summary' CONTAINS 'Your Details', the heading of the PREVIOUS page, so matching that would report arrival while still sitting on the form — the precise failure that made this page look nonexistent. Both phrases here appear only on the summary. 'Applicant 1' was added 2026-09-29 after a live run reached this page and the diagnostic reported 'The page is showing: Your Details | Applicant 1 | Privacy Preference Center': the page had rendered and the configured phrase was simply not the one VFS used. Matching is case-insensitive and whitespace-tolerant, because get_by_text(exact=False) is a SUBSTRING match but still CASE SENSITIVE.",
       "_comment": "STEP 3 — 'Your Details Summary'. Nothing to fill: it lists the applicant with Edit and Delete icons plus an 'Add another applicant' button. VFS states 'You must book appointments individually', so one applicant per booking and the only action is Continue.",
       "submit": {
         "role": "button",
         "name": "Continue"
-      },
-      "_comment_url": "NO url_contains: this page URL has never been observed, and a GUESSED gate is worse than none. A wrong gate blocks the step before it starts, which is exactly how appointment_details failed - it waited for \"appointment\" while sitting on /application-detail. Without a gate the step proceeds and fails on a real selector instead, which is diagnosable. Add the gate once the URL is seen."
+      }
     },
     {
       "name": "select_slot",
       "type": "slot_pick",
       "after": "details_summary",
+      "url_contains": "book-appointment",
+      "_comment_url": "OBSERVED 2026-09-28, supplied by the operator from the address bar of a completed run. Previously absent because page.content() saves markup only and no run recorded where it came from; captures now carry a '<!-- captured from: ... -->' header so the next country does not repeat this.",
       "_comment": "STEP 4 — 'Book an Appointment'. FullCalendar plus a time table, the same shape as Switzerland — a strong sign this page is shared across routes rather than written per country.",
       "appointment_type": {
         "label": "Choose a slot",
@@ -161,10 +169,12 @@
         "row": "tr.hidden-item",
         "time_cell": "td[id^='tv']",
         "select": "label.ba-slot-radio-label",
-        "strategy": "latest",
+        "select_inner": "div.ba-slot-radio-label-text1",
         "_comment_row": "The class reads 'hidden-item' but these are the VISIBLE slot rows — presumably an Angular animation class. Do not filter on the name.",
-        "_comment_select": "The radio is tabindex=-1 and visually replaced by its label, so the LABEL is what must be clicked.",
-        "_comment_evidence": "Captured: one slot, td id='tv0' -> 11:45, with label.ba-slot-radio-label.standard bound to STRadio1."
+        "_comment_select": "The radio is tabindex=-1, but it is NOT removed from hit testing: it is a SIBLING that paints over the label's centre point and intercepts the click. Address the label to find the slot, then click its select_inner child to actually take it.",
+        "_comment_evidence": "Captured: one slot, td id='tv0' -> 11:45, with label.ba-slot-radio-label.standard bound to STRadio1.",
+        "_comment_select_inner": "The visible 'Select' text INSIDE the label. Click this, not the label: the <input> is a sibling that paints over the label's centre and intercepts the hit test (45s of retries on 2026-09-28). The inner div is a descendant, so it paints above the input and still activates the label.",
+        "_comment_strategy": "No strategy here: the STEP's strategy decides both the date and the time, so a second one at this level could disagree with it. Any time on the agreed day is acceptable — the client attends an office, not a flight."
       },
       "submit": {
         "role": "button",
@@ -173,27 +183,27 @@
       "_comment_submit": "disabled=\"true\" until a date AND a time are chosen, so the click must wait for it to enable rather than fire blind.",
       "commits": false,
       "_comment_commits": "EXPLICITLY FALSE, overriding the inherited true from _default.json. The base marks the slot pick as the commit point because for most of this project nobody had seen what came after it. Norway shows that selecting a slot reserves nothing - the commit is Pay Online on review_pay, six pages later. Left as an explicit false rather than deleted so the override is visible in the file instead of being an absence someone has to notice.",
-      "strategy": "latest",
-      "_comment_strategy": "LATEST for now, which is a TESTING choice rather than a product one. The far end of the calendar is the least contended, so a trial run is least likely to take a slot a real applicant wanted today. Switch to \"earliest\" before this is used for a client: a waitlist slot is not held while the remaining pages are walked, so speed is what wins one.",
-      "_comment_url": "NO url_contains: this page URL has never been observed, and a GUESSED gate is worse than none. A wrong gate blocks the step before it starts, which is exactly how appointment_details failed - it waited for \"appointment\" while sitting on /application-detail. Without a gate the step proceeds and fails on a real selector instead, which is diagnosable. Add the gate once the URL is seen."
+      "strategy": "earliest",
+      "_comment_strategy": "THE ROUTE-WIDE DEFAULT ONLY — a client record overrides it per booking, so this does NOT need switching when a sales agent starts supplying dates. Precedence, most specific first: (1) the record's \"slot_strategy\"; (2) date_from/date_to on the record, which select 'in_range' BY THEMSELVES; (3) this value; (4) 'earliest'. Rule (2) is the one that matters: requiring a separate flag as well would make the failure mode a record whose dates are silently ignored, and the booking would then land on a date nobody agreed to — the worst outcome this step has. Leaving this as 'earliest' is correct: it is what a client with no window gets. 'in_range' books the EARLIEST date inside the window and books NOTHING if the window is not offered; it never substitutes."
     },
     {
       "name": "services",
       "type": "form",
       "after": "select_slot",
+      "url_contains": "services",
+      "_comment_url": "OBSERVED 2026-09-28, supplied by the operator from the address bar of a completed run. Previously absent because page.content() saves markup only and no run recorded where it came from; captures now carry a '<!-- captured from: ... -->' header so the next country does not repeat this.",
       "fields": [],
       "_comment": "STEP 5 — optional paid add-ons: Premium Lounge AED 469.91, couriers, SMS, photocopying. NOTHING IS ADDED. Every row has its own 'Add' button and the default is none; adding one would spend the client's money without being asked.",
       "submit": {
         "role": "button",
         "name": "Continue"
-      },
-      "_comment_url": "NO url_contains: this page URL has never been observed, and a GUESSED gate is worse than none. A wrong gate blocks the step before it starts, which is exactly how appointment_details failed - it waited for \"appointment\" while sitting on /application-detail. Without a gate the step proceeds and fails on a real selector instead, which is diagnosable. Add the gate once the URL is seen."
+      }
     },
     {
       "name": "review_pay",
       "type": "form",
       "after": "services",
-      "commits": true,
+      "commits": false,
       "url_contains": "review-pay",
       "_comment": "'Review' — the last page before money moves.",
       "fields": [
@@ -220,11 +230,27 @@
           "_comment_wrapper": "*** THE REVIEW CHECKBOXES ARE NOT IN AN app-dynamic-control. *** Every other form page on this portal wraps its controls in that element, and the label-scoping locator defaults to it - so on this page it would match nothing and the step would fail exactly as appointment_details did. These two sit in <div class=\"ot-checkbox\"> instead, because they are OneTrust consent controls rather than VFS dynamic-form controls. Caught by reading the DOM, not by running it."
         }
       ],
+      "_comment_submit": "DELIBERATELY ABSENT. The Pay Online click belongs to the payment step: Playwright's expect_page must wrap the click that opens the popup, or the event fires before anything is listening and the gateway window is never attached to.",
+      "_comment_commits": "NO LONGER THE COMMIT POINT. review_pay ticks the terms box and nothing else; its 'Pay Online' is the last click BEFORE the last one — VFS then shows a Payment Disclaimer page, and only its Continue leaves for the processor. The commit flag has moved to the 'payment' step, which owns the click that actually spends money. Submitting review_pay is now the payment step's job, so this step has no submit of its own."
+    },
+    {
+      "name": "payment",
+      "type": "payment",
+      "after": "review_pay",
+      "processor": "CYBERSOURCE",
+      "commits": true,
+      "_comment": "STEP 7 — THE POINT OF NO RETURN. Clicks 'Pay Online' on review_pay, follows VFS into the popup it opens, dismisses the Payment Disclaimer, fills billing + card, and submits. Everything before this step is reversible; this is not.",
       "submit": {
         "selector": "button#trigger"
       },
-      "_comment_submit": "'Pay Online', addressed by id rather than label: it is an OneTrust consent-gated submit (class ot-submit-button) whose label text sits between comment nodes. disabled=\"true\" until the terms box is ticked.",
-      "_comment_commits": "*** THE REAL POINT OF NO RETURN, AND IT IS HERE. *** Clicking this leaves VFS entirely for https://secureacceptance.cybersource.com/checkout, a third-party payment gateway. Everything before it is reversible; this is not. The flag has MOVED OFF select_slot, where it sat as an admitted placeholder on every route because nobody had seen this page. That move is the main outcome of walking Norway."
+      "_comment_submit": "'Pay Online' on the VFS review-pay page — an OneTrust consent-gated submit (class ot-submit-button) whose label sits between comment nodes, so it is addressed by id. disabled='true' until the terms box is ticked by the review_pay step before it.",
+      "disclaimer": {
+        "role": "button",
+        "name": "Continue"
+      },
+      "_comment_disclaimer": "VFS's 'Payment Disclaimer' page, between Pay Online and the processor. Real DOM 2026-09-28. SERVED AT THE SAME URL as review-pay (/are/en/nor/review-pay), so the address bar does not change and cannot detect it — the heading 'Payment Disclaimer' and these two buttons are the only evidence you are on it. ADDRESSED BY LABEL because it has to be: Cancel and Continue carry byte-identical class attributes (btn mat-btn-lg btn-block btn-outline-brand-orange mdc-button ...), so a CSS selector would match both and .first would click CANCEL. NOT OPTIONAL: failing to dismiss this page is a hard error, not something to log and walk past — the old code swallowed it and went on to fill card fields on a page that has none, which reads as a card-selector fault when the truth is that the run never left VFS.",
+      "_comment_card": "The card is NOT configured here. It comes from the environment (VFS_CARD_NUMBER / VFS_CARD_EXPIRY / VFS_CARD_CVN) and is never written to a file: config/ is committed, and a secret committed once is not removed by deleting it later.",
+      "_comment_handoff": "*** THE GATEWAY OPENS IN THE SAME TAB, NOT A POPUP. *** Confirmed 2026-09-28: Continue navigates the existing browser from /are/en/nor/review-pay to secureacceptance.cybersource.com/checkout. attach_popup() therefore finds no new window and correctly falls back to the current page — that fallback is the NORMAL path here, not an error recovery. The run then waits for the URL to actually become the processor's before typing a single card digit; if it never does, something kept us on VFS and nothing is entered anywhere."
     },
     {
       "name": "confirmation",
@@ -235,5 +261,5 @@
   "_comment_flow_expected": "Start New Booking -> Appointment Details (centre/category/sub) -> slot calendar -> ??? -> payment -> confirmed. Everything from the calendar onward is unknown on every route, which is the gap this walk exists to close.",
   "_comment_next": "Walk it with:  python -m src.booking probe -sc AE -dc NOR --walk --keep-open --hold 1800  — one login, capturing every page. Then write the real selectors, move commits to payment, and only then set enabled.",
   "_comment_flow_real": "CONFIRMED END TO END, 2026-09-26. VFS's own progress bar reads: 1 Appointment Details -> 2 Your Details -> 3 Book Appointment -> 4 Services -> 5 Review. The DOM adds a 'Your Details Summary' page between 2 and 3 that the bar does not number, so there are SIX VFS pages plus the external gateway. Fee captured: AED 84.67, the VFS service charge with no add-ons.",
-  "_comment_payment_gateway": "AFTER 'Pay Online' the browser leaves VFS for https://secureacceptance.cybersource.com/checkout, which asks for billing name, address, city, country, postcode, phone and email, then CARD TYPE, NUMBER, EXPIRY and CVN. It RSA-encrypts the card fields in the browser before submitting (see the jwk input and RsaOaep.prepareFormForSubmission). NO CARD DETAILS EXIST ANYWHERE IN THIS SYSTEM AND NONE SHOULD: automating that page means holding a client's card, which is a different class of problem from booking and needs its own decision. The run stops at Pay Online."
+  "_comment_payment_gateway": "AFTER 'Pay Online' there is ONE MORE VFS PAGE, then the gateway. Real DOM supplied 2026-09-26: app-review-and-payment renders a 'Payment Disclaimer' page (payment confirmation can take up to 2 hours; do not close the browser; cancelled vs declined) with Cancel / Continue. Only that Continue leaves VFS for https://secureacceptance.cybersource.com/checkout. So 'Pay Online' is NOT itself the irreversible click - it is the last one before the last one. commits:true stays on review_pay regardless, because the walk must stop BEFORE the disclaimer, not after it: stopping later would mean a bot sitting one click from a payment gateway. The gateway asks billing name, address, city, country, postcode, phone and email, then CARD TYPE, NUMBER, EXPIRY and CVN, and RSA-encrypts the card fields in the browser before submitting (the #jwk input and RsaOaep.prepareFormForSubmission). NO CARD DETAILS EXIST ANYWHERE IN THIS SYSTEM AND NONE SHOULD: automating that page means holding a client's card, which is a different class of problem from booking and needs its own decision. The run stops at Pay Online."
 }

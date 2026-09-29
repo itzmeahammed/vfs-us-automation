@@ -300,3 +300,229 @@ def test_the_reference_resolves_where_a_name_alone_refuses():
 
     refused, reason = match_row(rows, reference="", name="SOMEBODY ELSE")
     assert refused is None, f"should have refused, got {reason}"
+
+
+# --------------------------------------------------------------------------- #
+# --applicant supplies the fields the live-slot flow has no roster for          #
+# --------------------------------------------------------------------------- #
+#
+# The live-slot flow matches no client (there is no invitation to match against),
+# so ctx.build had nothing to resolve {{first_name}} and friends from. The walk
+# therefore cleared appointment_details and died on 'Your Details' — the page
+# where the five never-seen pages begin — for a WaitlistConfigError rather than
+# anything about VFS. One login, spent to learn nothing.
+
+
+def test_applicant_pairs_are_parsed():
+    from src.booking.__main__ import _applicant_fields
+
+    assert _applicant_fields(["first_name=Zaid", "phone_country_code=971"]) == {
+        "first_name": "Zaid", "phone_country_code": "971"}
+
+
+def test_an_applicant_value_may_contain_an_equals_sign():
+    """Only the FIRST '=' separates, so a value is never truncated."""
+    from src.booking.__main__ import _applicant_fields
+
+    assert _applicant_fields(["note=a=b"]) == {"note": "a=b"}
+
+
+def test_a_malformed_applicant_pair_is_refused():
+    """Silently ignoring it would resolve the field to empty and stop the walk on
+    the very page the flag was passed to get past."""
+    from src.booking.__main__ import _applicant_fields
+
+    with pytest.raises(ValueError, match="KEY=VALUE"):
+        _applicant_fields(["first_nameZaid"])
+
+
+def test_applicant_fields_reach_the_your_details_placeholders():
+    """The end-to-end point: with --applicant, every field on Norway's page 2
+    resolves. Without it, the first one raises."""
+    from src.utils.config_reader import initialize_config
+    from src.booking import config as booking_config
+    from src.booking.probe import _walk_values
+    from src.waitlist.fields import resolve_value
+    from src.waitlist.errors import WaitlistConfigError
+
+    initialize_config()
+    booking_config.clear_cache()
+    step = next(s for s in booking_config.steps_for("AE-NOR", "new")
+                if s.get("name") == "your_details")
+    combo = "Norway Visa Application Center - Dubai - Tourist"
+
+    values = _walk_values("AE-NOR", combo, None, {
+        "first_name": "Zaid", "last_name": "Testa",
+        "passport_number": "A1234567", "phone_country_code": "971",
+        "phone_number": "501234567", "email": "zaid@travnook.com"})
+    resolved = {f["name"]: resolve_value(f, values, where="t")
+                for f in step["fields"]}
+    # The page uppercases these itself (the inputs carry appuppercase), so the
+    # config asks for it too and what we send matches what is displayed.
+    assert resolved["first_name"] == "ZAID"
+    assert resolved["passport_number"] == "A1234567"
+    assert resolved["email"] == "zaid@travnook.com"
+
+    without = _walk_values("AE-NOR", combo, None, None)
+    with pytest.raises(WaitlistConfigError):
+        resolve_value(step["fields"][0], without, where="t")
+
+
+def test_the_combo_still_supplies_the_dropdowns_with_no_applicant():
+    """--applicant must not become a prerequisite for page 1: the centre,
+    category and sub-category come from the COMBO and need no client at all."""
+    from src.utils.config_reader import initialize_config
+    from src.booking.probe import _walk_values
+
+    initialize_config()
+    values = _walk_values(
+        "AE-NOR", "Norway Visa Application Center - Dubai - Tourist", None)
+    assert values["centre"] == "Norway Visa Application Center - Dubai"
+    assert values["category"] == "Short Stay"
+    assert values["sub_category"] == "Tourist"
+
+
+# --------------------------------------------------------------------------- #
+# The live-slot ('new') flow must not read the dashboard                       #
+#                                                                              #
+# THE 2026-09-28 RUN: entry flow was correctly 'new', and the probe read the   #
+# dashboard anyway — because read_dashboard() ran before `entry` was ever      #
+# consulted. It then waited CARD_WAIT_MS (15s) for cards that cannot exist and #
+# logged "this account holds no applications on this portal — probe an account #
+# that HAS a waitlist entry", which reads as a fault.                          #
+#                                                                              #
+# For a live-slot booking an empty dashboard is not a finding. It is the       #
+# definition: the application does not exist yet, and Start New Booking is     #
+# what creates it.                                                             #
+# --------------------------------------------------------------------------- #
+
+def test_a_new_flow_run_never_reads_the_dashboard(monkeypatch):
+    """15s on a metered proxy, spent on a page that cannot hold the answer —
+    while the public slot this run is racing for is still available to
+    everyone else."""
+    from src.booking import probe as probe_mod
+
+    called = []
+    monkeypatch.setattr(probe_mod, "read_dashboard",
+                        lambda page, route: called.append(route) or [])
+
+    # The guard is a plain comparison against ENTRY_NEW; assert the branch
+    # rather than standing up a browser.
+    from src.booking import config as booking_config
+
+    assert booking_config.ENTRY_NEW == "new"
+    source = open("src/booking/probe.py", encoding="utf-8").read()
+
+    guard = 'if entry == booking_config.ENTRY_NEW:'
+    assert guard in source
+    # read_dashboard must sit in the ELSE branch, after the guard.
+    assert source.index(guard) < source.index("result.rows = read_dashboard")
+
+
+def test_the_dashboard_is_still_captured_on_a_new_flow_run():
+    """It costs nothing once the page is open, and it is the only record of
+    what the account looked like going in."""
+    source = open("src/booking/probe.py", encoding="utf-8").read()
+    head = source[source.index("if entry == booking_config.ENTRY_NEW:"):]
+    branch = head[:head.index("else:")]
+    assert '_capture_html(page, "dashboard", route)' in branch
+
+
+def test_the_new_flow_says_why_it_skipped_rather_than_being_silent():
+    """A skipped step that logs nothing is indistinguishable from a broken
+    one the next time someone reads this log."""
+    source = open("src/booking/probe.py", encoding="utf-8").read()
+    assert "skipping the dashboard read" in source
+
+
+# --------------------------------------------------------------------------- #
+# --commit without --walk was silently a no-op                                 #
+# --------------------------------------------------------------------------- #
+
+def test_commit_without_walk_is_refused():
+    """*** THE WORST SHAPE A FLAG CAN HAVE. ***
+
+    The probe is read-only unless --walk is given, and --commit only changes
+    what the walk does at the committing step. So `probe --commit` (no --walk)
+    logged in, read the dashboard and stopped — having asked the operator to
+    type BOOK at a prompt promising a real appointment and a real charge.
+
+    Consenting to something irreversible and then doing nothing teaches that
+    typing BOOK is harmless. The next time it IS wired up, it gets typed
+    without being read.
+    """
+    from src.booking.__main__ import main
+
+    # Assert on the MESSAGE, not just the exit code. Without the guard this
+    # path still exits 1 — _confirm_commit refuses when no card is set — so a
+    # bare `assert code == 1` passes with the guard deleted and proves nothing.
+    # (Verified by removing the guard: the code-only assertion stayed green.)
+    import io as _io
+    import contextlib
+
+    out = _io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main(["probe", "-sc", "AE", "-dc", "NOR", "--entry", "new",
+                     "--commit", "--registrant", "mufaddal-nor"])
+
+    assert code == 1
+    printed = out.getvalue()
+    assert "--commit needs --walk" in printed, printed
+    # And it must refuse BEFORE promising an appointment and a charge.
+    assert "WILL BOOK AN APPOINTMENT" not in printed, (
+        "the confirmation prompt ran before the --walk guard — an operator "
+        "would be asked to consent to something that then does nothing")
+
+
+def test_commit_with_walk_is_not_refused_for_that_reason(monkeypatch):
+    """The guard must reject ONLY the missing --walk, not --commit itself."""
+    from src.booking import __main__ as main_mod
+
+    seen = {}
+    monkeypatch.setattr(main_mod, "_confirm_commit",
+                        lambda args: seen.setdefault("asked", True) and False)
+
+    main_mod.main(["probe", "-sc", "AE", "-dc", "NOR", "--entry", "new",
+                   "--walk", "--commit", "--registrant", "mufaddal-nor"])
+    assert seen.get("asked"), "the confirmation prompt was never reached"
+
+
+def test_run_probe_does_not_shadow_the_module_level_booking_config():
+    """A function-level `from src.booking import config as booking_config`
+    inside run_probe made the name LOCAL for the whole function — so
+    entry_modes() at the top, which runs first, became a read of an unassigned
+    local:
+
+        Probe could not start: cannot access local variable 'booking_config'
+        where it is not associated with a value
+
+    Python decides local-vs-global per FUNCTION, not per line, so an import
+    placed halfway down breaks every use above it. A syntax check cannot see
+    this and neither can an import of the module — it only fires at call time,
+    which here meant after a login had been spent.
+
+    Asserted structurally rather than by calling run_probe, which needs a
+    browser.
+    """
+    import ast
+
+    tree = ast.parse(open("src/booking/probe.py", encoding="utf-8").read())
+
+    module_level = set()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                module_level.add(alias.asname or alias.name.split(".")[0])
+    assert "booking_config" in module_level
+
+    run_probe = next(n for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef) and n.name == "run_probe")
+
+    for node in ast.walk(run_probe):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                assert name != "booking_config", (
+                    f"run_probe re-imports booking_config at line "
+                    f"{node.lineno}, shadowing the module-level import and "
+                    "breaking every use above it.")

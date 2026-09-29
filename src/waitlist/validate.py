@@ -674,6 +674,86 @@ def check_invitation_email(data: Dict[str, Any]) -> List[Problem]:
     return problems
 
 
+#: Pulls the field name out of a resolver diagnostic like
+#: "Placeholder {{passport_number}} (in step 'your_details' ...) has no value...".
+_PLACEHOLDER_NAME_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.]+)")
+
+
+def _missing_field_name(unresolved: str) -> str:
+    """The bare field name from a placeholder diagnostic, for a short message."""
+    match = _PLACEHOLDER_NAME_RE.search(str(unresolved))
+    return match.group(1) if match else str(unresolved).strip()
+
+
+def check_booking_templates(route: str, data: Dict[str, Any],
+                            combo: str = "") -> List[Problem]:
+    """Does the client's data satisfy every {{placeholder}} a BOOKING needs?
+
+    The waitlist and the booking want different things from a client, and a
+    client can legitimately need only one of them:
+
+      waitlist only   VFS has no open slots, so the client registers and waits
+                      for an invitation. Name and email are enough.
+      booking only    slots are open, so there is nothing to wait for — but the
+                      booking form wants passport number and phone, which a
+                      waitlist registration never asked for.
+
+    check_templates answers the first question and was the only one asked, so a
+    client with no passport number read as fully ready and then failed on page 2
+    of 7 — with a live session open and a login spent. This answers the second.
+
+    Reported as WARNINGS, not errors: a waitlist-only client is a legitimate
+    client, not a broken one. The warning says what they cannot do yet; the
+    operator decides whether that matters.
+    """
+    problems: List[Problem] = []
+    try:
+        from src.booking import config as booking_config
+        from src.waitlist import context as ctx
+        from src.waitlist.register import _all_templates
+        from src.waitlist.registrant import Registrant
+
+        if route not in booking_config.configured_routes():
+            return problems          # nothing to book on this route yet
+
+        person = Registrant(data.get("_id", "candidate"), dict(data))
+        combos = data.get("combos") or []
+        # The centre/category/sub-category come from the COMBO, not the client,
+        # so they are supplied here rather than reported as missing fields.
+        context = ctx.build(
+            person, route=route, combo=combo or (combos[0] if combos else ""),
+            combo_parts={"centre": "?", "category": "?", "sub_category": "?"})
+
+        seen = set()
+        for mode in booking_config.entry_modes(route):
+            steps = booking_config.steps_for(route, mode)
+            for unresolved in ctx.validate(
+                    _all_templates({"steps": steps}), context):
+                if unresolved in seen:
+                    continue
+                seen.add(unresolved)
+                # Report the FIELD, not the resolver's full diagnostic: that
+                # message ends with a dump of every available key, which is
+                # right for an error a developer is debugging and noise in a
+                # warning an operator reads down a list of clients.
+                name = _missing_field_name(unresolved)
+                problems.append(Problem(
+                    field=name,
+                    message=f"Not bookable yet: no {name}.",
+                    hint="Add this field to book for this client. They can "
+                         "still join the waitlist without it.",
+                    severity=WARNING,
+                ))
+    except Exception as exc:                       # noqa: BLE001
+        problems.append(Problem(
+            field="",
+            message=f"Could not check booking fields for {route}: {exc}",
+            hint="The booking config may be unreadable.",
+            severity=WARNING,
+        ))
+    return problems
+
+
 def precheck_client(registrant_id: str, data: Dict[str, Any]) -> List[Problem]:
     """Full browser-free pre-flight for one client payload.
 
@@ -707,5 +787,13 @@ def precheck_client(registrant_id: str, data: Dict[str, Any]) -> List[Problem]:
     if not any(p.field == "route" for p in readiness.problems):
         problems.extend(check_templates(route, data))
         problems.extend(check_choices(route, data))
+
+    # WHAT THE CLIENT CAN DO, not just whether they are valid. A client may need
+    # only the waitlist, only a booking, or both, and the two are answered by
+    # DIFFERENT configs — so this sits OUTSIDE the waitlist guard above.
+    # Nesting it there meant a route whose waitlist is switched off (Norway:
+    # slots are open, so there is nothing to wait for) never had its booking
+    # fields checked at all — which is exactly the booking-only case.
+    problems.extend(check_booking_templates(route, data))
 
     return problems

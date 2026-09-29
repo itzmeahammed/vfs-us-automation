@@ -57,12 +57,55 @@ def test_greece_inherits_the_base_steps():
                      "appointment_details", "select_slot", "confirmation"]
 
 
-def test_the_shipped_routes_are_all_disabled():
-    """None of these flows has been walked with a browser yet. A config that
-    armed itself on merge would be the worst kind of default."""
+def test_only_a_fully_walked_route_is_armed():
+    """A route may be enabled ONLY once its whole flow has been walked.
+
+    This started as "every route ships disabled", which was right while nothing
+    had been walked. AE-NOR was walked end to end on 2026-09-26/28 — every page
+    opened in a browser, every selector checked against captured DOM — and
+    armed deliberately. The other two have NOT been, and the test now pins that
+    distinction rather than a blanket rule that would have to be deleted the
+    first time anything shipped.
+
+    The failure mode this still guards: a route arming itself by accident, on a
+    merge or a careless edit. Enabling one is a decision someone has to come
+    here and record.
+    """
+    booking_config.clear_cache()
+
+    #: Routes walked end to end in a browser, with a date and what proves it.
+    WALKED = {"AE-NOR"}
+
+    for route in booking_config.configured_routes():
+        enabled = booking_config.is_enabled(route)
+        if route in WALKED:
+            continue                      # may be either; arming is a choice
+        assert not enabled, (
+            f"{route} is enabled but has never been walked in a browser. Its "
+            "selectors are unverified, so a run would fail somewhere in the "
+            "middle — possibly after committing. Walk it first, then add it "
+            "to WALKED here.")
+
+
+def test_an_armed_route_commits_where_the_money_actually_moves():
+    """AE-NOR is armed, so where its commit flag sits is no longer academic.
+
+    It must be on the payment step. It sat on slot_pick for most of this
+    project as an admitted placeholder, and walking Norway showed that picking
+    a slot reserves NOTHING — the appointment is not held, so everything before
+    the gateway is reversible. A commit flag placed early disarms the safety
+    checks after it for steps that did not need disarming.
+    """
     booking_config.clear_cache()
     for route in booking_config.configured_routes():
-        assert not booking_config.is_enabled(route), route
+        if not booking_config.is_enabled(route):
+            continue
+        steps = booking_config.steps_for(route, "new")
+        commit = next(s for s in steps if s.get("commits"))
+        assert commit["type"] == "payment", (
+            f"{route} is armed but commits at a '{commit['type']}' step "
+            f"('{commit['name']}'). An armed route must commit where the money "
+            "moves.")
 
 
 def test_greece_narrows_the_reference_pattern_but_inherits_the_rest():

@@ -39,10 +39,20 @@ STEP_TYPES = frozenset({
     "identity_assert",    # verify the opened application is the right client
     "start_booking",      # create a NEW application (the live-slot entry)
     "form",               # fill fields and submit (the waitlist behaviour)
-    "slot_pick",          # choose a date/time — THE COMMITTING STEP
+    "slot_pick",          # choose a date/time — reversible; nothing is held
+    "payment",            # follow VFS to the gateway and pay — IRREVERSIBLE
     "confirm",            # read the confirmation, capture the reference
 })
 
+#: WHERE THE COMMIT BOUNDARY REALLY IS. slot_pick was labelled "THE COMMITTING
+#: STEP" for most of this project, as an admitted placeholder — nobody had seen
+#: the pages beyond it. Walking Norway end to end showed that picking a slot
+#: reserves nothing: the appointment is not held, so abandoning after it costs
+#: only the attempt. The genuinely irreversible act is the payment, and AE-NOR
+#: now carries "commits": true there. A country whose later pages have not been
+#: walked may still mark slot_pick, because overstating the boundary is the safe
+#: direction to be wrong in.
+#:
 #: The two ways a booking begins. Both end in the same tail — pick a slot, pay,
 #: confirm — and differ only in how the application is reached.
 #:
@@ -73,7 +83,13 @@ ENTRY_ONLY_TYPES = {
 
 #: Steps that may carry "commits": true. Marking anything else is almost
 #: certainly a mistake, and a mistake here is the expensive kind.
-COMMITTABLE_TYPES = frozenset({"slot_pick", "form", "confirm"})
+#: Step types that may carry "commits": true — the ones that can actually
+#: change something at VFS. "payment" is the newest and the most literal: it is
+#: the only type that spends money, and on AE-NOR it is where the flag now
+#: lives. slot_pick stays committable because a country whose later pages have
+#: not been walked has no better candidate, and overstating the boundary is the
+#: safe direction to be wrong in.
+COMMITTABLE_TYPES = frozenset({"slot_pick", "form", "confirm", "payment"})
 
 _cache: Dict[str, Optional[Dict[str, Any]]] = {}
 _resolved: Dict[str, Dict[str, Any]] = {}

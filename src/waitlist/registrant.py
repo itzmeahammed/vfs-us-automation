@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import re
+from datetime import date as _date
 from typing import Any, Dict, List, Optional
 
 from src.waitlist.errors import WaitlistConfigError
@@ -63,6 +64,12 @@ SENSITIVE_FIELDS = (
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _ROUTE_RE = re.compile(r"^[A-Z]{2}-[A-Z]{2,4}$")
+
+#: YYYY-MM-DD only. Deliberately strict: an API consumer sending 10/11/2026
+#: means 10 November to some people and 11 October to others, and a booking
+#: made on the wrong reading is irreversible. No locale reads this format
+#: ambiguously.
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _MISSING = object()
 
@@ -253,6 +260,47 @@ def _validate(registrant_id: str, data: Dict[str, Any]) -> None:
                 f"Client '{registrant_id}': field '{key}' looks like a page "
                 "SELECTOR. Client files hold data only — selectors belong in "
                 f"config/waitlist/{route}.json.")
+
+    # --- the appointment date window ---
+    #
+    # date_from/date_to arrive from an API consumer (the sales agent's system),
+    # so the realistic mistake is a format one: 10/11/2026, or 2026-13-01.
+    # Rejected HERE, at the boundary where the record is written, because every
+    # later place that could catch it is worse:
+    #
+    #   * the offline `check` command  — only if someone runs it
+    #   * the probe's pre-launch gate  — only when a booking is attempted
+    #   * the walk itself              — after a login, and logins are scarce
+    #
+    # A 400 to the caller who typed it is the only feedback that reaches the
+    # person who can fix it, while they are still looking at it.
+    for key in ("date_from", "date_to"):
+        raw = data.get(key)
+        if raw in (None, ""):
+            continue
+        if not isinstance(raw, str) or not _DATE_RE.match(raw.strip()):
+            raise WaitlistConfigError(
+                f"Client '{registrant_id}': \"{key}\": {raw!r} is not a date. "
+                "Use YYYY-MM-DD, e.g. \"2026-11-20\".")
+        try:
+            _date.fromisoformat(raw.strip())
+        except ValueError:
+            raise WaitlistConfigError(
+                f"Client '{registrant_id}': \"{key}\": {raw!r} is not a real "
+                "calendar date.") from None
+
+    start = data.get("date_from")
+    end = data.get("date_to")
+    if bool(start) != bool(end):
+        missing = "date_to" if start else "date_from"
+        raise WaitlistConfigError(
+            f"Client '{registrant_id}': an appointment date range needs BOTH "
+            f"ends — \"{missing}\" is missing. Send the same date twice to ask "
+            "for a single day.")
+    if start and end and str(start).strip() > str(end).strip():
+        raise WaitlistConfigError(
+            f"Client '{registrant_id}': \"date_from\" ({start}) is after "
+            f"\"date_to\" ({end}) — the range is backwards.")
 
 
 # --------------------------------------------------------------------------- #

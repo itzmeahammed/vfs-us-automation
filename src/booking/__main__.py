@@ -97,11 +97,77 @@ def cmd_check(args) -> int:
         except BookingConfigError as e:
             print(f"  FAIL {route}: {e}")
 
-    if problems:
-        print(f"\n{len(problems)} config problem(s).")
+    client_problems = _check_client_windows()
+
+    if problems or client_problems:
+        if problems:
+            print(f"\n{len(problems)} config problem(s).")
         return 1
     print(f"\n{len(routes)} route config(s), all valid.")
     return 0
+
+
+def _check_client_windows() -> int:
+    """Validate every client's requested date window. OFFLINE. Returns a count.
+
+        ═══════ WHY THIS RUNS BEFORE A BROWSER EXISTS ═══════
+
+    The window comes from a sales agent typing dates into a client record, so
+    the realistic mistakes are typing mistakes: 10/11/2026 instead of
+    2026-11-10, one end filled and not the other, the range backwards, a date
+    already past. walk.check_window catches all of them — but it was only ever
+    called from INSIDE the walk, which is after a login.
+
+    A login is the scarce resource: VFS blocks an account after roughly three
+    in a short window, and that block outlives a 12-hour invitation. Spending
+    one to be told a date was typed with slashes is the most avoidable failure
+    in this system.
+    """
+    from src.booking import walk
+    from src.waitlist import registrant as registrant_mod
+
+    try:
+        ids = registrant_mod.available_ids()
+    except Exception as e:                                  # noqa: BLE001
+        print(f"\n(could not read client records: {e})")
+        return 0
+
+    checked = 0
+    bad = 0
+    for client_id in ids:
+        try:
+            person = registrant_mod.load(client_id)
+            values = person.as_context()
+        except Exception as e:                              # noqa: BLE001
+            print(f"  FAIL {client_id}: unreadable ({e})")
+            bad += 1
+            continue
+
+        # EVERY bookable client is checked, including those with no window —
+        # a missing range is now a REFUSAL, not a fallback to "earliest", so
+        # skipping them here would report "all valid" for records that cannot
+        # book at all. That is the stale behaviour this check exists to catch.
+        window = walk.date_window(values)
+        checked += 1
+        try:
+            strategy = walk.resolve_strategy(values, {})
+        except Exception as e:                              # noqa: BLE001
+            print(f"  FAIL {client_id}: {e}")
+            bad += 1
+            continue
+
+        issues = walk.check_window(values)
+        if issues:
+            bad += 1
+            print(f"  FAIL {client_id}: " + " ".join(issues))
+        else:
+            start, end = window
+            when = (f"{start} .. {end}" if start and end else "no window")
+            print(f"  OK   {client_id}: strategy '{strategy}', {when}")
+
+    if checked:
+        print(f"\n{checked} client date window(s) checked, {bad} problem(s).")
+    return bad
 
 
 def cmd_status(args) -> int:
@@ -140,9 +206,104 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _applicant_fields(pairs) -> dict:
+    """Parse repeated --applicant KEY=VALUE into the walk's context.
+
+    Rejects a malformed pair rather than ignoring it: a typo'd
+    "--applicant first_nameZaid" would otherwise resolve to an empty First Name
+    and stop the walk on the page it was supplied to get past, which is a login
+    spent for nothing.
+    """
+    fields = {}
+    for pair in pairs or []:
+        key, sep, value = str(pair).partition("=")
+        if not sep or not key.strip():
+            raise ValueError(
+                f"--applicant expects KEY=VALUE, got {pair!r} (e.g. "
+                "--applicant first_name=Zaid)")
+        fields[key.strip()] = value
+    return fields
+
+
+def _confirm_commit(args) -> bool:
+    """Make a person say yes before a run can spend money.
+
+    Deliberately a PROMPT and not just a flag. --commit is one word on a line
+    that otherwise looks exactly like the dry run everyone has been typing for
+    days, and the difference between them is a real appointment and a real
+    charge. Scheduled runs pass --yes; a human at a terminal gets asked.
+
+    Prints what it is about to do first, because "are you sure?" with no
+    subject is a question nobody reads.
+    """
+    from src.booking import config as booking_config
+    from src.payment import card as card_mod
+
+    route = f"{args.source_country}-{args.dest_country}".upper()
+
+    print()
+    print("=" * 68)
+    print("  --commit: THIS RUN WILL BOOK AN APPOINTMENT AND PAY FOR IT")
+    print("=" * 68)
+    print(f"  route      {route}")
+    print(f"  client     {args.registrant or '(none — --applicant fields)'}")
+
+    try:
+        card = card_mod.load()
+        print(f"  card       {card.masked if card else 'NOT SET'}")
+    except Exception as e:                                  # noqa: BLE001
+        print(f"  card       UNUSABLE: {e}")
+        return False
+
+    if card is None:
+        print()
+        print("  No card is configured, so the payment step cannot run. Set "
+              "VFS_CARD_NUMBER, VFS_CARD_EXPIRY and VFS_CARD_CVN.")
+        return False
+
+    try:
+        commit_step = booking_config.commit_step_name(route,
+                                                      args.entry or "")
+        print(f"  commits at '{commit_step}'")
+    except Exception:                                       # noqa: BLE001
+        pass
+
+    print()
+    print("  The appointment is real, the charge is real, and neither can be "
+          "undone from here.")
+    print()
+
+    if args.yes:
+        print("  (--yes given, proceeding without asking)")
+        return True
+
+    try:
+        answer = input("  Type BOOK to continue, anything else to abort: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Aborted.")
+        return False
+
+    if answer.strip() != "BOOK":
+        print("  Aborted — nothing was clicked.")
+        return False
+    return True
+
+
 def cmd_probe(args) -> int:
-    """Log in and read the dashboard. Read-only."""
+    """Log in and read the dashboard. Read-only unless --commit is given."""
     _install_redaction()
+
+    if getattr(args, "commit", False) and not getattr(args, "walk", False):
+        print("--commit needs --walk.\n\n"
+              "  Without --walk the probe is READ-ONLY: it logs in, reads the "
+              "dashboard and stops,\n"
+              "  so --commit would have nothing to commit. Add --walk to "
+              "actually walk the booking\n"
+              "  pages, or drop --commit to keep this run read-only.")
+        return 1
+
+    if getattr(args, "commit", False) and not _confirm_commit(args):
+        return 1
 
     from src.booking.probe import run_probe
 
@@ -160,13 +321,24 @@ def cmd_probe(args) -> int:
         combo=getattr(args, 'combo', '') or '',
             walk=args.walk,
             to_step=args.to_step,
+            applicant=_applicant_fields(args.applicant),
+            commit=getattr(args, "commit", False),
+            capture=getattr(args, "capture", "") or "",
         )
+    except KeyboardInterrupt:
+        # Ctrl-C before run_probe's own handler is reachable — during
+        # launch, login, or after it has returned. Nothing is in flight
+        # here, so this is a clean exit rather than a traceback.
+        print("\nInterrupted before the probe started. Nothing was clicked.")
+        return 130
     except Exception as e:
         print(f"\nProbe could not start: {e}")
         return 1
 
     print()
     print("=" * 68)
+    if result.interrupted:
+        print("INTERRUPTED BY Ctrl-C")
     print(f"BOOKING PROBE — {result.route}  ({result.account})")
     print("=" * 68)
 
@@ -195,7 +367,7 @@ def cmd_probe(args) -> int:
 
     if result.walk is None:
         print("\nNothing was clicked. No VFS state changed.")
-        return 0 if result.ok else 1
+        return _probe_exit_code(result)
 
     print()
     print("-" * 68)
@@ -213,16 +385,61 @@ def cmd_probe(args) -> int:
         if not step.ok and step.page_text:
             print(f"        page: {step.page_text[:300]}")
 
-    if result.walk.stopped_at:
+    if getattr(result.walk, "payment_declined", False):
+        print()
+        print("!" * 68)
+        print("PAYMENT DECLINED — DO NOT SIMPLY RE-RUN")
+        print("!" * 68)
+        print(result.walk.reason)
+        print()
+        print("A decline is NOT proof that nothing was charged. VFS's own")
+        print("page says: if funds were deducted, log in after 30 minutes and")
+        print("check whether the appointment was confirmed. Do that first.")
+        print()
+        print("The references above are what you quote to VFS or the bank.")
+        print("They are also in logs/payments.jsonl.")
+    elif getattr(result.walk, "blocked", False):
+        # Loud, and phrased as an instruction. This is not a bug to
+        # debug: VFS has said the account already has a booking in
+        # progress, and the one dangerous response is the reflex one —
+        # run it again.
+        print()
+        print("!" * 68)
+        print("BLOCKED BY VFS — DO NOT RE-RUN")
+        print("!" * 68)
+        print(result.walk.reason)
+        print()
+        print("Re-running would book a SECOND appointment and charge the "
+              "card a SECOND time. Check the account at VFS first.")
+    elif result.walk.stopped_at:
         print(f"\nStopped at '{result.walk.stopped_at}': {result.walk.reason}")
 
-    print("\nNo slot was reserved and no payment was made. The slot is not held "
-          "at any point, so abandoning here costs only this attempt — the client "
-          "keeps their waitlist entry and their invitation.")
-    return 0 if result.ok else 1
+    if getattr(args, "commit", False):
+        print("\nThis was a --commit run. If the payment step was reached, an "
+              "appointment was booked and a card was charged — check "
+              "logs/payments.jsonl and the captures above. DO NOT re-run to "
+              "'try again' without confirming the outcome first.")
+    else:
+        print("\nNo slot was reserved and no payment was made. The slot is not "
+              "held at any point, so abandoning here costs only this attempt — "
+              "the client keeps their waitlist entry and their invitation.")
+    return _probe_exit_code(result)
 
 
 # --------------------------------------------------------------------------- #
+
+def _probe_exit_code(result) -> int:
+    """0 success, 130 the operator stopped it, 1 it failed.
+
+    130 is the shell's SIGINT convention (128 + 2). Keeping it distinct from 1
+    matters because a wrapper or a supervisor reads these: "the human pressed
+    Ctrl-C" must never look like "the run failed and should be retried" — and
+    on a --commit run a retry is a second booking and a second charge.
+    """
+    if getattr(result, "interrupted", False):
+        return 130
+    return 0 if result.ok else 1
+
 
 def main(argv: List[str] = None) -> int:
     parser = argparse.ArgumentParser(
@@ -255,7 +472,16 @@ def main(argv: List[str] = None) -> int:
     probe.add_argument("--password", help="that account's password")
     probe.add_argument("--proxy-url", help='force a proxy; "" forces local IP')
     probe.add_argument("--keep-open", action="store_true",
-                       help="leave the browser open to capture selectors by hand")
+                       help="leave the browser open to capture selectors by "
+                            "hand. RECONNAISSANCE ONLY — off by default, and a "
+                            "scheduled run must never set it: it holds the "
+                            "account session and the run lock waiting for an "
+                            "operator who is not there.")
+    probe.add_argument(
+        "--capture", choices=["off", "failure", "full"], default="failure",
+        help="what to leave on disk. 'failure' (default) writes a screenshot "
+             "when a step fails; 'full' adds the rendered DOM of every page, "
+             "for mapping a new country; 'off' writes nothing.")
     probe.add_argument(
         "--walk", action="store_true",
         help="click 'Book Now' and walk the booking pages, reporting what is "
@@ -276,6 +502,26 @@ def main(argv: List[str] = None) -> int:
         help="with --keep-open, hold the session this long instead of waiting "
              "for Enter. Use it to keep ONE login alive across several "
              "inspections: a fresh login per run is what trips VFS's 429001.")
+    probe.add_argument(
+        "--applicant", action="append", default=[], metavar="KEY=VALUE",
+        help="supply one applicant field for the walk, e.g. "
+             "--applicant first_name=Zaid. Repeatable. The live-slot flow has "
+             "no client roster (there is no invitation to match a client to), "
+             "so without this the walk dies on 'Your Details' — the page where "
+             "the five unmapped pages begin. Overrides the client file when "
+             "both are given.")
+    probe.add_argument(
+        "--commit", action="store_true",
+        help="ACTUALLY BOOK AND PAY. REQUIRES --walk. Without this the walk "
+             "stops in front of the committing step having changed nothing. "
+             "With it, the run completes the booking and submits a real "
+             "payment from the card in "
+             "VFS_CARD_NUMBER/VFS_CARD_EXPIRY/VFS_CARD_CVN. There is no undo. "
+             "Requires the route AND the payment processor to be enabled, and "
+             "asks for confirmation unless --yes is given.")
+    probe.add_argument(
+        "--yes", action="store_true",
+        help="skip the --commit confirmation prompt (for scheduled runs)")
     probe.add_argument(
         "--to", dest="to_step", metavar="STEP",
         help="stop after this step (e.g. select_slot), for capturing one page "

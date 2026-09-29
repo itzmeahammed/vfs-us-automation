@@ -106,6 +106,12 @@ class ProbeResult:
     """A WalkResult, when --walk was asked for. None means the probe only read
     the dashboard, which is the default and the safe case."""
 
+    interrupted: bool = False
+    """True when the operator pressed Ctrl-C. Distinct from an error: nothing
+    went wrong with the code, and the CLI exits 130 (the shell convention for
+    SIGINT) rather than 1, so a wrapper script can tell "the human stopped it"
+    from "it failed"."""
+
     @property
     def ok(self) -> bool:
         """Whether the dashboard was read at all. Finding no rows is a valid
@@ -406,7 +412,10 @@ def run_probe(source: str, dest: str,
               entry: str = "",
               combo: str = "",
               walk: bool = False,
-              to_step: Optional[str] = None) -> ProbeResult:
+              to_step: Optional[str] = None,
+              applicant: Optional[Dict[str, Any]] = None,
+              commit: bool = False,
+              capture: str = "") -> ProbeResult:
     """Log in, read the dashboard, report. Clicks nothing, changes nothing.
 
     Reuses src/waitlist/runner.py's orchestration — Chrome, the Cloudflare/OTP
@@ -443,6 +452,17 @@ def run_probe(source: str, dest: str,
     # new account before any client file exists for it — so a missing roster is
     # not an error there. _roster raises in that case, hence the catch.
     person = None
+
+    # "" means "whatever the walk considers normal" — resolved HERE rather than
+    # defaulting the parameter to walk.DEFAULT_CAPTURE, so there is exactly one
+    # definition of the default and importing walk stays lazy.
+    from src.booking.walk import CAPTURE_MODES, DEFAULT_CAPTURE
+    capture = capture or DEFAULT_CAPTURE
+    if capture not in CAPTURE_MODES:
+        raise ValueError(
+            f"capture must be one of {', '.join(CAPTURE_MODES)}, not "
+            f"{capture!r}.")
+
     try:
         people = _roster(route, registrant_id)
         person = people[0] if people else None
@@ -488,6 +508,20 @@ def run_probe(source: str, dest: str,
 
     _assert_account_healthy(resolved.email, route)
 
+    # ── THE DATE RANGE, CHECKED BEFORE CHROME EXISTS. ───────────────────────
+    #
+    # A walk that cannot say which dates it is allowed to book must not start.
+    # resolve_strategy refuses a record with no window, but it only runs once
+    # the walk reaches the calendar — which is after a login, and a login is
+    # the scarce resource here: VFS blocks an account after roughly three in a
+    # short window, and that block outlives a 12-hour invitation.
+    #
+    # So the same question is asked here, offline, where the answer costs
+    # nothing. Only for runs that will actually pick a slot: a plain dashboard
+    # read books nothing and needs no window.
+    if walk:
+        _assert_bookable_window(route, entry, combo, person, applicant)
+
     bot = None
     page = None      # bound after login; the error path checks it
     _reset_usage()
@@ -518,30 +552,69 @@ def run_probe(source: str, dest: str,
             log.warning(f"Expected a dashboard URL, got {page.url} — navigating.")
             _go_to_dashboard(page, url)
 
-        result.rows = read_dashboard(page, route)
+        # ═══════ THE 'NEW' FLOW HAS NO DASHBOARD ROW, AND MUST NOT LOOK ═══════
+        #
+        # Everything in this block is about resuming an application VFS ALREADY
+        # CREATED: read the cards, find this client's row, prove it is theirs.
+        # A live-slot booking has none of that — the slot is public and "Start
+        # New Booking" creates the application — so there is nothing to read.
+        #
+        # It used to run regardless, and the cost was not just noise:
+        #
+        #   * CARD_WAIT_MS (15s) spent waiting for cards that cannot exist,
+        #     on a metered proxy, while a public slot is being taken by someone
+        #     else. This page is a race.
+        #   * The run then logged "this account holds no applications on this
+        #     portal — probe an account that HAS a waitlist entry", which reads
+        #     as a fault and sends the next hour of diagnosis in the wrong
+        #     direction. For a 'new' run an empty dashboard is not a finding at
+        #     all; it is the expected state.
+        #
+        # The dashboard is still CAPTURED either way — it costs nothing once
+        # the page is already open, and it is the only record of what the
+        # account looked like going in.
+        # NOTE: booking_config is imported at MODULE level (top of this file).
+        # Re-importing it here made it a local of run_probe, so every earlier
+        # use in this same function — entry_modes() at the top, which runs
+        # first — became a read of an unassigned local and died with
+        # "cannot access local variable 'booking_config'". Python decides
+        # local-vs-global per function, not per line.
+        from src.booking.walk import CAPTURE_FULL, _capture_html
 
-        # Captured AFTER read_dashboard, not before, and the order is the whole
-        # point: this dashboard is Angular and draws its cards from a fetch that
-        # completes after load. read_dashboard already waits for the first card,
-        # so capturing before it saved the pre-render page — which still says
-        # "No Application(s) Found" and contains none of the markup the capture
-        # exists to preserve. The empty file then looked like proof the account
-        # held nothing.
-        from src.booking.walk import _capture_html
-        _capture_html(page, "dashboard", route)
-        result.bookable = [r for r in result.rows if r.bookable]
+        if entry == booking_config.ENTRY_NEW:
+            log.info("Live-slot booking ('new'): skipping the dashboard read — "
+                     "there is no existing application to resume. "
+                     "'Start New Booking' creates one.")
+            if capture == CAPTURE_FULL:
+                _capture_html(page, "dashboard", route)
+        else:
+            result.rows = read_dashboard(page, route)
 
-        if person is not None:
-            expected_name = _client_name(person)
-            expected_reference = _stored_reference(route, person)
-            row, reason = match_row(
-                result.rows, reference=expected_reference, name=expected_name)
-            result.matched = row
-            result.match_reason = reason
+            # Captured AFTER read_dashboard, not before, and the order is the
+            # whole point: this dashboard is Angular and draws its cards from a
+            # fetch that completes after load. read_dashboard already waits for
+            # the first card, so capturing before it saved the pre-render page
+            # — which still says "No Application(s) Found" and contains none of
+            # the markup the capture exists to preserve. The empty file then
+            # looked like proof the account held nothing.
+            if capture == CAPTURE_FULL:
+                _capture_html(page, "dashboard", route)
+            result.bookable = [r for r in result.rows if r.bookable]
+
+            if person is not None:
+                expected_name = _client_name(person)
+                expected_reference = _stored_reference(route, person)
+                row, reason = match_row(
+                    result.rows, reference=expected_reference,
+                    name=expected_name)
+                result.matched = row
+                result.match_reason = reason
 
         if walk:
             result.walk = _do_walk(page, route, result, to_step, entry,
-                                   _walk_values(route, combo, person))
+                                   _walk_values(route, combo, person,
+                                                applicant),
+                                   commit=commit, capture=capture)
 
             # A walk that stopped short is exactly when the session is worth
             # most: the page it could not pass is on screen, logged in, one
@@ -552,6 +625,79 @@ def run_probe(source: str, dest: str,
                           f"walk stopped at '{result.walk.stopped_at}': "
                           f"{result.walk.reason}", hold_seconds)
                 keep_open = False        # already held; do not hold twice
+
+    except KeyboardInterrupt:
+        # ── Ctrl-C IS A FIRST-CLASS OUTCOME, NOT A CRASH. ───────────────────
+        #
+        # Playwright's sync API runs its event loop on a greenlet, so a Ctrl-C
+        # during any blocking call (wait_for_url, click, wait_for_timeout) is
+        # raised on the DISPATCHER fiber and arrives here only after the loop
+        # unwinds. `except Exception` never caught it — KeyboardInterrupt is a
+        # BaseException, deliberately — so it printed a 20-frame asyncio
+        # traceback AFTER the finally block had already closed Chrome cleanly.
+        # The teardown was fine; the traceback made it look like it was not.
+        #
+        # What the operator actually needs to know is: which step, and whether
+        # anything irreversible is in flight.
+        # walk.CURRENT_STEP, NOT result.walk. result.walk is assigned only when
+        # _do_walk RETURNS, so an interrupt mid-walk leaves it None and this
+        # reported "(pre-walk)" for a run that was on the payment step —
+        # observed 2026-09-29, four seconds after the payment disclaimer. The
+        # marker is updated as each step begins, so it is right even when the
+        # walk never finishes, which is the only case this handler runs in.
+        from src.booking.walk import current_step
+
+        step = current_step() or (
+            result.walk.stopped_at if result.walk else "") or "(pre-walk)"
+        log.warning(f"Interrupted by Ctrl-C during '{step}'.")
+        result.errors.append(f"interrupted by the operator during '{step}'")
+        result.interrupted = True
+
+        # THE ONE THING THAT CANNOT BE UNDONE. A journal row with no recorded
+        # outcome means a payment was submitted and we never saw the answer —
+        # so the card may have been charged. Say so here, loudly, because this
+        # is the moment the operator is looking at the terminal.
+        # INTERRUPTED ON THE STEP THAT SPENDS MONEY. The journal below answers
+        # "was a payment submitted"; this answers the question that comes
+        # first — "was the appointment booked". On Norway the commit boundary
+        # is the payment step itself, so a Ctrl-C there can leave a slot taken
+        # at VFS with nothing charged, which no local file records.
+        try:
+            from src.booking import config as _bc
+            committing = {st.get("name") for st in
+                          _bc.steps_for(route, entry or "")
+                          if st.get("commits")}
+            if step and step in committing:
+                log.warning(
+                    f"Ctrl-C landed ON the committing step ('{step}'). The "
+                    "appointment may or may not have been created at VFS — "
+                    "check the account before re-running, because a second "
+                    "run would book a second slot.")
+        except Exception:                                   # noqa: BLE001
+            pass
+
+        try:
+            from src.payment import journal as payment_journal
+            pending = payment_journal.unanswered()
+            if pending:
+                log.error(
+                    f"*** {len(pending)} PAYMENT(S) SUBMITTED WITH NO RECORDED "
+                    f"OUTCOME. *** Do NOT re-run this booking. Check the "
+                    f"gateway and logs/payments.jsonl before anything else — "
+                    f"a retry double-charges.")
+        except Exception:                                   # noqa: BLE001
+            # Never let diagnosis swallow the interrupt.
+            pass
+
+        # Capture and hold, same as any other stop: the session is the scarce
+        # resource and Ctrl-C is usually "something looks wrong, let me see".
+        if keep_open and page is not None:
+            try:
+                _handover(page, route, f"interrupted during '{step}'",
+                          hold_seconds)
+                keep_open = False
+            except Exception:                               # noqa: BLE001
+                pass
 
     except AccessRestrictedError as e:
         # A hard block. Record it so the NEXT run refuses instead of renewing
@@ -573,8 +719,14 @@ def run_probe(source: str, dest: str,
                 pass
     finally:
         if keep_open:
-            log.info("Browser left open — click 'Book Now' by hand and capture "
-                     "the selectors for the pages after it.")
+            # Deliberately generic. This used to say "click 'Book Now' by hand
+            # and capture the selectors", which was written when the walk could
+            # not get past the dashboard — and it printed that instruction to a
+            # run that had reached the PAYMENT GATEWAY. A stale instruction on
+            # the money page is worse than none.
+            log.info("Browser left open (--keep-open). Finish or abandon the "
+                     "run by hand in the open window; the session is not "
+                     "spent, and closing it would cost another login.")
             _hold_open(hold_seconds)
         _report_usage(bot, proxy_url, "probe")
         _record_usage(proxy_url)
@@ -612,11 +764,15 @@ def _handover(page, route: str, why: str, seconds: int = 0) -> None:
     the DOM was written to, and the reason. The operator clicks the thing the
     bot could not, and the next step runs in the SAME session.
     """
-    from src.booking.walk import _capture_html
+    # A SCREENSHOT, not the DOM. Handover is a human sitting at the keyboard
+    # with the page already in front of them — the markup was for writing
+    # selectors from, which is done for Norway. The PNG is the record of what
+    # they were handed, for the log.
+    from src.booking.walk import _capture_shot
 
     path = ""
     try:
-        path = _capture_html(page, "handover", route)
+        path = _capture_shot(page, "handover", route)
     except Exception as e:                                  # noqa: BLE001
         log.warning(f"Could not capture the page at handover: {e}")
 
@@ -672,7 +828,46 @@ def _hold_open(seconds: int = 0) -> None:
         pass
 
 
-def _walk_values(route: str, combo: str, person) -> Dict[str, Any]:
+def _assert_bookable_window(route: str, entry: str, combo: str, person,
+                            applicant: Optional[Dict[str, Any]] = None) -> None:
+    """Refuse, offline, if this booking has no usable date range.
+
+    Raises BookingConfigError so the CLI reports it as a configuration problem
+    and exits before launching a browser — which is the whole point. Every
+    message names the client record and the two fields, because the person who
+    has to fix it is a sales agent, not a programmer.
+    """
+    from src.booking import walk as walk_mod
+
+    steps = booking_config.steps_for(route, entry)
+    slot_steps = [st for st in steps
+                  if st.get("type") == walk_mod.SLOT_STEP_TYPE]
+    if not slot_steps:
+        return          # a route that picks no slot needs no window
+
+    values = _walk_values(route, combo, person, applicant)
+    who = getattr(person, "id", None) or "(the client record)"
+
+    for step in slot_steps:
+        try:
+            strategy = walk_mod.resolve_strategy(values, step)
+        except Exception as e:                              # noqa: BLE001
+            raise BookingConfigError(f"{who}: {e}") from e
+
+        if strategy != walk_mod.STRATEGY_IN_RANGE:
+            continue
+
+        problems = walk_mod.check_window(values, step)
+        if problems:
+            raise BookingConfigError(f"{who}: " + " ".join(problems))
+
+        start, end = walk_mod.date_window(values, step)
+        log.info(f"Date range: {start} .. {end} (strategy 'in_range' — "
+                 "nothing outside this window will be booked).")
+
+
+def _walk_values(route: str, combo: str, person,
+                 applicant: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The mapping a form step's {{placeholders}} resolve against.
 
     Built with the same waitlist context builder the registration path uses, so
@@ -699,15 +894,20 @@ def _walk_values(route: str, combo: str, person) -> Dict[str, Any]:
                     f"Combo {combo!r} is not in config/routes/{route}.json — "
                     "the centre/category dropdowns will have no value.")
 
+        # --applicant WINS over the client file, and deliberately: it exists for
+        # the live-slot flow, which has no roster at all (there is no invitation
+        # to match a client to), and for correcting one field of a real client
+        # without editing their stored profile for a single reconnaissance run.
         return ctx_mod.build(person, route=route, combo=combo,
-                             combo_parts=parts)
+                             combo_parts=parts, extra=applicant or None)
     except Exception as e:                                  # noqa: BLE001
         log.warning(f"Could not build the walk context: {e}")
         return {}
 
 
 def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
-             entry: str = "waitlist", values: Optional[Dict[str, Any]] = None):
+             entry: str = "waitlist", values: Optional[Dict[str, Any]] = None,
+             commit: bool = False, capture: str = ""):
     """Click 'Book Now' on the chosen row, then walk the booking pages.
 
     Only reached with --walk. Everything it does is REVERSIBLE: confirmed with
@@ -735,7 +935,8 @@ def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
         log.info(f"Live-slot flow ({entry}) — no dashboard row to resume; "
                  "walking from the entry step.")
         return walk_flow(page, route, to_step=to_step, entry=entry,
-                         values=values or {})
+                         values=values or {}, dry_run=not commit,
+                         capture=capture)
 
     # Prefer the client's own row; otherwise the only bookable one. Never guess
     # between several — the same rule the runner will follow.
@@ -793,7 +994,8 @@ def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
     page.wait_for_timeout(2000)
     log.info(f"Now at {page.url}")
 
-    return walk_flow(page, route, to_step=to_step, dry_run=True)
+    return walk_flow(page, route, to_step=to_step, dry_run=not commit,
+                     capture=capture)
 
 
 def _go_to_dashboard(page, login_url: str) -> None:

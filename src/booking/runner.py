@@ -85,6 +85,12 @@ log = logging.getLogger(__name__)
 
 DEFAULT_STEP_TIMEOUT_MS = 45000
 
+#: How long to wait for the payment processor's page after VFS hands off.
+#: Generous on purpose — it is a cross-domain navigation to a third party, and
+#: the alternative to waiting is typing card details into a page that is about
+#: to be replaced.
+GATEWAY_ARRIVAL_MS = 60000
+
 
 # --------------------------------------------------------------------------- #
 # Result                                                                       #
@@ -273,36 +279,48 @@ def _step_form(ctx: "_StepContext") -> None:
 
 
 def _step_slot_pick(ctx: "_StepContext") -> None:
-    """Choose a date and a time.
+    """Choose a date and a time. Delegates ENTIRELY to walk._do_slot_pick.
 
-    Delegates to `walk.py`, which already reads the calendar and slot table from
-    config and is asserted against real captured DOM — including VFS's own
-    `date-availiable` misspelling, which has three i's and must be matched
-    verbatim.
+    ═══════════ ONE IMPLEMENTATION, NOT TWO ═══════════
+
+    This used to be a second, simpler copy of the slot logic: dates[0], a flat
+    1s sleep, times[0]. It drifted, and every fix made while walking Norway
+    landed only in walk.py — so the path that ACTUALLY BOOKS still had all of
+    the bugs the walk had already shed:
+
+        no month paging          reported "no dates" on a full first month
+        no _reveal_date          a click on an off-screen cell HANGS, silently
+        no strategy              ignored what the route asked for
+        no countdown wait        Save rejected; the run died three pages later
+        no _await_time_table     read the table before it rendered and called
+                                 the day "taken"
+        no appointment type      whichever radio VFS defaulted to
+
+    None of that was visible, because the runner is the half nobody could run
+    until the flow was walked end to end. A duplicate that cannot be exercised
+    is worse than no duplicate at all.
+
+    So: the calendar is read in exactly one place. A country needing different
+    behaviour describes it in `config/booking/<ROUTE>.json`; a genuinely new
+    calendar shape is a change to walk.py that both callers get at once.
     """
     from src.booking import walk
+    from src.waitlist.errors import WaitlistStepError
 
-    calendar = ctx.step.get("calendar") or {}
-    slots = ctx.step.get("time_slots") or {}
+    report = walk.StepReport(name=ctx.name)
+    try:
+        walk._do_slot_pick(ctx.page, ctx.step, report, ctx.timeout_ms,
+                           values=ctx.values)
+    except WaitlistStepError as e:
+        # EVERY failure here is "the slot went away", which is a NORMAL outcome
+        # under first-come-first-served with many invitees — including the
+        # in_range case where VFS simply is not offering the agent's window.
+        # It must read as normal so genuine faults stay visible, and it is
+        # pre-commit, so abandoning costs nothing.
+        raise_slot_gone(str(e))
 
-    dates = walk.available_dates(ctx.page, calendar)
-    if not dates:
-        # Not a failure: first-come-first-served with many invitees means an
-        # empty calendar is an expected outcome, and it must read as normal so
-        # real faults stay visible.
-        raise_slot_gone("The calendar offers no available dates.")
-
-    chosen_date = dates[0]
-    walk.pick_date(ctx.page, calendar, chosen_date, ctx.timeout_ms)
-    ctx.page.wait_for_timeout(1000)          # the slot table loads after a date
-
-    times = walk.available_times(ctx.page, slots)
-    if not times:
-        raise_slot_gone(
-            f"{chosen_date} showed as available but offers no time slots — "
-            "most likely taken between the calendar rendering and this click.")
-
-    chosen_time = walk.pick_time(ctx.page, slots, 0, ctx.timeout_ms)
+    chosen_date = report.found.get("chosen_date", "")
+    chosen_time = report.found.get("chosen_time", "")
     ctx.run.slot = f"{chosen_date} {chosen_time}".strip()
     log.info(f"  chose slot: {ctx.run.slot}")
 
@@ -349,11 +367,168 @@ def raise_slot_gone(detail: str) -> None:
 
 
 #: Step type -> handler. The single place a new kind of page is registered.
+def _step_payment(ctx: "_StepContext") -> None:
+    """Click the VFS submit, follow it to the gateway, and pay. IRREVERSIBLE.
+
+    This is the only step handler that can spend money, and it is deliberately
+    the thinnest one: every decision that can be made before the click is made
+    in `src/payment/`, offline, and everything here is sequencing.
+
+    THE ORDER MATTERS AND IS NOT NEGOTIABLE:
+
+        1. load + validate the card          offline; a bad card stops here
+        2. arrange the popup wait AROUND the VFS click, never after it
+        3. the Payment Disclaimer page       VFS's own interstitial
+        4. fill billing, then the card
+        5. submit_payment                    fsyncs a journal row, then clicks
+
+    Step 1 is first because it is the only one that is free. A card that is
+    expired, mistyped or of an unaccepted type must be found BEFORE the
+    appointment is booked — afterwards, refusing costs a real slot.
+    """
+    from src.payment import card as card_mod
+    from src.payment import config as payment_config
+    from src.payment import gateway
+    from src.payment import journal as payment_journal
+
+    spec = payment_config.load(ctx.step.get("processor"))
+
+    # ── 1. THE CARD, VALIDATED OFFLINE ──────────────────────────────────────
+    card = card_mod.load()
+    if card is None:
+        raise BookingStepError(
+            "Payment is configured for this route but no card is set. Export "
+            "VFS_CARD_NUMBER, VFS_CARD_EXPIRY and VFS_CARD_CVN, or disable "
+            "the payment step.")
+    card_mod.install_redaction(card)
+    log.info(f"  paying with {card.masked}")
+
+    # ── 2. THE POPUP, AWAITED AROUND THE CLICK ──────────────────────────────
+    submit = ctx.step.get("submit") or {"selector": "button#trigger"}
+    context = getattr(ctx.page, "context", None)
+    if context is None:
+        raise BookingStepError(
+            "No browser context — cannot follow the payment popup.")
+
+    def _click_pay():
+        _click(ctx.page, submit, f"step '{ctx.name}' Pay Online", ctx.timeout_ms)
+
+    gateway_page = gateway.attach_popup(context, _click_pay)
+
+    # ── 3. VFS'S OWN DISCLAIMER, BETWEEN "PAY ONLINE" AND THE GATEWAY ───────
+    #
+    # Real DOM 2026-09-28: a "Payment Disclaimer" page — confirmation can take
+    # up to 2 hours, do not close the browser — with Cancel / Continue. It is
+    # served at the SAME URL as review-pay (/are/en/nor/review-pay), so the
+    # address bar does not change and cannot be used to detect it. Only its
+    # Continue leaves for the processor.
+    #
+    # NOT OPTIONAL, and failing to dismiss it is NOT something to log and walk
+    # past. The old code swallowed the error and carried on to fill card
+    # fields — on the disclaimer page, where none exist. The run would then
+    # report a card-selector fault, when the truth is that it never left VFS.
+    # That is a diagnosis sent in entirely the wrong direction, on the one
+    # page where the next click spends money.
+    disclaimer = ctx.step.get("disclaimer")
+    if disclaimer:
+        try:
+            _click(gateway_page, disclaimer,
+                   "payment disclaimer Continue", ctx.timeout_ms)
+        except Exception as e:
+            raise BookingStepError(
+                f"Could not dismiss VFS's Payment Disclaimer: {e}. The run is "
+                "still on VFS and has NOT reached the payment gateway. "
+                "Nothing was charged. The appointment is held only as far as "
+                "the review page — finish by hand in the open browser."
+            ) from e
+
+    # ── 3b. WAIT FOR THE GATEWAY ITSELF ─────────────────────────────────────
+    #
+    # The handoff is a NAVIGATION IN THE SAME TAB, not a popup: Continue takes
+    # the browser from /are/en/nor/review-pay to
+    # secureacceptance.cybersource.com/checkout. So there is a real page load
+    # to wait for, and filling before it lands types into a page that is about
+    # to be replaced.
+    #
+    # Verified rather than assumed: if the URL never becomes the processor's,
+    # something kept us on VFS and the card must not be typed anywhere.
+    expected = spec.get("url_contains") or ""
+    if expected:
+        try:
+            gateway_page.wait_for_url(f"**{expected}**",
+                                      timeout=GATEWAY_ARRIVAL_MS)
+        except Exception as e:
+            raise BookingStepError(
+                f"Never reached the payment gateway — expected a URL "
+                f"containing '{expected}', still on "
+                f"{getattr(gateway_page, 'url', '?')}: {e}. Nothing was "
+                "charged and no card details were entered."
+            ) from e
+
+    try:
+        gateway_page.wait_for_load_state("domcontentloaded",
+                                         timeout=GATEWAY_ARRIVAL_MS)
+    except Exception as e:                                  # noqa: BLE001
+        log.debug(f"Gateway load state not confirmed: {e}")
+
+    log.info(f"  payment gateway reached: {getattr(gateway_page, 'url', '?')}")
+
+    # ── 4. THE FORM ─────────────────────────────────────────────────────────
+    gateway.fill_billing(gateway_page, spec, ctx.values)
+    gateway.fill_card(gateway_page, spec, card)
+
+    # THE ONE ARTIFACT THE PAYMENT PATH ALWAYS KEEPS. Past this line the
+    # appointment is booked and the next click spends money; if the charge then
+    # fails, this PNG is the only record of what was on screen, and the slot is
+    # gone so it cannot be reproduced. A screenshot, not the DOM — see
+    # _capture_page.
+    ctx.run.captures.append(
+        _capture_page(gateway_page, ctx, "payment_filled"))
+
+    # ── 5. THE IRREVERSIBLE CLICK ───────────────────────────────────────────
+    def _journal_row(row):
+        row["route"] = ctx.route
+        row["registrant_id"] = ctx.run.registrant_id
+        row["booking_ref"] = ctx.run.reference or ctx.run.slot
+        return payment_journal.append(row)
+
+    gateway.submit_payment(gateway_page, spec, journal=_journal_row)
+
+
+def _capture_page(page, ctx: "_StepContext", label: str) -> str:
+    """Screenshot an ARBITRARY page, not just ctx.page.
+
+        *** A SCREENSHOT, NEVER THE DOM. THIS IS NOT A STYLE CHOICE. ***
+
+    This helper is used on the PAYMENT GATEWAY, and page.content() on a filled
+    card form returns the card number and CVN inside the <input value="...">
+    attributes — written to captured/, in plaintext, surviving the run. The
+    'payment_filled' capture did exactly that: it ran immediately after
+    fill_card, by design, to record the form as submitted.
+
+    Everything else in this codebase keeps the PAN out of files and logs
+    (card.py refuses to load from a file, __repr__ prints 'visa ****1111',
+    journal.py filters forbidden keys) — and this one call would have undone
+    all of it. A PNG shows the masked field exactly as the gateway renders it,
+    which is what the evidence is actually for.
+
+    Best-effort: a capture must never be why a payment run fails.
+    """
+    from src.booking.walk import _capture_shot
+
+    try:
+        return _capture_shot(page, label, ctx.route) or ""
+    except Exception as e:                                  # noqa: BLE001
+        log.debug(f"Could not capture {label}: {e}")
+        return ""
+
+
 STEP_HANDLERS: Dict[str, Callable[["_StepContext"], None]] = {
     "dashboard_resume": _step_dashboard_resume,
     "identity_assert": _step_identity_assert,
     "start_booking": _step_start_booking,
     "form": _step_form,
+    "payment": _step_payment,
     "slot_pick": _step_slot_pick,
     "confirm": _step_confirm,
 }
@@ -427,10 +602,10 @@ def _submit(ctx: "_StepContext") -> None:
 
 
 def _capture(ctx: "_StepContext", label: str) -> None:
-    """Save the page, best-effort. Never the reason a run fails."""
-    from src.booking.walk import _capture_html
+    """Screenshot the page, best-effort. Never the reason a run fails."""
+    from src.booking.walk import _capture_shot
 
-    path = _capture_html(ctx.page, label, ctx.route)
+    path = _capture_shot(ctx.page, label, ctx.route)
     if path:
         ctx.run.captures.append(path)
 

@@ -372,3 +372,106 @@ def test_choice_rejection_reaches_the_api(api):
     problems = r.json()["detail"]["problems"] if isinstance(
         r.json().get("detail"), dict) else r.json()["problems"]
     assert any(p["field"] == "gender" for p in problems)
+
+
+# --------------------------------------------------------------------------- #
+# Waitlisting and booking need DIFFERENT fields from the same client           #
+# --------------------------------------------------------------------------- #
+#
+# A client can legitimately need only one of the two:
+#
+#   waitlist only   VFS has no open slots, so the client registers and waits for
+#                   an invitation. Name and email are enough.
+#   booking only    slots are open, so there is nothing to wait for — but the
+#                   booking form wants passport number and phone, which a
+#                   waitlist registration never asked for.
+#
+# check_templates answered only the first question, so a client with no passport
+# number read as fully ready and then failed on page 2 of 7 — with a live
+# session open and a login spent. VFS blocks an account after ~3 logins in a
+# short window, which makes that the expensive way to learn it.
+
+
+def _norway_client(**extra):
+    data = {"route": "AE-NOR", "first_name": "Zaid", "last_name": "Test",
+            "email": "zaid@travnook.com",
+            "combos": ["Norway Visa Application Center - Dubai - Tourist"]}
+    data.update(extra)
+    return data
+
+
+def _bookable_norway_client():
+    return _norway_client(passport_number="A1234567",
+                          phone_country_code="971",
+                          phone_number="501234567")
+
+
+def test_a_waitlist_only_client_is_reported_as_not_yet_bookable():
+    from src.waitlist.validate import check_booking_templates
+
+    problems = check_booking_templates("AE-NOR", _norway_client())
+    missing = {p.field for p in problems}
+
+    assert missing == {"passport_number", "phone_country_code", "phone_number"}
+
+
+def test_not_bookable_is_a_warning_never_an_error():
+    """A waitlist-only client is a legitimate client, not a broken one. A
+    warning that blocks is indistinguishable from an error and takes the
+    decision away from the operator."""
+    from src.waitlist.validate import ERROR, check_booking_templates
+
+    problems = check_booking_templates("AE-NOR", _norway_client())
+
+    assert problems, "expected the missing booking fields to be reported"
+    assert all(p.severity != ERROR for p in problems)
+
+
+def test_a_fully_bookable_client_raises_nothing():
+    from src.waitlist.validate import check_booking_templates
+
+    assert check_booking_templates("AE-NOR", _bookable_norway_client()) == []
+
+
+def test_a_route_with_no_booking_config_is_not_judged():
+    """Absence of a booking config means "cannot book here yet", which is a
+    property of the ROUTE, not a defect in the client."""
+    from src.waitlist.validate import check_booking_templates
+
+    assert check_booking_templates("AE-XXX", _norway_client()) == []
+
+
+def test_the_booking_check_survives_a_disabled_waitlist():
+    """THE BOOKING-ONLY CASE, and the reason this check cannot live inside the
+    waitlist guard in precheck_client.
+
+    Norway's waitlist is switched off — slots are open, so there is nothing to
+    wait for. Nested under that guard, the booking fields were never checked on
+    exactly the routes where booking is the only thing that happens."""
+    from src.waitlist.validate import ERROR, precheck_client
+
+    problems = precheck_client("candidate", _norway_client())
+    warnings = [p for p in problems if p.severity != ERROR]
+
+    assert {p.field for p in warnings} >= {"passport_number", "phone_number"}
+
+
+def test_the_booking_warning_names_the_field_not_the_whole_resolver_dump():
+    """The resolver's diagnostic ends with every available key, which is right
+    for a developer debugging an error and noise in a list an operator reads."""
+    from src.waitlist.validate import check_booking_templates
+
+    problems = check_booking_templates("AE-NOR", _norway_client())
+    message = next(p.message for p in problems if p.field == "passport_number")
+
+    assert message == "Not bookable yet: no passport_number."
+
+
+def test_combo_supplied_fields_are_not_reported_as_missing():
+    """centre / category / sub_category come from the COMBINATION, not the
+    client file, so a client must never be told to add them."""
+    from src.waitlist.validate import check_booking_templates
+
+    problems = check_booking_templates("AE-NOR", _bookable_norway_client())
+    assert not [p for p in problems
+                if p.field in ("centre", "category", "sub_category")]

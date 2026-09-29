@@ -472,3 +472,80 @@ class FillAllTests(_FieldTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CheckboxAlreadyInStateTests(_FieldTestCase):
+    """A checkbox already in the wanted state must be reported as LEFT ALONE.
+
+    THE CASE THIS EXISTS FOR is marketing_consent on VFS's review-pay page:
+
+        "value": false — marketing consent given on a real person's behalf,
+        deliberately not ticked; the operator can tick it by hand, it is not
+        the bot's to decide.
+
+    The handler always did the right thing — it no-ops when state already
+    matches. But fill_one logged "set <field> (checkbox)" unconditionally and
+    fill_all counted it, so the 2026-09-28 run reported
+
+        set marketing_consent (checkbox)
+        filled 2 field(s): accept_terms, marketing_consent
+
+    having ticked exactly one box. On most fields that is cosmetic. Here the
+    log claimed the bot set a marketing consent it had specifically not set,
+    which is the opposite of what happened and the opposite of what the config
+    is careful to do.
+    """
+
+    def setUp(self):
+        super().setUp()
+        _CheckboxLocator._state.clear()
+
+    def _spec(self, **overrides):
+        spec = {"name": "marketing_consent",
+                "label": "Yes, I agree to receive future communication",
+                "widget": "checkbox", "value": False, "required": False,
+                "timeout_ms": 300}
+        spec.update(overrides)
+        return spec
+
+    def test_an_untouched_box_wanted_clear_is_not_clicked(self):
+        locator = _CheckboxLocator(ticks_via="input")
+        fields.fill_one(_CheckboxPage(locator), self._spec(), {})
+        self.assertEqual(locator.clicks, [])
+        self.assertFalse(locator.is_checked())
+
+    def test_it_is_not_counted_as_written(self):
+        """fill_one returns None, so fill_all does not count it — 'filled 1
+        field(s)' is then the truth."""
+        locator = _CheckboxLocator(ticks_via="input")
+        written = fields.fill_all(
+            _CheckboxPage(locator), [self._spec()], {})
+        self.assertEqual(written, 0)
+
+    def test_the_log_says_left_as_it_is_not_set(self):
+        locator = _CheckboxLocator(ticks_via="input")
+        with self.assertLogs(level="INFO") as captured:
+            fields.fill_one(_CheckboxPage(locator), self._spec(), {})
+        line = " ".join(captured.output)
+        self.assertIn("left as it is", line)
+        self.assertNotIn("set marketing_consent", line)
+
+    def test_a_box_already_ticked_is_also_left_alone(self):
+        """The same guard the other way round, which is what protects a box the
+        page pre-ticks from being toggled OFF."""
+        locator = _CheckboxLocator(ticks_via="input")
+        _CheckboxLocator._state[id(locator)] = True
+        fields.fill_one(_CheckboxPage(locator), self._spec(value=True), {})
+        self.assertEqual(locator.clicks, [])
+        self.assertTrue(locator.is_checked())
+
+    def test_a_box_that_does_need_changing_is_still_clicked_and_counted(self):
+        """The guard must not swallow real work — accept_terms on the same page
+        genuinely has to be ticked, and Pay Online stays disabled if it is not."""
+        locator = _CheckboxLocator(ticks_via="input")
+        written = fields.fill_all(
+            _CheckboxPage(locator),
+            [self._spec(name="accept_terms", label="I accept the", value=True)],
+            {})
+        self.assertEqual(written, 1)
+        self.assertTrue(locator.is_checked())
