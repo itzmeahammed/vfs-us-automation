@@ -133,9 +133,15 @@ class ApiSettings(BaseSettings):
     job_log_max_total_mb: int = Field(default=2048, ge=0)
 
     # --- Rate limiting ------------------------------------------------------
-    # Coarse per-process limit on trigger attempts, counted per client IP. Cheap
-    # insurance against someone who has the URL hammering the endpoint.
-    rate_limit_requests: int = Field(default=20, ge=1)
+    # Coarse per-process limit on authenticated requests, counted per client IP.
+    # Cheap insurance against someone who has the URL hammering the endpoint.
+    #
+    # It counts EVERY route behind require_token, not just triggers — and a web
+    # app calling through the tunnel is one IP. At the old 20/min, a single page
+    # polling /jobs/{id}, /status and /clients every few seconds 429'd itself
+    # inside a minute. 120 (2/s sustained) covers a real dashboard; the 64-hex
+    # token, not this number, is what stops a guesser.
+    rate_limit_requests: int = Field(default=120, ge=1)
     rate_limit_window_seconds: int = Field(default=60, ge=1)
 
     # Per-IP limiting keys on X-Forwarded-For, which the CALLER controls: a
@@ -144,7 +150,7 @@ class ApiSettings(BaseSettings):
     # the window regardless of source, so a header-rotating flood still hits a
     # wall. Sized well above the per-IP limit so normal multi-client use is
     # unaffected and only an actual flood trips it.
-    rate_limit_global_requests: int = Field(default=200, ge=1)
+    rate_limit_global_requests: int = Field(default=600, ge=1)
 
     # --- Idempotency --------------------------------------------------------
     # How long an Idempotency-Key is remembered. A web app retrying a request

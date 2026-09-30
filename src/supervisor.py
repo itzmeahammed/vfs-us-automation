@@ -250,6 +250,9 @@ def _outcome(source: str, dest: str, status: str, attempts: int,
         "slot_types": slot_types, "account": account, "proxy": proxy,
         "waitlist": waitlist_count,
         "waitlist_combos": waitlist_labels,
+        # The raw [(result_label, message)] pairs, for the auto-booker: it
+        # needs each combo's quoted DATE, which the counts above throw away.
+        "slot_results": [list(pair) for pair in slots],
         # OK/SKIPPED/PAUSED are not failures for the exit code; PAUSED means we
         # deliberately held off (all accounts cooling) — not an error.
         "ok": status in ("OK", "SKIPPED", "PAUSED"),
@@ -707,6 +710,20 @@ def run_all_routes() -> bool:
             except Exception as e:
                 logging.exception(
                     f"Auto-trigger failed for {source}-{dest} (non-fatal): {e}")
+
+        # ---- Auto-book hook -------------------------------------------
+        # Stored booking requests whose date window contains a combo's
+        # earliest date are booked in a BACKGROUND process, so the remaining
+        # routes are not held up. Gated behind [booking] auto_book_enabled
+        # and never allowed to fail the slot-check run.
+        if outcome.get("slot_results"):
+            try:
+                from src.booking import autobook
+                autobook.handle_route_checked(
+                    f"{source}-{dest}", outcome["slot_results"])
+            except Exception as e:
+                logging.exception(
+                    f"Auto-book failed for {source}-{dest} (non-fatal): {e}")
 
         # Bill this route against the daily budget. session_mb() only moves when
         # a forwarder stops (which run() has already done by now), so the delta

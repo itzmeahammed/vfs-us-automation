@@ -415,7 +415,8 @@ def run_probe(source: str, dest: str,
               to_step: Optional[str] = None,
               applicant: Optional[Dict[str, Any]] = None,
               commit: bool = False,
-              capture: str = "") -> ProbeResult:
+              capture: str = "",
+              person: Optional[Any] = None) -> ProbeResult:
     """Log in, read the dashboard, report. Clicks nothing, changes nothing.
 
     Reuses src/waitlist/runner.py's orchestration — Chrome, the Cloudflare/OTP
@@ -451,6 +452,11 @@ def run_probe(source: str, dest: str,
     # supplied the account directly, which is the normal way to look at a brand
     # new account before any client file exists for it — so a missing roster is
     # not an error there. _roster raises in that case, hence the catch.
+    # `person` given directly is a booking request (src/booking/requests.py):
+    # it is NOT on the waitlist roster, and must not fall through to _roster(),
+    # which with no registrant id returns every waitlist client on the route
+    # and would book request A with client B's account.
+    supplied_person = person
     person = None
 
     # "" means "whatever the walk considers normal" — resolved HERE rather than
@@ -464,8 +470,11 @@ def run_probe(source: str, dest: str,
             f"{capture!r}.")
 
     try:
-        people = _roster(route, registrant_id)
-        person = people[0] if people else None
+        if supplied_person is not None:
+            person = supplied_person
+        else:
+            people = _roster(route, registrant_id)
+            person = people[0] if people else None
     except WaitlistConfigError:
         if not email:
             raise

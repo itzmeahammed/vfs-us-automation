@@ -129,7 +129,29 @@ def main() -> int:
     status, _ = call(f"{base}/status", token=token)
     check("GET /status", status == 200, f"status={status}")
 
-    # 6. Optional dry-run trigger.
+    # 6. One read per router behind the edge allowlist. A 404 whose body is
+    #    exactly {"error":"not_found"} came from the ngrok EDGE, not the app —
+    #    the app's own 404 carries a detail — so the path is missing from
+    #    ngrok/traffic-policy.yml.
+    for path in ("/booking/status", "/payments/unanswered", "/pipeline",
+                 "/config", "/accounts/health", "/webhooks/deadletters",
+                 "/jobs?limit=1"):
+        status, body = call(f"{base}{path}", token=token)
+        edge_blocked = body == {"error": "not_found"}
+        check(f"GET {path}", status == 200,
+              f"status={status}"
+              + (" — blocked at the ngrok edge; see traffic-policy.yml"
+                 if edge_blocked else ""))
+
+    # 7. PATCH reaches the app. A nonexistent client, so nothing changes: the
+    #    app answers 404/422, whereas an edge that does not allow PATCH
+    #    answers 405 {"error":"method_not_allowed"}.
+    status, body = call(f"{base}/clients/tunnel-test-nonexistent", token=token,
+                        method="PATCH", body={})
+    check("PATCH passes the edge", status not in (405, None)
+          and body != {"error": "method_not_allowed"}, f"status={status}")
+
+    # 8. Optional dry-run trigger.
     if args.trigger:
         status, body = call(f"{base}/trigger/waitlist", token=token, method="POST",
                             body={"route": "AE-CHE", "dry_run": True,

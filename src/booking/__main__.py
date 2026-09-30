@@ -439,6 +439,36 @@ def cmd_probe(args) -> int:
     return _probe_exit_code(result)
 
 
+def cmd_autobook(args) -> int:
+    """Book stored requests. Started by the supervisor, not by hand."""
+    _install_redaction()
+    from src.booking import autobook
+
+    seen = {}
+    for pair in args.seen or []:
+        rid, _, day = str(pair).partition("=")
+        seen[rid.strip()] = day.strip()
+    return autobook.run_queue(args.route.upper(), args.request or [], seen)
+
+
+def cmd_requests(args) -> int:
+    """List booking requests and where each one is. Offline."""
+    from src.booking import requests as store
+
+    rows = store.list_all(route=args.route, status=args.status)
+    if not rows:
+        print("No booking requests.")
+        return 0
+    for req in rows:
+        start, end = req.window()
+        last = (req.data.get("history") or [{}])[-1]
+        print(f"  {req.request_id:<28} {req.route:<7} {req.status:<16} "
+              f"{'on ' if req.enabled else 'off'} {start}..{end}  "
+              f"attempts={req.data.get('attempts', 0)}  "
+              f"last: {last.get('event', '')} {last.get('detail', '')}"[:200])
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 
 def _probe_exit_code(result) -> int:
@@ -540,6 +570,21 @@ def main(argv: List[str] = None) -> int:
         help="stop after this step (e.g. select_slot), for capturing one page "
              "at a time")
 
+    auto = sub.add_parser(
+        "autobook", parents=[verbose],
+        help="book stored booking requests AND PAY. Started by the supervisor "
+             "when a slot inside a request's window is seen; not for hand use.")
+    auto.add_argument("--route", required=True, help="e.g. AE-NOR")
+    auto.add_argument("--request", action="append", default=[],
+                      help="request id, in booking order. Repeatable.")
+    auto.add_argument("--seen", action="append", default=[], metavar="ID=DATE",
+                      help="the earliest date that triggered this request")
+
+    reqs = sub.add_parser("requests", parents=[verbose],
+                          help="list booking requests (offline)")
+    reqs.add_argument("--route", default=None)
+    reqs.add_argument("--status", default=None)
+
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
 
@@ -554,7 +599,8 @@ def main(argv: List[str] = None) -> int:
 
     initialize_config()
 
-    commands = {"check": cmd_check, "status": cmd_status, "probe": cmd_probe}
+    commands = {"check": cmd_check, "status": cmd_status, "probe": cmd_probe,
+                "autobook": cmd_autobook, "requests": cmd_requests}
     if args.command not in commands:
         parser.print_help()
         return 1

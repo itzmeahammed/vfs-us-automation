@@ -45,6 +45,8 @@ state/
 # Client files hold PII (passport numbers, DOB) — never commit.
 # Only the *.example template is tracked.
 config/registrants/*.json
+# Booking requests hold passport numbers, like client files.
+config/booking_requests/
 !config/registrants/*.json.example
 # Identity DOCUMENTS (passport bio pages) are worse than the JSON: a scan adds
 # the photo, MRZ and signature. They belong OUTSIDE this repo entirely (see
@@ -78,6 +80,8 @@ config/config.local.ini
 # Webhook API: local secrets (shared token) and per-job logs.
 # .env.api holds VFSAPI_SECRET_TOKEN — never commit it.
 .env.api
+# Postman environment with the real token and tunnel URL (scripts/build_postman.py).
+postman/*.local.postman_environment.json
 logs/api_jobs/
 
 # ngrok. The tracked config (ngrok/ngrok.yml, ngrok/traffic-policy.yml) holds

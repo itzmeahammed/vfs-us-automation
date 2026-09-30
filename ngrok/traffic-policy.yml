@@ -36,6 +36,11 @@ on_http_request:
   #    for explicitly; the shared token is what actually protects the data.
   #    Delete these three lines to close them again (and unset
   #    VFSAPI_ENABLE_DOCS, which is the other half of the decision).
+  #
+  #    KEEP THIS IN STEP WITH src/api/main.py's include_router calls. A router
+  #    added to the app but not listed here works on 127.0.0.1 and 404s through
+  #    the tunnel with {"error":"not_found"} — which reads like a server bug.
+  #    tests/test_tunnel_policy.py fails when the two drift apart.
   - expressions:
       - >-
         !(req.url.path == '/health'
@@ -43,11 +48,19 @@ on_http_request:
           || req.url.path == '/docs'
           || req.url.path == '/redoc'
           || req.url.path == '/openapi.json'
+          || req.url.path == '/config'
+          || req.url.path == '/pipeline'
           || req.url.path.startsWith('/trigger/')
           || req.url.path.startsWith('/jobs')
           || req.url.path.startsWith('/clients')
           || req.url.path.startsWith('/routes')
-          || req.url.path.startsWith('/status'))
+          || req.url.path.startsWith('/status')
+          || req.url.path.startsWith('/accounts/')
+          || req.url.path.startsWith('/booking/')
+          || req.url.path.startsWith('/booking-requests')
+          || req.url.path.startsWith('/inbox/')
+          || req.url.path.startsWith('/payments/')
+          || req.url.path.startsWith('/webhooks/'))
     actions:
       - type: custom-response
         config:
@@ -90,9 +103,11 @@ on_http_request:
             content-type: application/json
           body: '{"error":"unauthorized"}'
 
-  # 3) Only the verbs the API uses.
+  # 3) Only the verbs the API uses. PATCH is load-bearing: PATCH /clients/{id}
+  #    and PATCH /status/switches are how a web app edits a client or flips a
+  #    kill switch, and without it here they 405 at the edge.
   - expressions:
-      - "!(req.method in ['GET','POST','PUT','DELETE'])"
+      - "!(req.method in ['GET','POST','PUT','PATCH','DELETE'])"
     actions:
       - type: custom-response
         config:
@@ -101,9 +116,23 @@ on_http_request:
             content-type: application/json
           body: '{"error":"method_not_allowed"}'
 
-  # 4) Body cap at the edge, mirroring the API's own 64 KB limit.
+  # 4) Body cap at the edge, mirroring the API's own limits: 64 KB for JSON,
+  #    and for a document upload (POST /clients/{id}/documents) the portal's
+  #    2 MB plus 64 KB of multipart framing — documents_max_upload_bytes() in
+  #    src/api/main.py. A flat 64 KB here rejected every real passport scan
+  #    before it reached the app. Expressions in one rule are ANDed.
   - expressions:
       - "req.content_length > 65536"
+      - "!(req.method == 'POST' && req.url.path.endsWith('/documents'))"
+    actions:
+      - type: custom-response
+        config:
+          status_code: 413
+          headers:
+            content-type: application/json
+          body: '{"error":"payload_too_large"}'
+  - expressions:
+      - "req.content_length > 2162688"
     actions:
       - type: custom-response
         config:

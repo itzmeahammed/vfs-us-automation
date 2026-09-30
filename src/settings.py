@@ -323,6 +323,27 @@ class Bandwidth(_Section):
 
 
 # INI section name -> Settings field name (identical today, explicit for safety).
+class Booking(_Section):
+    """Automatic live-slot booking from stored booking requests.
+
+    auto_book_enabled is the MASTER switch for spending money unattended: when
+    the slot checker sees a date inside a stored request's window, it books
+    and pays with the company card. Everything else only limits it.
+    """
+
+    auto_book_enabled: bool = False
+    # Bookings the auto-booker may START per calendar day, across all runs.
+    # A backstop against a bug that keeps matching: each one is a real charge.
+    max_per_day: int = Field(default=5, ge=0)
+    # Failed attempts before a request stops retrying and asks for a human.
+    # Only PRE-commit failures count — anything past the payment click is
+    # needs_attention on the first occurrence, never retried.
+    max_attempts: int = Field(default=6, ge=1)
+    # Telegram on booked / needs_attention. Those are the two outcomes a
+    # person must hear about; a skipped tick is not.
+    telegram_enabled: bool = True
+
+
 _INI_SECTIONS = {
     "timeouts": "timeouts",
     "retry": "retry",
@@ -336,6 +357,7 @@ _INI_SECTIONS = {
     "bandwidth": "bandwidth",
     "waitlist": "waitlist",
     "inbox": "inbox",
+    "booking": "booking",
 }
 
 
@@ -384,6 +406,7 @@ class Settings(BaseSettings):
     waitlist: Waitlist = Field(default_factory=Waitlist)
     webhook: Webhook = Field(default_factory=Webhook)
     inbox: Inbox = Field(default_factory=Inbox)
+    booking: Booking = Field(default_factory=Booking)
 
     @classmethod
     def settings_customise_sources(

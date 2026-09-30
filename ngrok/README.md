@@ -67,8 +67,9 @@ Verify: `ngrok config check`
 ## Every time
 
 ```powershell
-# 1. API (leave running)
-python -m src.api
+# 1. API (leave running). Use the venv: it is what -StartApi launches,
+#    and it needs `pip install -r requirements-api.txt` once.
+.venv\Scripts\python.exe -m src.api
 
 # 2. Tunnel, in a second terminal
 .\ngrok\start_tunnel.ps1
@@ -122,7 +123,7 @@ Things that do **not** fix it (all tested):
    so the API token carries the whole load.
 
 The tunnel remains fully working for **API traffic** — which is what your web
-app actually needs. `python ngrok/test_remote.py <url>` passes 7/7.
+app actually needs. `python ngrok/test_remote.py <url>` passes 15/15.
 
 ---
 
@@ -141,6 +142,24 @@ const res = await fetch(`${process.env.VFS_WEBHOOK_URL}/trigger/waitlist`, {
   body: JSON.stringify({ route: "AE-CHE", dry_run: true }),
 });
 ```
+
+What the edge lets through (`traffic-policy.yml`, rule 1) — every router the
+app mounts:
+
+| Prefix | Methods |
+|---|---|
+| `/clients`, `/routes`, `/status` | GET, POST, PUT, PATCH, DELETE |
+| `/trigger/waitlist`, `/booking/trigger` | POST (start a job, 202) |
+| `/jobs`, `/jobs/{id}/logs`, `/jobs/{id}/stream` (SSE), `/jobs/{id}/cancel` | GET, POST |
+| `/booking/status`, `/payments/unanswered`, `/pipeline`, `/config`, `/accounts/health`, `/webhooks/deadletters` | GET |
+| `/accounts/health/{email}/…`, `/inbox/reconcile`, `/webhooks/test` | POST |
+
+Adding a router to `src/api/main.py` means adding it to rule 1 and running
+`python ngrok/build_config.py`; `tests/test_tunnel_policy.py` fails until you do.
+
+Rate limit: 120 authenticated requests/min per caller IP (every route counts,
+not just triggers). Your web backend is one IP, so poll at a few seconds, not
+sub-second — or follow a job with `/jobs/{id}/stream` instead of polling.
 
 **The free-tier URL changes on every restart.** Keep it configurable
 (`VFS_WEBHOOK_URL`), never hardcoded. A reserved domain fixes this — uncomment

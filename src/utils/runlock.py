@@ -89,10 +89,17 @@ log = logging.getLogger(__name__)
 # another slot check.
 LANE_SLOT_CHECK = "slot-check"
 LANE_WAITLIST = "waitlist"
+# LANE_BOOKING serialises AUTOMATIC live-slot bookings (src/booking/autobook.py).
+# Two at once would race on the same request file and could book one person
+# twice — two appointments, two charges. It is its own lane so a booking never
+# waits behind a slot check or a waitlist registration, which is the whole
+# point of booking the moment a slot is seen.
+LANE_BOOKING = "booking"
 
 _LANE_NAMES = {
     LANE_SLOT_CHECK: ("Global\\VfsSlotChecker", "/tmp/vfs-slot-checker.lock"),
     LANE_WAITLIST: ("Global\\VfsWaitlistRun", "/tmp/vfs-waitlist-run.lock"),
+    LANE_BOOKING: ("Global\\VfsBookingRun", "/tmp/vfs-booking-run.lock"),
 }
 
 # Kept for callers that referenced these directly.

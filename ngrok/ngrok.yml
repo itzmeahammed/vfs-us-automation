@@ -38,11 +38,19 @@ endpoints:
                 || req.url.path == '/docs'
                 || req.url.path == '/redoc'
                 || req.url.path == '/openapi.json'
+                || req.url.path == '/config'
+                || req.url.path == '/pipeline'
                 || req.url.path.startsWith('/trigger/')
                 || req.url.path.startsWith('/jobs')
                 || req.url.path.startsWith('/clients')
                 || req.url.path.startsWith('/routes')
-                || req.url.path.startsWith('/status'))
+                || req.url.path.startsWith('/status')
+                || req.url.path.startsWith('/accounts/')
+                || req.url.path.startsWith('/booking/')
+                || req.url.path.startsWith('/booking-requests')
+                || req.url.path.startsWith('/inbox/')
+                || req.url.path.startsWith('/payments/')
+                || req.url.path.startsWith('/webhooks/'))
           actions:
             - type: custom-response
               config:
@@ -65,7 +73,7 @@ endpoints:
                   content-type: application/json
                 body: '{"error":"unauthorized"}'
         - expressions:
-            - "!(req.method in ['GET','POST','PUT','DELETE'])"
+            - "!(req.method in ['GET','POST','PUT','PATCH','DELETE'])"
           actions:
             - type: custom-response
               config:
@@ -75,6 +83,16 @@ endpoints:
                 body: '{"error":"method_not_allowed"}'
         - expressions:
             - "req.content_length > 65536"
+            - "!(req.method == 'POST' && req.url.path.endsWith('/documents'))"
+          actions:
+            - type: custom-response
+              config:
+                status_code: 413
+                headers:
+                  content-type: application/json
+                body: '{"error":"payload_too_large"}'
+        - expressions:
+            - "req.content_length > 2162688"
           actions:
             - type: custom-response
               config:

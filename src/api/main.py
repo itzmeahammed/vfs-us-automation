@@ -397,6 +397,7 @@ async def security_headers(request: Request, call_next: Any) -> Any:
 
 from src.api.accounts import router as accounts_router         # noqa: E402
 from src.api.booking import router as booking_router           # noqa: E402
+from src.api.booking_requests import router as booking_requests_router  # noqa: E402
 from src.api.clients import router as clients_router          # noqa: E402
 from src.api.clients import routes_router                     # noqa: E402
 from src.api.config_view import router as config_router       # noqa: E402
@@ -418,6 +419,7 @@ app.include_router(config_router)
 app.include_router(webhooks_router)
 app.include_router(inbox_router)
 app.include_router(booking_router)
+app.include_router(booking_requests_router)
 app.include_router(payments_router)
 
 

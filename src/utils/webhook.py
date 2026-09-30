@@ -57,6 +57,8 @@ EVENT_REGISTRATION_SUCCEEDED = "registration.succeeded"
 EVENT_REGISTRATION_FAILED = "registration.failed"
 EVENT_REGISTRATION_NEEDS_ATTENTION = "registration.needs_attention"
 EVENT_SLOTS_AVAILABLE = "slots.available"
+EVENT_BOOKING_SUCCEEDED = "booking.succeeded"
+EVENT_BOOKING_NEEDS_ATTENTION = "booking.needs_attention"
 EVENT_TEST = "test.ping"
 
 PAYLOAD_VERSION = 1
@@ -319,6 +321,20 @@ def notify_registration(result: Dict[str, Any]) -> DeliveryResult:
         event = EVENT_REGISTRATION_SUCCEEDED
     else:
         event = EVENT_REGISTRATION_FAILED
+    return send(event, result)
+
+
+def notify_booking(result: Dict[str, Any]) -> DeliveryResult:
+    """A booking request's automatic booking finished.
+
+    Only two outcomes are sent, because only two need the web app: 'booked'
+    (tell the client) and 'needs_attention' (a booking may exist and a card may
+    have been charged — a human must look). A pre-payment failure just returns
+    the request to waiting, visible on GET /booking-requests/{id}.
+    """
+    event = (EVENT_BOOKING_SUCCEEDED
+             if str(result.get("status", "")).lower() == "booked"
+             else EVENT_BOOKING_NEEDS_ATTENTION)
     return send(event, result)
 
 
