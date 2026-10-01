@@ -165,6 +165,40 @@
   }
   .tabs button.on{color:var(--text); border-bottom-color:var(--accent); font-weight:600}
   .tabs button:hover{border-bottom-color:var(--line)}
+/* @@BK-CSS@@ */
+  /* ---- Booking requests (added) ---- */
+  .bkbar{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px}
+  .bkbar .grow{flex:1}
+  .segs{display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden}
+  .segs button{
+    border:0; border-radius:0; background:transparent; color:var(--dim);
+    padding:5px 11px; font-size:12px; cursor:pointer; border-right:1px solid var(--line);
+  }
+  .segs button:last-child{border-right:0}
+  .segs button.on{background:var(--panel2); color:var(--text); font-weight:600}
+  .segs button .c{
+    font-family:ui-monospace,monospace; font-size:10px; color:var(--faint);
+    margin-left:5px;
+  }
+  /* A window that has already opened reads differently from one still ahead. */
+  .win{font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; white-space:nowrap}
+  .win .to{color:var(--dim)}
+  .armed{display:inline-flex; align-items:center; gap:5px; white-space:nowrap}
+  .armed i{width:7px; height:7px; border-radius:50%; background:var(--faint); flex:none}
+  .armed.on i{background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+  .armed.on{color:var(--ok); font-weight:600}
+  /* The money row: an armed request in a window that can fire. */
+  tr.hot > td{background:color-mix(in srgb,var(--warn) 7%,transparent)}
+  .streamhead{
+    display:flex; align-items:center; gap:8px; margin:14px 0 6px;
+    font-size:12px; text-transform:uppercase; letter-spacing:.09em; color:var(--dim);
+  }
+  .live{display:inline-flex; align-items:center; gap:5px; text-transform:none; letter-spacing:0}
+  .live i{width:7px; height:7px; border-radius:50%; background:var(--bad)}
+  .live.on i{animation:blip 1.1s infinite}
+  @keyframes blip{0%,100%{opacity:1}50%{opacity:.25}}
+  @media (prefers-reduced-motion:reduce){.live.on i{animation:none}}
+/* @@/BK-CSS@@ */
 </style>
 </head>
 <body>
@@ -334,6 +368,47 @@
       </div>
     </section>
 
+<!-- @@BK-HTML@@ -->
+    <!-- ---- Booking requests (added) ---- -->
+    <section data-tab="booking" class="hide">
+
+      <div class="banner" id="bkPosture" style="margin-bottom:14px">
+        <strong>Armed requests book and pay by themselves.</strong>
+        When the slot checker sees an earliest date inside a request's window,
+        it completes the booking and submits the company card &mdash; with
+        nobody watching. Park a request to stop that without losing its data.
+      </div>
+
+      <div class="grid g3" style="margin-bottom:14px">
+        <div class="stat"><div class="k">Armed &amp; waiting</div><div class="v" id="bkArmed">&ndash;</div></div>
+        <div class="stat"><div class="k">Booked</div><div class="v" id="bkBooked">&ndash;</div></div>
+        <div class="stat"><div class="k">Needs attention</div><div class="v" id="bkAttn">&ndash;</div></div>
+        <div class="stat"><div class="k">Parked</div><div class="v" id="bkParked">&ndash;</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="bkbar">
+          <div class="segs" id="bkFilter">
+            <button data-f="all" class="on">All</button>
+            <button data-f="waiting">Waiting<span class="c" id="fcWaiting"></span></button>
+            <button data-f="booking">Booking<span class="c" id="fcBooking"></span></button>
+            <button data-f="booked">Booked<span class="c" id="fcBooked"></span></button>
+            <button data-f="needs_attention">Needs attention<span class="c" id="fcAttn"></span></button>
+            <button data-f="expired">Expired<span class="c" id="fcExpired"></span></button>
+          </div>
+          <span class="grow"></span>
+          <button id="btnNewReq" class="sm primary op-only">New request</button>
+        </div>
+        <div class="scroll"><table id="tblReqs">
+          <thead><tr>
+            <th>Request</th><th>Route / combination</th><th>Window</th>
+            <th>Status</th><th>Armed</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </section>
+<!-- @@/BK-HTML@@ -->
     <!-- ---- My status (client mode) ---- -->
     <section data-tab="me" class="hide">
       <div class="panel">
@@ -435,8 +510,11 @@ function api(path, opts) {
 function describeError(status, data) {
   if (data && data.error && typeof data.error === "object") data = data.error;
   if (data && Array.isArray(data.problems) && data.problems.length) {
+    // The hint is the part that says how to fix it, so it travels with the
+    // message rather than being dropped on the floor.
     return data.problems.map(function (p) {
-      return (p.field ? p.field + ": " : "") + (p.message || p.detail || "");
+      return (p.field ? p.field + ": " : "") + (p.message || p.detail || "") +
+             (p.hint ? " (" + p.hint + ")" : "");
     }).join(" · ");
   }
   var d = data && (data.message || data.detail || data.error);
@@ -482,7 +560,8 @@ function lock() {
 // ---------------------------------------------------------------- tabs
 var TABS = {
   operator: [["overview","Overview"],["routes","Routes"],
-             ["clients","Clients"],["jobs","Jobs"]],
+             ["clients","Clients"],["booking","Booking"],
+             ["jobs","Jobs"]],
   client:   [["me","My application"]]
 };
 
@@ -772,6 +851,8 @@ function modal(title, bodyHtml, buttons) {
     };
     foot.appendChild(el);
   });
+  // A stream from a previously opened job would otherwise keep running.
+  $("#dlg").addEventListener("close", stopStream, { once: true });
   $("#dlg").showModal();
 }
 
@@ -807,7 +888,9 @@ function viewJob(id) {
       "</div>" +
       "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase'>Results</h2>" +
       res +
-      "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase;margin-top:14px'>Log</h2>" +
+      "<div class='streamhead'>Log<span class='grow' style='flex:1'></span>" +
+        "<span id='jobLive' class='live'></span>" +
+        "<button id='jobFollow' class='sm'>Follow live</button></div>" +
       "<pre class='log' id='jobLog'>loading…</pre>");
 
     api("/jobs/" + encodeURIComponent(id) + "/logs")
@@ -823,6 +906,26 @@ function viewJob(id) {
         var el = $("#jobLog");
         if (el) el.textContent = "Could not load log: " + e.message;
       });
+
+    // Follow the run live. A finished job has nothing to follow, so the
+    // control only appears while it could still produce output.
+    var live = $("#jobLive"), fb = $("#jobFollow");
+    var running = j.status === "running" || j.status === "pending" ||
+                  j.status === "starting";
+    if (fb) {
+      if (!running) {
+        fb.classList.add("hide");
+        if (live) live.innerHTML = "<i></i>" + esc(j.status || "finished");
+      } else {
+        fb.onclick = function () {
+          var pre = $("#jobLog");
+          pre.textContent = "";
+          followJob(id, pre, live);
+          fb.classList.add("hide");
+        };
+        fb.click();          // a running job is what you opened it to watch
+      }
+    }
   }).catch(function (e) { toast(e.message, "bad"); });
 }
 
@@ -978,6 +1081,10 @@ function newClient() {
 
 // ---------------------------------------------------------------- refresh
 function refresh() {
+  // Booking requests are their own tab; a failure there must not
+  // take down the rest of the refresh.
+  var reqs = bkLoad();
+
   var jobs = api("/jobs").then(function (d) {
     S.jobs = (d && d.items) || [];
   }).catch(function () { S.jobs = []; });
@@ -1006,7 +1113,7 @@ function refresh() {
 
   return api("/waitlist/status").then(function (st) {
     S.status = st;
-    return Promise.all([jobs, clients]);
+    return Promise.all([jobs, clients, reqs]);
   }).then(function () {
     if (S.mode === "client") {
       // No posture banner in client mode. It names internal config keys
@@ -1159,10 +1266,619 @@ $("#btnTrigger").onclick = function () {
 
 // One delegated listener: rows are re-rendered constantly, so per-button
 // handlers would leak and go stale.
+/* @@BK-JS@@ */
+// ================================================================== booking
+// GET /booking-requests and the eight writes around it. A request here is a
+// standing order to spend money, so every control says which way it moves:
+// "Arm" and "Park", never one "toggle" whose effect you have to infer.
+
+var BK = { rows: [], filter: "all" };
+
+var BK_STATUS = {
+  waiting:         ["dim",  "Waiting"],
+  booking:         ["info", "Booking"],
+  booked:          ["ok",   "Booked"],
+  needs_attention: ["bad",  "Needs attention"],
+  expired:         ["warn", "Expired"]
+};
+
+// Mirrors booking.requests.EDITABLE. A request mid-run is being read by a
+// browser; a booked one is a record of money already spent.
+var BK_EDITABLE = { waiting: 1, expired: 1 };
+
+function bkLoad() {
+  return api("/booking-requests").then(function (d) {
+    BK.rows = (d && d.requests) || [];
+    renderBooking();
+  }).catch(function (e) {
+    BK.rows = [];
+    var tb = $("#tblReqs tbody");
+    if (tb) {
+      tb.innerHTML = "<tr><td colspan='6' class='empty'>Could not load requests: " +
+                     esc(e.message) + "</td></tr>";
+    }
+  });
+}
+
+function bkCount(st) {
+  return BK.rows.filter(function (r) { return (r.status || "waiting") === st; }).length;
+}
+
+// Is this request one that could fire on the next check?
+function bkHot(r) {
+  if (!r.enabled) return false;
+  if ((r.status || "waiting") !== "waiting") return false;
+  var to = r.date_to || "";
+  if (!to) return true;
+  return to >= new Date().toISOString().slice(0, 10);
+}
+
+function renderBooking() {
+  var armed = BK.rows.filter(function (r) {
+    return r.enabled && (r.status || "waiting") === "waiting";
+  }).length;
+  var parked = BK.rows.filter(function (r) { return !r.enabled; }).length;
+
+  $("#bkArmed").textContent  = armed;
+  $("#bkBooked").textContent = bkCount("booked");
+  $("#bkAttn").textContent   = bkCount("needs_attention");
+  $("#bkParked").textContent = parked;
+
+  $("#bkAttn").style.color  = bkCount("needs_attention") ? "var(--bad)" : "";
+  $("#bkArmed").style.color = armed ? "var(--ok)" : "";
+
+  $("#fcWaiting").textContent  = bkCount("waiting")  || "";
+  $("#fcBooking").textContent  = bkCount("booking")  || "";
+  $("#fcBooked").textContent   = bkCount("booked")   || "";
+  $("#fcAttn").textContent     = bkCount("needs_attention") || "";
+  $("#fcExpired").textContent  = bkCount("expired")  || "";
+
+  // The banner states the live posture, not a generic caution.
+  var pb = $("#bkPosture");
+  pb.className = "banner " + (armed ? "bad" : "");
+  pb.innerHTML = armed
+    ? "<strong>" + armed + " request" + (armed === 1 ? "" : "s") + " armed.</strong> " +
+      "A slot inside the window will be booked and paid with the company card, " +
+      "unattended. Park a request to stop that without losing its data."
+    : "<strong>Nothing is armed.</strong> No request will book by itself. " +
+      "Arming one makes the next matching slot book and pay automatically.";
+
+  var rows = BK.rows.filter(function (r) {
+    return BK.filter === "all" || (r.status || "waiting") === BK.filter;
+  });
+
+  var tb = $("#tblReqs tbody");
+  if (!rows.length) {
+    tb.innerHTML = "<tr><td colspan='6' class='empty'>" +
+      (BK.rows.length ? "No requests with that status."
+                      : "No booking requests stored yet.") + "</td></tr>";
+    return;
+  }
+
+  tb.innerHTML = rows.map(function (r) {
+    var st = r.status || "waiting";
+    var meta = BK_STATUS[st] || ["dim", st];
+    var id = esc(r.request_id);
+    var editable = !!BK_EDITABLE[st];
+
+    var acts =
+      "<button class='sm' data-bkview='" + id + "'>Open</button>" +
+      (st === "needs_attention"
+        ? " <button class='sm primary op-only' data-bkresolve='" + id + "'>Resolve</button>"
+        : "") +
+      (editable
+        ? " <button class='sm op-only' data-bkarm='" + id + "'>" +
+          (r.enabled ? "Park" : "Arm") + "</button>" +
+          " <button class='sm op-only' data-bkdates='" + id + "'>Dates</button>" +
+          " <button class='sm danger op-only' data-bkdel='" + id + "'>Delete</button>"
+        : "");
+
+    return "<tr" + (bkHot(r) ? " class='hot'" : "") + ">" +
+      "<td class='mono small'>" + id +
+        (r.last_error ? "<div class='faint small' style='max-width:22ch;white-space:normal'>" +
+          esc(String(r.last_error).slice(0, 90)) + "</div>" : "") +
+      "</td>" +
+      "<td class='small'><span class='mono'>" + esc(r.route || "—") + "</span>" +
+        "<div class='faint' style='max-width:30ch;white-space:normal'>" +
+        esc(r.combo || "") + "</div></td>" +
+      "<td class='win'>" + esc(r.date_from || "—") +
+        "<span class='to'> → </span>" + esc(r.date_to || "—") + "</td>" +
+      "<td><span class='pill " + meta[0] + "'>" + esc(meta[1]) + "</span></td>" +
+      "<td><span class='armed" + (r.enabled ? " on" : "") + "'><i></i>" +
+        (r.enabled ? "Armed" : "Parked") + "</span></td>" +
+      "<td style='text-align:right;white-space:nowrap'>" + acts + "</td>" +
+      "</tr>";
+  }).join("");
+}
+
+// ---- one request, with its history -------------------------------------
+function bkView(id) {
+  api("/booking-requests/" + encodeURIComponent(id)).then(function (d) {
+    var r = d.request || {};
+    var st = d.status || "waiting";
+    var meta = BK_STATUS[st] || ["dim", st];
+
+    // Store shape: {at, event, detail} — see booking.requests._record.
+    var hist = (r.history || []).slice().reverse();
+    var histHtml = hist.length
+      ? "<table><thead><tr><th>When</th><th>Event</th><th>Detail</th></tr></thead><tbody>" +
+        hist.map(function (h) {
+          return "<tr><td class='small'>" + fmtTime(h.at) +
+            "</td><td class='small mono'>" + esc(h.event || "") +
+            "</td><td class='small muted' style='max-width:38ch;white-space:normal'>" +
+            esc(h.detail || "") + "</td></tr>";
+        }).join("") + "</tbody></table>"
+      : "<p class='faint small'>No history recorded.</p>";
+
+    // Applicant data: whatever keys the route needs, minus the ones shown above.
+    var skip = { request_id:1, route:1, combo:1, date_from:1, date_to:1, enabled:1,
+                 status:1, history:1, last_error:1, attempts:1, created_at:1,
+                 updated_at:1, status_changed_at:1, booked:1,
+                 has_account_password:1 };
+    var fields = Object.keys(r).filter(function (k) { return !skip[k]; });
+    var fieldsHtml = fields.length
+      ? "<table><tbody>" + fields.map(function (k) {
+          var v = r[k];
+          if (v && typeof v === "object") v = JSON.stringify(v);
+          return "<tr><td class='small mono' style='width:40%'>" + esc(k) +
+                 "</td><td class='small'>" + esc(v) + "</td></tr>";
+        }).join("") + "</tbody></table>"
+      : "<p class='faint small'>No applicant fields stored.</p>";
+
+    var attn = st === "needs_attention"
+      ? "<div class='banner bad'><strong>A payment may have been submitted " +
+        "with no recorded outcome.</strong> Check the VFS account and the " +
+        "gateway before doing anything else &mdash; then Resolve, which is a " +
+        "record of what you found, not a retry.</div>"
+      : "";
+
+    modal("Request " + id,
+      attn +
+      "<div class='grid g2' style='margin-bottom:12px'>" +
+        kv("Status", meta[1]) +
+        kv("Armed", d.enabled ? "Yes — can book unattended" : "No — parked") +
+        kv("Route", r.route || "—") +
+        kv("Window", (r.date_from || "?") + " → " + (r.date_to || "?")) +
+        kv("Attempts", r.attempts == null ? "—" : r.attempts) +
+        kv("Account password", r.has_account_password ? "Stored" : "Not stored") +
+      "</div>" +
+      (r.booked
+        ? "<div class='banner'><strong>Booked.</strong> " +
+          esc([r.booked.appointment_date, r.booked.appointment_time,
+               r.booked.reference].filter(Boolean).join(" · ")) + "</div>"
+        : "") +
+      "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase'>Combination</h2>" +
+      "<p class='small' style='margin:0 0 14px'>" + esc(r.combo || "—") + "</p>" +
+      "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase'>Applicant</h2>" +
+      fieldsHtml +
+      "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase;margin-top:14px'>History</h2>" +
+      histHtml);
+  }).catch(function (e) { toast(e.message, "bad"); });
+}
+
+// ---- arm / park --------------------------------------------------------
+// Arming is the consequential direction, so only that one confirms.
+function bkArm(id) {
+  var r = BK.rows.filter(function (x) { return x.request_id === id; })[0];
+  var arming = !(r && r.enabled);
+
+  if (!arming) {
+    api("/booking-requests/" + encodeURIComponent(id) + "/disable", { method: "POST" })
+      .then(function () { toast("Parked. It will not book by itself.", "ok"); bkLoad(); })
+      .catch(function (e) { toast(e.message, "bad"); });
+    return;
+  }
+
+  modal("Arm " + id + "?",
+    "<div class='banner bad'><strong>This authorises an unattended payment.</strong> " +
+    "From now on, the first slot inside " +
+    esc((r && r.date_from) || "?") + " → " + esc((r && r.date_to) || "?") +
+    " is booked and paid with the company card, with nobody watching.</div>" +
+    "<p class='small muted' style='margin:0'>The request keeps its applicant " +
+    "data either way &mdash; parking it later stops the booking, it does not " +
+    "delete anything.</p>",
+    [{ label: "Cancel", cls: "" },
+     { label: "Arm it", cls: "primary", act: function () {
+        api("/booking-requests/" + encodeURIComponent(id) + "/enable", { method: "POST" })
+          .then(function (d) { toast(d.message || "Armed.", "warn"); bkLoad(); })
+          .catch(function (e) { toast(e.message, "bad"); });
+     }}]);
+}
+
+// ---- change the window -------------------------------------------------
+function bkDates(id) {
+  var r = BK.rows.filter(function (x) { return x.request_id === id; })[0] || {};
+  modal("Window for " + id,
+    "<div class='field'><label for='bkFrom'>Earliest acceptable date</label>" +
+    "<input id='bkFrom' type='date' value='" + esc(r.date_from || "") + "'></div>" +
+    "<div class='field'><label for='bkTo'>Latest acceptable date</label>" +
+    "<input id='bkTo' type='date' value='" + esc(r.date_to || "") + "'></div>" +
+    "<p class='faint small' style='margin:0'>Both dates are inclusive. Widening " +
+    "the window on an armed request widens what will be booked automatically.</p>" +
+    "<div id='bkDatesErr' class='banner bad hide' style='margin-top:10px'></div>",
+    [{ label: "Cancel", cls: "" },
+     { label: "Save", cls: "primary", act: function () {
+        var from = $("#bkFrom").value, to = $("#bkTo").value;
+        var err = $("#bkDatesErr");
+        if (!from || !to) { err.textContent = "Both dates are required."; err.classList.remove("hide"); return false; }
+        if (to < from)   { err.textContent = "The latest date is before the earliest."; err.classList.remove("hide"); return false; }
+        api("/booking-requests/" + encodeURIComponent(id),
+            { method: "PATCH", body: { date_from: from, date_to: to } })
+          .then(function () { toast("Window updated.", "ok"); bkLoad(); })
+          .catch(function (e) {
+            err.innerHTML = esc(e.message); err.classList.remove("hide");
+          });
+        return false;   // the dialog closes on success, above
+     }}]);
+}
+
+// ---- resolve needs_attention -------------------------------------------
+function bkResolve(id) {
+  modal("Resolve " + id,
+    "<div class='banner bad'><strong>Check the VFS account first.</strong> " +
+    "This records what you found; it does not look anything up. " +
+    "<code>booked</code> is final and never retries. <code>not_booked</code> " +
+    "RE-ARMS the request, so it can book and pay again.</div>" +
+    "<div class='field'><label for='bkOutcome'>What the account shows</label>" +
+    "<select id='bkOutcome'>" +
+      "<option value='booked'>booked — an appointment exists</option>" +
+      "<option value='not_booked'>not_booked — nothing was booked (re-arms)</option>" +
+    "</select></div>" +
+    "<div id='bkBookedFields'>" +
+      "<div class='field'><label for='bkApptDate'>Appointment date</label>" +
+      "<input id='bkApptDate' type='date'></div>" +
+      "<div class='field'><label for='bkApptTime'>Appointment time</label>" +
+      "<input id='bkApptTime' placeholder='09:30'></div>" +
+      "<div class='field'><label for='bkRef'>VFS reference</label>" +
+      "<input id='bkRef' placeholder='NOR/DXB/123456'></div>" +
+    "</div>" +
+    "<div class='field'><label for='bkReason'>What you checked</label>" +
+    "<input id='bkReason' placeholder='confirmed on the VFS account' maxlength='280'></div>" +
+    "<div id='bkResErr' class='banner bad hide'></div>",
+    [{ label: "Cancel", cls: "" },
+     { label: "Record it", cls: "primary", act: function () {
+        var outcome = $("#bkOutcome").value;
+        var body = { outcome: outcome };
+        var reason = $("#bkReason").value.trim();
+        if (reason) body.reason = reason;
+        if (outcome === "booked") {
+          if ($("#bkApptDate").value) body.appointment_date = $("#bkApptDate").value;
+          if ($("#bkApptTime").value.trim()) body.appointment_time = $("#bkApptTime").value.trim();
+          if ($("#bkRef").value.trim()) body.reference = $("#bkRef").value.trim();
+        }
+        api("/booking-requests/" + encodeURIComponent(id) + "/resolve",
+            { method: "POST", body: body })
+          .then(function (d) { toast(d.message || "Recorded.", "ok"); bkLoad(); })
+          .catch(function (e) {
+            var el = $("#bkResErr");
+            el.innerHTML = esc(e.message); el.classList.remove("hide");
+          });
+        return false;
+     }}]);
+
+  // not_booked re-arms, so the appointment fields make no sense for it.
+  var sel = $("#bkOutcome");
+  if (sel) {
+    sel.addEventListener("change", function () {
+      $("#bkBookedFields").classList.toggle("hide", sel.value !== "booked");
+    });
+  }
+}
+
+// ---- delete ------------------------------------------------------------
+function bkDelete(id) {
+  modal("Delete " + id + "?",
+    "<div class='banner bad'><strong>This removes the request and its " +
+    "applicant data</strong>, including the passport number. It cannot be " +
+    "undone. To stop it booking without losing the data, Park it instead.</div>",
+    [{ label: "Cancel", cls: "" },
+     { label: "Delete", cls: "danger", act: function () {
+        api("/booking-requests/" + encodeURIComponent(id), { method: "DELETE" })
+          .then(function () { toast("Deleted.", "ok"); bkLoad(); })
+          .catch(function (e) { toast(e.message, "bad"); });
+     }}]);
+}
+
+// ---- create ------------------------------------------------------------
+// Which applicant fields a route needs depends on its booking pages, so the
+// form asks for the window and identity, and lets the 422 name the rest
+// rather than guessing a schema the API would reject anyway.
+function bkNew() {
+  var routeOpts = (S.status && S.status.routes || []).map(function (r) {
+    return "<option value='" + esc(r.route) + "'>" + esc(r.route) + "</option>";
+  }).join("");
+
+  modal("New booking request",
+    "<div class='banner'><strong>Stored parked.</strong> This form creates the " +
+    "request with <code>enabled: false</code>, so nothing books until you Arm " +
+    "it deliberately.</div>" +
+    "<div class='row' style='margin:0 0 12px'>" +
+      "<button id='nrSample' class='sm' type='button'>Fill AE-NOR example</button>" +
+      "<span class='faint small'>Sample applicant for the Norway Dubai Tourist " +
+      "combination &mdash; replace the details before storing.</span>" +
+    "</div>" +
+    "<div class='grid g2'>" +
+      "<div class='field'><label for='nrId'>Request id</label>" +
+      "<input id='nrId' placeholder='u10432-nor-1'></div>" +
+      "<div class='field'><label for='nrRoute'>Route</label>" +
+      "<select id='nrRoute'><option value=''>Select…</option>" + routeOpts +
+      "</select></div>" +
+    "</div>" +
+    "<div class='field'><label for='nrCombo'>Combination</label>" +
+    "<select id='nrCombo'><option value=''>Pick a route first</option></select></div>" +
+    "<div class='grid g2'>" +
+      "<div class='field'><label for='nrFrom'>Earliest date</label>" +
+      "<input id='nrFrom' type='date'></div>" +
+      "<div class='field'><label for='nrTo'>Latest date</label>" +
+      "<input id='nrTo' type='date'></div>" +
+    "</div>" +
+    "<div class='grid g2'>" +
+      "<div class='field'><label for='nrFirst'>First name</label>" +
+      "<input id='nrFirst' placeholder='AHMED'></div>" +
+      "<div class='field'><label for='nrLast'>Last name</label>" +
+      "<input id='nrLast' placeholder='KHAN'></div>" +
+      "<div class='field'><label for='nrPassport'>Passport number</label>" +
+      "<input id='nrPassport' placeholder='A1234567'></div>" +
+      "<div class='field'><label for='nrDob'>Date of birth</label>" +
+      "<input id='nrDob' type='date'></div>" +
+      "<div class='field'><label for='nrNat'>Nationality</label>" +
+      "<input id='nrNat' placeholder='India'></div>" +
+      "<div class='field'><label for='nrGender'>Gender</label>" +
+      "<select id='nrGender'><option>Male</option><option>Female</option></select></div>" +
+      "<div class='field'><label for='nrEmail'>Email</label>" +
+      "<input id='nrEmail' type='email' placeholder='ahmed@example.com'></div>" +
+      "<div class='field'><label for='nrCc'>Phone country code</label>" +
+      "<input id='nrCc' placeholder='971'></div>" +
+      "<div class='field'><label for='nrPhone'>Phone number</label>" +
+      "<input id='nrPhone' placeholder='501234567'></div>" +
+    "</div>" +
+    // The card payment page asks for these after the slot is taken, so the
+    // API requires them up front — better a labelled input than a 422.
+    "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase;" +
+      "margin:16px 0 8px'>Billing address <span class='faint' " +
+      "style='text-transform:none;letter-spacing:0'>— required by the payment page</span></h2>" +
+    "<div class='grid g2'>" +
+      "<div class='field'><label for='nrAddr1'>Address line 1</label>" +
+      "<input id='nrAddr1' placeholder='FLAT 101, AL BARSHA TOWER'></div>" +
+      "<div class='field'><label for='nrAddr2'>Address line 2</label>" +
+      "<input id='nrAddr2' placeholder='SHEIKH ZAYED ROAD'></div>" +
+      "<div class='field'><label for='nrCity'>City</label>" +
+      "<input id='nrCity' placeholder='Dubai'></div>" +
+      "<div class='field'><label for='nrPost'>Postcode</label>" +
+      "<input id='nrPost' placeholder='00000'></div>" +
+      "<div class='field'><label for='nrCountry'>Country code</label>" +
+      "<input id='nrCountry' placeholder='AE' maxlength='2'></div>" +
+    "</div>" +
+    // Optional: omit both and the shared booking account is used instead.
+    "<h2 style='font-size:12px;color:var(--dim);text-transform:uppercase;" +
+      "margin:16px 0 8px'>VFS account <span class='faint' " +
+      "style='text-transform:none;letter-spacing:0'>— both fields, or neither " +
+      "to use the shared booking account</span></h2>" +
+    "<div class='grid g2'>" +
+      "<div class='field'><label for='nrAcct'>Account email</label>" +
+      "<input id='nrAcct' type='email' placeholder='booking-acc@example.com'></div>" +
+      "<div class='field'><label for='nrAcctPw'>Account password</label>" +
+      "<input id='nrAcctPw' type='password' autocomplete='new-password' " +
+      "placeholder='stored, never returned'></div>" +
+    "</div>" +
+    "<div class='field'><label for='nrExtra'>Other fields this route needs " +
+    "<span class='faint'>(JSON, optional)</span></label>" +
+    "<input id='nrExtra' class='mono' placeholder='{\"visa_type\": \"Tourist\"}'></div>" +
+    "<div id='nrErr' class='banner bad hide'></div>",
+    [{ label: "Cancel", cls: "" },
+     { label: "Store parked", cls: "primary", act: function () {
+        var err = $("#nrErr");
+        var body = {
+          request_id: $("#nrId").value.trim().toLowerCase(),
+          route: $("#nrRoute").value,
+          combo: $("#nrCombo").value,
+          date_from: $("#nrFrom").value,
+          date_to: $("#nrTo").value,
+          enabled: false,
+          first_name: $("#nrFirst").value.trim(),
+          last_name: $("#nrLast").value.trim(),
+          passport_number: $("#nrPassport").value.trim(),
+          date_of_birth: $("#nrDob").value,
+          nationality: $("#nrNat").value.trim(),
+          gender: $("#nrGender").value,
+          email: $("#nrEmail").value.trim(),
+          phone_country_code: $("#nrCc").value.trim(),
+          phone_number: $("#nrPhone").value.trim(),
+          address_line_1: $("#nrAddr1").value.trim(),
+          address_line_2: $("#nrAddr2").value.trim(),
+          city: $("#nrCity").value.trim(),
+          postcode: $("#nrPost").value.trim(),
+          country_code: $("#nrCountry").value.trim().toUpperCase(),
+          account: $("#nrAcct").value.trim(),
+          account_password: $("#nrAcctPw").value
+        };
+        if (!body.request_id || !body.route || !body.combo) {
+          err.textContent = "Request id, route and combination are required.";
+          err.classList.remove("hide"); return false;
+        }
+        if (!body.date_from || !body.date_to || body.date_to < body.date_from) {
+          err.textContent = "Give a window whose latest date is not before its earliest.";
+          err.classList.remove("hide"); return false;
+        }
+        var extra = $("#nrExtra").value.trim();
+        if (extra) {
+          try {
+            var o = JSON.parse(extra);
+            Object.keys(o).forEach(function (k) { body[k] = o[k]; });
+          } catch (e2) {
+            err.textContent = "Other fields is not valid JSON.";
+            err.classList.remove("hide"); return false;
+          }
+        }
+        Object.keys(body).forEach(function (k) {
+          if (body[k] === "" || body[k] == null) delete body[k];
+        });
+        // The store takes the pair or neither — half of it is a 422, and
+        // "neither" is the meaningful fallback (the shared booking account).
+        if (!body.account || !body.account_password) {
+          delete body.account;
+          delete body.account_password;
+        }
+        body.enabled = false;
+
+        api("/booking-requests", { method: "POST", body: body })
+          .then(function (d) {
+            toast(d.message || "Stored parked.", "ok");
+            $("#dlg").close();
+            bkLoad();
+          })
+          .catch(function (e) {
+            // The 422 names every missing field — that is the useful part.
+            err.innerHTML = esc(e.message);
+            err.classList.remove("hide");
+          });
+        return false;
+     }}]);
+
+  // A worked AE-NOR example. Filling the form rather than POSTing it keeps the
+  // gesture honest: you still see, and can correct, every value that is stored.
+  var sample = $("#nrSample");
+  if (sample) {
+    sample.onclick = function () {
+      var vals = {
+        nrId: "u10432-nor", nrFrom: "2026-10-15", nrTo: "2026-12-15",
+        nrFirst: "AHMED", nrLast: "KHAN", nrPassport: "A1234567",
+        nrNat: "INDIA", nrEmail: "ahmed@example.com",
+        nrCc: "971", nrPhone: "501234567",
+        nrAddr1: "FLAT 101, AL BARSHA TOWER",
+        nrAddr2: "SHEIKH ZAYED ROAD, DUBAI",
+        nrCity: "Dubai", nrPost: "00000", nrCountry: "AE",
+        nrAcct: "ahmed@example.com"
+      };
+      Object.keys(vals).forEach(function (k) {
+        var el = document.getElementById(k);
+        if (el) el.value = vals[k];
+      });
+      // The combo list is fetched per route, so pick the route and let its
+      // change handler load the combos before selecting one.
+      var rs2 = $("#nrRoute");
+      if (rs2) {
+        rs2.value = "AE-NOR";
+        rs2.dispatchEvent(new Event("change"));
+        var want = "Norway Visa Application Center - Dubai - Tourist";
+        var tries = 0;
+        var pick = setInterval(function () {
+          var cs2 = $("#nrCombo");
+          if (!cs2 || ++tries > 25) { clearInterval(pick); return; }
+          var hit = Array.prototype.some.call(cs2.options, function (o) {
+            return o.value === want;
+          });
+          if (hit) { cs2.value = want; clearInterval(pick); }
+        }, 200);
+      }
+      toast("Example filled — replace the applicant details before storing.", "info");
+    };
+  }
+
+  // Combos come from the route, so they load when a route is chosen.
+  var rs = $("#nrRoute");
+  if (rs) {
+    rs.addEventListener("change", function () {
+      var cs = $("#nrCombo");
+      if (!rs.value) { cs.innerHTML = "<option value=''>Pick a route first</option>"; return; }
+      cs.innerHTML = "<option value=''>Loading…</option>";
+      api("/routes/" + encodeURIComponent(rs.value) + "/readiness")
+        .then(function (d) {
+          var cb = d.combos || [];
+          cs.innerHTML = cb.length
+            ? "<option value=''>Select…</option>" + cb.map(function (c) {
+                return "<option value='" + esc(c) + "'>" + esc(c) + "</option>"; }).join("")
+            : "<option value=''>This route has no combinations configured</option>";
+        })
+        .catch(function (e) {
+          cs.innerHTML = "<option value=''>Could not load: " + esc(e.message) + "</option>";
+        });
+    });
+  }
+}
+
+// ================================================================== live log
+// GET /jobs/{id}/stream is Server-Sent Events. EventSource cannot set the auth
+// header, so this reads the body as a stream and parses frames by hand.
+
+var STREAM = { ctrl: null };
+
+function stopStream() {
+  if (STREAM.ctrl) { try { STREAM.ctrl.abort(); } catch (e) {} STREAM.ctrl = null; }
+}
+
+function followJob(id, pre, badge) {
+  stopStream();
+  var ctrl = new AbortController();
+  STREAM.ctrl = ctrl;
+  badge.className = "live on";
+  badge.innerHTML = "<i></i>live";
+
+  fetch("/jobs/" + encodeURIComponent(id) + "/stream", {
+    headers: { "X-Webhook-Secret-Token": S.token },
+    signal: ctrl.signal
+  }).then(function (res) {
+    if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
+    var reader = res.body.getReader();
+    var dec = new TextDecoder();
+    var buf = "";
+
+    function emit(frame) {
+      var ev = "message", data = "";
+      frame.split("\n").forEach(function (line) {
+        if (line.indexOf("event:") === 0) ev = line.slice(6).trim();
+        else if (line.indexOf("data:") === 0) data += line.slice(5).trim();
+      });
+      if (!data) return;                     // heartbeat comment
+      var o;
+      try { o = JSON.parse(data); } catch (e) { return; }
+
+      if (ev === "log" && o.line != null) {
+        var atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 24;
+        pre.appendChild(document.createTextNode(o.line.replace(/\s+$/, "") + "\n"));
+        if (atEnd) pre.scrollTop = pre.scrollHeight;   // don't yank a reader back
+      } else if (ev === "status") {
+        badge.innerHTML = "<i></i>" + esc(o.status || "running");
+      } else if (ev === "end") {
+        badge.className = "live";
+        badge.innerHTML = "<i></i>ended" + (o.reason ? " — " + esc(o.reason) : "");
+      }
+    }
+
+    function pump() {
+      return reader.read().then(function (r) {
+        if (r.done) {
+          badge.className = "live";
+          if (badge.textContent.indexOf("ended") < 0) badge.innerHTML = "<i></i>closed";
+          return;
+        }
+        buf += dec.decode(r.value, { stream: true });
+        var parts = buf.split("\n\n");
+        buf = parts.pop();
+        parts.forEach(emit);
+        return pump();
+      });
+    }
+    return pump();
+  }).catch(function (e) {
+    if (e.name === "AbortError") return;
+    badge.className = "live";
+    badge.innerHTML = "<i></i>stream failed";
+    pre.appendChild(document.createTextNode("\n[stream] " + e.message + "\n"));
+  });
+}
+/* @@/BK-JS@@ */
+
 document.addEventListener("click", function (e) {
   var b = e.target.closest("button");
   if (!b) return;
   if (b.dataset.job)    viewJob(b.dataset.job);
+  if (b.dataset.bkview)    bkView(b.dataset.bkview);
+  if (b.dataset.bkarm)     bkArm(b.dataset.bkarm);
+  if (b.dataset.bkdates)   bkDates(b.dataset.bkdates);
+  if (b.dataset.bkdel)     bkDelete(b.dataset.bkdel);
+  if (b.dataset.bkresolve) bkResolve(b.dataset.bkresolve);
+
   if (b.dataset.view)   viewClient(b.dataset.view);
   if (b.dataset.run)    trigger(b.dataset.run, "", false);
   if (b.dataset.del)    deleteClient(b.dataset.del);
@@ -1170,11 +1886,24 @@ document.addEventListener("click", function (e) {
     var c = S.clients.filter(function (x) { return x.client_id === b.dataset.toggle; })[0];
     toggleClient(b.dataset.toggle, !(c && c.enabled));
   }
+  if (b.id === "btnNewReq") bkNew();
   if (b.dataset.cancel) {
     api("/jobs/" + encodeURIComponent(b.dataset.cancel) + "/cancel", { method: "POST" })
       .then(function () { toast("Cancelled.", "ok"); refresh(); })
       .catch(function (err) { toast(err.message, "bad"); });
   }
+});
+
+
+// Booking status filter.
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("#bkFilter button");
+  if (!b) return;
+  BK.filter = b.dataset.f;
+  $$("#bkFilter button").forEach(function (x) {
+    x.classList.toggle("on", x === b);
+  });
+  renderBooking();
 });
 
 // Resume a remembered session.
