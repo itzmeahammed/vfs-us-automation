@@ -30,37 +30,23 @@ on_http_request:
   #    switch (VFSAPI_ENABLE_CONSOLE) is the other half of the same decision.
   #
   #    /docs, /redoc and /openapi.json publish a COMPLETE machine-readable map
-  #    of this API: 14 paths, every request field, every response shape. That is
+  #    of this API: every path, every request field, every response shape. That is
   #    a real cost — it turns "guess the endpoints" into "read the manual" for
   #    anyone who finds the URL. They are listed here because they were asked
   #    for explicitly; the shared token is what actually protects the data.
   #    Delete these three lines to close them again (and unset
   #    VFSAPI_ENABLE_DOCS, which is the other half of the decision).
   #
-  #    KEEP THIS IN STEP WITH src/api/main.py's include_router calls. A router
-  #    added to the app but not listed here works on 127.0.0.1 and 404s through
-  #    the tunnel with {"error":"not_found"} — which reads like a server bug.
-  #    tests/test_tunnel_policy.py fails when the two drift apart.
+  #    Every API endpoint is under /v1, so one prefix covers them all and a new
+  #    module needs no edit here. tests/test_tunnel_policy.py still checks every
+  #    route the app serves against this rule.
   - expressions:
       - >-
-        !(req.url.path == '/health'
-          || req.url.path == '/console'
+        !(req.url.path == '/console'
           || req.url.path == '/docs'
           || req.url.path == '/redoc'
           || req.url.path == '/openapi.json'
-          || req.url.path == '/config'
-          || req.url.path == '/pipeline'
-          || req.url.path.startsWith('/trigger/')
-          || req.url.path.startsWith('/jobs')
-          || req.url.path.startsWith('/clients')
-          || req.url.path.startsWith('/routes')
-          || req.url.path.startsWith('/status')
-          || req.url.path.startsWith('/accounts/')
-          || req.url.path.startsWith('/booking/')
-          || req.url.path.startsWith('/booking-requests')
-          || req.url.path.startsWith('/inbox/')
-          || req.url.path.startsWith('/payments/')
-          || req.url.path.startsWith('/webhooks/'))
+          || req.url.path.startsWith('/v1/'))
     actions:
       - type: custom-response
         config:
@@ -89,7 +75,7 @@ on_http_request:
   #    anyone with the URL. That is the cost of remote /docs; the endpoints it
   #    describes still require the token.
   - expressions:
-      - "req.url.path != '/health'"
+      - "req.url.path != '/v1/health'"
       - "req.url.path != '/console'"
       - "req.url.path != '/docs'"
       - "req.url.path != '/redoc'"

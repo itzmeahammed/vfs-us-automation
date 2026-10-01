@@ -24,16 +24,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.api.clients import _public_view
-from src.api.security import require_token
+from src.api.modules.clients.waitlist import _public_view
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.booking_requests")
-
-router = APIRouter(prefix="/booking-requests", tags=["booking-requests"],
-                   dependencies=[Depends(require_token)])
 
 
 # --------------------------------------------------------------------------- #
@@ -159,8 +156,6 @@ def _locked(exc: Exception) -> HTTPException:
 # --------------------------------------------------------------------------- #
 
 
-@router.post("", response_model=BookingRequestResponse,
-             status_code=status.HTTP_201_CREATED)
 def create_request(payload: BookingRequestCreate) -> BookingRequestResponse:
     """Store a booking request. Armed by default: from now on, a slot inside
     its window is booked and paid for automatically."""
@@ -181,7 +176,6 @@ def create_request(payload: BookingRequestCreate) -> BookingRequestResponse:
                           "Stored and parked. POST .../enable to arm it.")
 
 
-@router.get("", response_model=BookingRequestListResponse)
 def list_requests(route: Optional[str] = Query(default=None),
                   status_filter: Optional[str] = Query(
                       default=None, alias="status",
@@ -195,7 +189,6 @@ def list_requests(route: Optional[str] = Query(default=None),
                                       requests=[_view(r) for r in rows])
 
 
-@router.get("/{request_id}", response_model=BookingRequestResponse)
 def get_request(request_id: str) -> BookingRequestResponse:
     return _response(_get_or_404(request_id))
 
@@ -211,7 +204,6 @@ def _replace(request_id: str, data: Dict[str, Any], message: str):
     return _response(req, message)
 
 
-@router.put("/{request_id}", response_model=BookingRequestResponse)
 def replace_request(request_id: str,
                     payload: BookingRequestFields) -> BookingRequestResponse:
     """Replace every caller-owned field. Refused while booking or once booked."""
@@ -224,7 +216,6 @@ def replace_request(request_id: str,
     return _replace(request_id, data, "Request replaced.")
 
 
-@router.patch("/{request_id}", response_model=BookingRequestResponse)
 def patch_request(request_id: str,
                   payload: BookingRequestPatch) -> BookingRequestResponse:
     """Change only the fields sent (e.g. new dates). Refused while booking."""
@@ -242,7 +233,6 @@ def patch_request(request_id: str,
                     f"Request updated ({len(patch)} field(s)).")
 
 
-@router.delete("/{request_id}")
 def delete_request(request_id: str) -> Dict[str, Any]:
     from src.booking import requests as store
 
@@ -254,7 +244,6 @@ def delete_request(request_id: str) -> Dict[str, Any]:
     return {"request_id": request_id, "deleted": True}
 
 
-@router.post("/{request_id}/enable", response_model=BookingRequestResponse)
 def enable_request(request_id: str) -> BookingRequestResponse:
     from src.booking import requests as store
 
@@ -270,7 +259,6 @@ def enable_request(request_id: str) -> BookingRequestResponse:
     return _response(req, "Armed.")
 
 
-@router.post("/{request_id}/disable", response_model=BookingRequestResponse)
 def disable_request(request_id: str) -> BookingRequestResponse:
     from src.booking import requests as store
 
@@ -282,7 +270,6 @@ def disable_request(request_id: str) -> BookingRequestResponse:
     return _response(req, "Parked. It will not be booked until enabled.")
 
 
-@router.post("/{request_id}/resolve", response_model=BookingRequestResponse)
 def resolve_request(request_id: str, body: ResolveBody) -> BookingRequestResponse:
     """Settle a needs_attention request AFTER checking the VFS account."""
     from src.booking import requests as store

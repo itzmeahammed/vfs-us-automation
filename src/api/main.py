@@ -1,95 +1,48 @@
-"""FastAPI application: local webhook that triggers jobs on this machine.
+"""FastAPI application: the VFS bot's HTTP API.
 
 Run it:
-    python -m src.api                       # uses VFSAPI_* env vars
+    python -m src.api                       # uses VFSAPI_* env vars / .env.api
     uvicorn src.api.main:app --host 127.0.0.1 --port 8000
 
-Endpoints
-    GET  /health            unauthenticated liveness probe
-    POST /trigger/waitlist  AUTH — spawn the job, return 202 immediately
-    GET  /jobs              AUTH — recent job history
-    GET  /jobs/{job_id}     AUTH — one job's status
-    POST /jobs/{job_id}/cancel  AUTH — stop a running job
+Every endpoint is under /v1 and lives in src/api/modules/<area>/router.py:
+system, accounts, catalog, clients, waitlist, booking, jobs, notifications.
+This file only builds the app: settings, lifespan, error handling, middleware,
+the /console page, and mounting /v1.
 
 Security posture, briefly:
     * Binds loopback only. The public edge is the tunnel, never this socket.
-    * Every mutating endpoint requires the X-Webhook-Secret-Token header,
-      compared in constant time.
+    * Every endpoint except GET /v1/health requires the X-Webhook-Secret-Token
+      header, compared in constant time.
     * The interactive docs (/docs, /redoc) and the OpenAPI schema are DISABLED
-      by default — an exposed schema hands an attacker your entire API surface.
-      Set VFSAPI_ENABLE_DOCS=1 for local development only.
-    * Unhandled exceptions return a generic message; the traceback goes to the
-      server log, not to the caller.
+      by default — set VFSAPI_ENABLE_DOCS=1 for local development only.
+    * Errors use one envelope (src/api/core/errors.py); unhandled exceptions
+      return a generic message and the traceback goes to the server log.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
-import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict
+from typing import Any, AsyncIterator
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.api import __version__
-from src.api.config import get_settings
-from src.api.jobs import (
-    JobAlreadyRunningError,
-    JobManager,
-    JobStartError,
-    JobStatus,
-    TERMINAL_STATUSES,
-    read_log_tail,
-)
-from src.api.schemas import (
-    ErrorResponse,
-    HealthResponse,
-    JobListResponse,
-    JobLogResponse,
-    JobResponse,
-    TriggerRequest,
-    TriggerResponse,
-)
-from src.api.security import require_token
+from src.api.core import context as req_context
+from src.api.core.config import get_settings
+from src.api.core.errors import ApiError, envelope, from_detail
+from src.api.modules.jobs.runtime import job_manager
 
 logging.basicConfig(
     level=os.environ.get("VFSAPI_LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 )
 log = logging.getLogger("vfs.api")
-
-# -- GET /jobs/{id}/stream tuning ------------------------------------------- #
-#: How often the log file is re-read. Short enough to feel live, long enough
-#: that a dozen watchers cost nothing.
-STREAM_POLL_SECONDS = 0.5
-#: Bytes per read. Caps what one pass can take when a job suddenly logs a great
-#: deal (a --capture full DOM dump, say).
-STREAM_CHUNK_BYTES = 64 * 1024
-#: Idle passes between heartbeat comments — 20 x 0.5s = every 10 seconds.
-STREAM_HEARTBEAT_TICKS = 20
-#: Hard ceiling on one connection. A booking walk is minutes, not hours, and an
-#: unbounded stream is a resource leak wearing a feature's clothes.
-STREAM_MAX_SECONDS = 3600
-
-
-def _sse(event: str, data: Dict[str, Any]) -> str:
-    """One Server-Sent Event frame.
-
-    json.dumps matters here beyond tidiness: an SSE `data:` field is
-    newline-delimited, so a log line containing a newline would otherwise be
-    read as two frames. JSON escapes it and the frame stays one frame.
-    """
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-# One manager for the process lifetime.
-job_manager = JobManager()
 
 # Docs are off unless explicitly enabled. Anything exposed through a tunnel
 # should not publish a machine-readable map of itself.
@@ -230,34 +183,22 @@ app = FastAPI(
 # --------------------------------------------------------------------------
 
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """Render HTTPException in the standard error envelope.
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request,
+                                 exc: StarletteHTTPException) -> JSONResponse:
+    """Every HTTPException leaves in the one envelope (src/api/core/errors.py).
 
-    A structured `detail` (a dict, as the client endpoints raise to carry their
-    full problem list) is passed through as JSON. Stringifying it would hand the
-    web app a Python repr it cannot parse into per-field form errors.
+    Registered on Starlette's base class, not FastAPI's subclass: the 404 for
+    an unknown path and the 405 for a wrong method are raised by the router
+    as the BASE type, and would otherwise leave as {"detail": "Not Found"} —
+    the one error a caller of a removed path is guaranteed to see.
+
+    A structured `detail` (a dict carrying a problem list, as the validation
+    paths raise) keeps its problems, so a web app can show per-field errors.
     """
-    if isinstance(exc.detail, dict):
-        content = dict(exc.detail)
-        content.setdefault("error", _error_class(exc.status_code))
-        content.setdefault("status_code", exc.status_code)
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=content,
-            headers=getattr(exc, "headers", None),
-        )
-
-    body = ErrorResponse(
-        error=_error_class(exc.status_code),
-        detail=str(exc.detail),
-        status_code=exc.status_code,
-    )
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=body.model_dump(),
-        headers=getattr(exc, "headers", None),
-    )
+    return JSONResponse(status_code=exc.status_code,
+                        content=from_detail(request, exc.status_code, exc.detail),
+                        headers=getattr(exc, "headers", None))
 
 
 @app.exception_handler(RequestValidationError)
@@ -270,41 +211,25 @@ async def validation_exception_handler(
         for err in exc.errors()
     ]
     log.info("Validation error on %s: %s", request.url.path, problems)
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "error": "validation_error",
-            "detail": "Request body failed validation.",
-            "status_code": 422,
-            "problems": problems,
-        },
-    )
+    return JSONResponse(status_code=422, content=envelope(
+        request, 422, f"{len(problems)} problem(s) with the request.",
+        "validation_error", problems))
+
+
+@app.exception_handler(ApiError)
+async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
+    """Typed errors raised by the modules."""
+    return JSONResponse(status_code=exc.status, content=envelope(
+        request, exc.status, exc.message, exc.code, exc.problems))
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Last resort: log the traceback, tell the caller nothing useful."""
     log.exception("Unhandled error on %s %s", request.method, request.url.path)
-    body = ErrorResponse(
-        error="internal_error",
-        detail="An internal error occurred. Check the server logs.",
-        status_code=500,
-    )
-    return JSONResponse(status_code=500, content=body.model_dump())
-
-
-def _error_class(status_code: int) -> str:
-    """Map a status code to a short machine-readable error class."""
-    return {
-        400: "bad_request",
-        401: "unauthorized",
-        404: "not_found",
-        409: "conflict",
-        422: "validation_error",
-        429: "rate_limited",
-        500: "internal_error",
-        503: "service_unavailable",
-    }.get(status_code, "error")
+    return JSONResponse(status_code=500, content=envelope(
+        request, 500, "An internal error occurred. Quote the request_id.",
+        "internal_error"))
 
 
 # --------------------------------------------------------------------------
@@ -327,20 +252,20 @@ async def security_headers(request: Request, call_next: Any) -> Any:
     # The wider cap is scoped to that exact path suffix, and the endpoint still
     # enforces documents.MAX_BYTES on the bytes it actually reads — Content-Length
     # is a claim, not a measurement.
+    request.state.request_id = req_context.request_id_for(request)
+    request.state.actor = req_context.actor_for(request)
+
     is_upload = request.method == "POST" and request.url.path.endswith("/documents")
     max_bytes = (documents_max_upload_bytes() if is_upload else 64 * 1024)
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > max_bytes:
-        return JSONResponse(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            content={
-                "error": "payload_too_large",
-                "detail": f"Request body exceeds {max_bytes} bytes.",
-                "status_code": 413,
-            },
-        )
+        return JSONResponse(status_code=413, content=envelope(
+            request, 413, f"Request body exceeds {max_bytes} bytes.",
+            "payload_too_large"))
 
     response = await call_next(request)
+    response.headers["X-Request-ID"] = request.state.request_id
+    req_context.audit(request, response.status_code)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -395,47 +320,6 @@ async def security_headers(request: Request, call_next: Any) -> Any:
 # --------------------------------------------------------------------------
 
 
-from src.api.accounts import router as accounts_router         # noqa: E402
-from src.api.booking import router as booking_router           # noqa: E402
-from src.api.booking_requests import router as booking_requests_router  # noqa: E402
-from src.api.clients import router as clients_router          # noqa: E402
-from src.api.clients import routes_router                     # noqa: E402
-from src.api.config_view import router as config_router       # noqa: E402
-from src.api.inbox import router as inbox_router              # noqa: E402
-from src.api.payments import router as payments_router        # noqa: E402
-from src.api.pipeline import router as pipeline_router        # noqa: E402
-from src.api.status import router as status_router            # noqa: E402
-from src.api.webhooks import router as webhooks_router        # noqa: E402
-
-# Client management, route readiness, and operational status. Imported after
-# `app` exists so the routers can be attached; each carries its own
-# require_token dependency.
-app.include_router(accounts_router)
-app.include_router(clients_router)
-app.include_router(routes_router)
-app.include_router(status_router)
-app.include_router(pipeline_router)
-app.include_router(config_router)
-app.include_router(webhooks_router)
-app.include_router(inbox_router)
-app.include_router(booking_router)
-app.include_router(booking_requests_router)
-app.include_router(payments_router)
-
-
-@app.get("/health", response_model=HealthResponse, tags=["meta"])
-async def health() -> HealthResponse:
-    """Liveness probe. Unauthenticated on purpose, and says nothing sensitive.
-
-    Useful for confirming the tunnel reaches your machine at all, without
-    handing out the token to whoever is testing.
-    """
-    return HealthResponse(
-        status="ok",
-        version=__version__,
-        server_time=datetime.now(timezone.utc).isoformat(),
-    )
-
 
 _CONSOLE_FILE = Path(__file__).resolve().parent / "console.html"
 
@@ -467,347 +351,11 @@ async def console() -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
-@app.post(
-    "/trigger/waitlist",
-    response_model=TriggerResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_token)],
-    tags=["trigger"],
-    responses={
-        401: {"model": ErrorResponse},
-        409: {"model": ErrorResponse},
-        500: {"model": ErrorResponse},
-    },
-)
-async def trigger_waitlist(
-    payload: TriggerRequest,
-    idempotency_key: str | None = Header(
-        default=None,
-        alias="Idempotency-Key",
-        max_length=200,
-        description=(
-            "Optional. Send a stable unique value (a UUID) to make retries "
-            "safe: a repeat with the same key returns the ORIGINAL job instead "
-            "of starting a second run. Strongly recommended for live triggers."
-        ),
-    ),
-) -> TriggerResponse:
-    """Spawn the waitlist job in the background and return at once.
 
-    202 Accepted means "spawned", never "finished". Poll GET /jobs/{job_id}
-    for the outcome, or read the log with GET /jobs/{job_id}/logs.
+# --------------------------------------------------------------------------
+# /v1 — every endpoint (src/api/modules).
+# --------------------------------------------------------------------------
 
-    IDEMPOTENCY. Without a key, a client that retries after a network timeout
-    can start a SECOND live registration run — single-flight blocks the
-    concurrent case but not a sequential retry after the first finished. Send
-    an Idempotency-Key and the retry returns the original job untouched.
-    """
-    try:
-        record, replayed = await job_manager.trigger(
-            extra_args=payload.to_cli_args(),
-            payload=payload.model_dump(mode="json"),
-            idempotency_key=idempotency_key,
-        )
-    except JobAlreadyRunningError as exc:
-        # A distinct exception type, not a substring of the message: rewording
-        # the message must never silently turn a 409 into a 500.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
-    except JobStartError as exc:
-        # The process would not start at all — a broken install, not a busy one.
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
-        ) from exc
+from src.api.modules import v1_router  # noqa: E402
 
-    return TriggerResponse(
-        accepted=True,
-        message=(
-            "Replayed: this Idempotency-Key already started a job, so nothing "
-            "new was spawned."
-            if replayed else "Job started in the background."
-        ),
-        job=JobResponse(**record.to_dict()),
-        replayed=replayed,
-    )
-
-
-@app.get(
-    "/jobs",
-    response_model=JobListResponse,
-    dependencies=[Depends(require_token)],
-    tags=["jobs"],
-    responses={401: {"model": ErrorResponse}},
-)
-async def list_jobs(
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(
-        default=0, ge=0,
-        description="Skip the first N jobs (for pagination).",
-    ),
-    needs_attention: bool = Query(
-        default=False,
-        description="Return only jobs with an unresolved submit or an outcome "
-                    "lost to a restart. These BLOCK their client from running "
-                    "again until a human verifies the VFS account.",
-    ),
-) -> JobListResponse:
-    """Recent jobs, most recent first. Supports offset-based pagination."""
-    fetch_count = offset + limit if not needs_attention else 100
-    records = job_manager.recent(fetch_count)
-    if needs_attention:
-        records = [r for r in records if r.needs_attention]
-    page = records[offset:offset + limit]
-    active = job_manager.active_job
-    return JobListResponse(
-        count=len(page),
-        active_job_id=active.job_id if active else None,
-        jobs=[JobResponse(**r.to_dict()) for r in page],
-    )
-
-
-@app.get(
-    "/jobs/{job_id}",
-    response_model=JobResponse,
-    dependencies=[Depends(require_token)],
-    tags=["jobs"],
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-)
-async def get_job(job_id: str) -> JobResponse:
-    """Status of one job."""
-    record = job_manager.get(job_id)
-    if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No job with id {job_id!r}.",
-        )
-    return JobResponse(**record.to_dict())
-
-
-@app.get(
-    "/jobs/{job_id}/logs",
-    response_model=JobLogResponse,
-    dependencies=[Depends(require_token)],
-    tags=["jobs"],
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-)
-def get_job_logs(
-    job_id: str,
-    lines: int = Query(default=200, ge=1, le=2000,
-                       description="How many trailing lines to return."),
-) -> JobLogResponse:
-    """Tail of a job's log.
-
-    The `log_file` field elsewhere is an absolute path on the machine running
-    this API — useless to a remote web app, and a small disclosure besides.
-    This serves the content instead, so an operator can diagnose a failed run
-    without shell access.
-
-    Declared `def`, not `async def`: it reads a file, and FastAPI runs a sync
-    endpoint in a threadpool rather than blocking the event loop.
-    """
-    record = job_manager.get(job_id)
-    if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No job with id {job_id!r}.",
-        )
-
-    path = record.log_file
-    if not path or not os.path.exists(path):
-        # A pruned or never-created log is not a 404 on the JOB — the job is
-        # real and its status still means something.
-        return JobLogResponse(
-            job_id=job_id, lines=[], line_count=0,
-            truncated=False, log_available=False,
-        )
-
-    try:
-        tail, truncated = read_log_tail(path, lines)
-    except OSError as exc:
-        log.warning("Could not read log for job %s: %s", job_id, exc)
-        return JobLogResponse(
-            job_id=job_id, lines=[], line_count=0,
-            truncated=False, log_available=False,
-        )
-
-    return JobLogResponse(
-        job_id=job_id,
-        lines=tail,
-        line_count=len(tail),
-        truncated=truncated,
-        log_available=True,
-    )
-
-
-@app.get(
-    "/jobs/{job_id}/stream",
-    dependencies=[Depends(require_token)],
-    tags=["jobs"],
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-)
-async def stream_job_log(
-    job_id: str,
-    from_start: bool = Query(
-        default=False,
-        description="Replay the log from byte 0 before following. Default "
-                    "follows from the end, like `tail -f`.",
-    ),
-) -> StreamingResponse:
-    """Follow a running job's log as Server-Sent Events.
-
-    GET /jobs/{id}/logs answers "what happened"; this answers "what is
-    happening". A booking walk takes minutes, and an operator watching one
-    should not have to poll a tail endpoint on a timer, re-reading the same
-    kilobytes to notice one new line.
-
-    Ends by itself when the job reaches a terminal status, so a client can loop
-    over the events and simply fall out rather than deciding when to stop.
-    Event names are `log`, `status` and `end`.
-
-    Two implementation notes, both load-bearing:
-
-    * The file is polled, not watched. A cross-platform file watch would mean
-      another dependency for a file this process's own child is appending to,
-      and the child writes unbuffered (PYTHONUNBUFFERED), so a short poll is
-      already near-live.
-    * A heartbeat comment is emitted while idle. Tunnels and reverse proxies
-      close connections that go quiet, and a comment keeps the stream alive
-      without the client having to interpret an empty event.
-    """
-    record = job_manager.get(job_id)
-    if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No job with id {job_id!r}.",
-        )
-
-    path = record.log_file
-
-    async def events() -> AsyncIterator[str]:
-        # Announce the run id first: it is the join key the caller needs in
-        # order to find this run's journal rows and screenshots folder.
-        yield _sse("status", {
-            "job_id": job_id,
-            "run_id": record.run_id or job_id,
-            "status": record.status.value,
-        })
-
-        if not path or not os.path.exists(path):
-            yield _sse("end", {"job_id": job_id, "reason": "no log file"})
-            return
-
-        offset = 0
-        if not from_start:
-            try:
-                offset = os.path.getsize(path)
-            except OSError:
-                offset = 0
-
-        idle_ticks = 0
-        last_status = record.status.value
-        # A hard ceiling on the connection. Without it, a client that opens a
-        # stream and never reads holds a task and a file handle indefinitely.
-        deadline = time.monotonic() + STREAM_MAX_SECONDS
-
-        while time.monotonic() < deadline:
-            chunk = ""
-            try:
-                size = os.path.getsize(path)
-                if size < offset:
-                    # Truncated or rotated under us. Start over rather than
-                    # reading from a stale offset into the middle of a line.
-                    offset = 0
-                if size > offset:
-                    with open(path, "rb") as handle:
-                        handle.seek(offset)
-                        raw = handle.read(STREAM_CHUNK_BYTES)
-                    offset += len(raw)
-                    chunk = raw.decode("utf-8", errors="replace")
-            except OSError as exc:
-                yield _sse("end", {"job_id": job_id,
-                                   "reason": f"log unreadable: {exc}"})
-                return
-
-            if chunk:
-                idle_ticks = 0
-                for line in chunk.splitlines():
-                    if line.strip():
-                        yield _sse("log", {"line": line})
-            else:
-                idle_ticks += 1
-
-            # Re-read the record each pass: the supervisor mutates it in place
-            # when the child exits, which is how this loop learns to stop.
-            current = job_manager.get(job_id)
-            current_status = current.status.value if current else last_status
-            if current_status != last_status:
-                last_status = current_status
-                yield _sse("status", {"job_id": job_id,
-                                      "status": current_status})
-
-            if current is not None and current.status in TERMINAL_STATUSES:
-                # One final drain: the child's last writes may have landed
-                # between the read above and its exit.
-                try:
-                    if os.path.getsize(path) > offset:
-                        with open(path, "rb") as handle:
-                            handle.seek(offset)
-                            tail = handle.read(STREAM_CHUNK_BYTES)
-                        for line in tail.decode("utf-8", errors="replace").splitlines():
-                            if line.strip():
-                                yield _sse("log", {"line": line})
-                except OSError:
-                    pass
-                yield _sse("end", {
-                    "job_id": job_id,
-                    "run_id": current.run_id or job_id,
-                    "status": current.status.value,
-                    "exit_code": current.exit_code,
-                    "outcome": current.outcome,
-                    "needs_attention": current.needs_attention,
-                })
-                return
-
-            if idle_ticks and idle_ticks % STREAM_HEARTBEAT_TICKS == 0:
-                yield ": heartbeat\n\n"
-
-            await asyncio.sleep(STREAM_POLL_SECONDS)
-
-        yield _sse("end", {"job_id": job_id,
-                           "reason": "stream time limit reached"})
-
-    return StreamingResponse(
-        events(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            # Tells nginx not to buffer the stream into uselessness.
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@app.post(
-    "/jobs/{job_id}/cancel",
-    response_model=JobResponse,
-    dependencies=[Depends(require_token)],
-    tags=["jobs"],
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-)
-async def cancel_job(job_id: str) -> JobResponse:
-    """Terminate a running job (and its child processes)."""
-    record = job_manager.get(job_id)
-    if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No job with id {job_id!r}.",
-        )
-    if record.status is not JobStatus.RUNNING:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Job {job_id} is not running (status={record.status.value}).",
-        )
-    await job_manager.cancel(job_id)
-    return JobResponse(**record.to_dict())
+app.include_router(v1_router())

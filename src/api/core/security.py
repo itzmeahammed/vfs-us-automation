@@ -24,7 +24,7 @@ from typing import Deque, Dict, Final, Optional
 from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
 
-from src.api.config import ApiSettings, get_settings
+from src.api.core.config import ApiSettings, get_settings
 
 log = logging.getLogger("vfs.api.security")
 

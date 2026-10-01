@@ -11,7 +11,7 @@ import sys
 
 import uvicorn
 
-from src.api.config import get_settings
+from src.api.core.config import get_settings
 
 
 def main() -> None:

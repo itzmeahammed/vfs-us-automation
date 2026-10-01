@@ -45,7 +45,7 @@ HEADERS = {"X-Webhook-Secret-Token": os.environ["VFSAPI_SECRET_TOKEN"]}
 PUBLIC_ROUTES = {
     # Liveness only. Says nothing sensitive, and exists so the tunnel can be
     # checked without handing out the token to whoever is testing.
-    ("GET", "/health"),
+    ("GET", "/v1/health"),
 }
 
 #: Stand-ins for path parameters. The VALUE never matters: an unauthenticated
@@ -71,7 +71,7 @@ def api():
     """
     from fastapi.testclient import TestClient
 
-    from src.api.security import _reset_rate_limiter
+    from src.api.core.security import _reset_rate_limiter
 
     _reset_rate_limiter()
 
@@ -108,10 +108,11 @@ def test_the_router_set_is_actually_mounted(api):
     """
     paths = {path for _, path in _documented_routes(api)}
 
-    for expected in ("/clients", "/booking/status", "/booking/trigger",
-                     "/status", "/pipeline", "/accounts/health", "/config",
-                     "/inbox/reconcile", "/payments/unanswered",
-                     "/jobs/{job_id}/stream"):
+    for expected in ("/v1/clients", "/v1/booking/status", "/v1/booking/runs",
+                     "/v1/waitlist/status", "/v1/overview", "/v1/accounts",
+                     "/v1/config", "/v1/waitlist/reconcile",
+                     "/v1/booking/payments/unanswered", "/v1/switches",
+                     "/v1/jobs/{job_id}/stream", "/v1/clients/{client_id}/timeline"):
         assert expected in paths, (
             f"{expected} is missing from the API. A router failed to mount, "
             "which does not raise — it just serves less.")
@@ -161,7 +162,7 @@ def test_a_valid_token_is_accepted(api):
     A suite where every route 401s would pass the test above even if the
     service were entirely broken.
     """
-    response = api.get("/status", headers=HEADERS)
+    response = api.get("/v1/waitlist/status", headers=HEADERS)
     assert response.status_code < 400, response.text
 
 

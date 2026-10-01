@@ -14,15 +14,15 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.api.config import ApiSettings
-from src.api.jobs import (
+from src.api.core.config import ApiSettings
+from src.api.modules.jobs.manager import (
     JobAlreadyRunningError,
     JobManager,
     JobRecord,
     JobStatus,
     read_log_tail,
 )
-from src.api.jobstore import JobStore, prune_logs, reconcile
+from src.api.modules.jobs.store import JobStore, prune_logs, reconcile
 
 
 def _settings(tmp_path, **overrides):
@@ -48,7 +48,7 @@ def _no_machine_lock(monkeypatch):
     that). Leaving it live would make them contend with any real run on the
     developer's machine.
     """
-    monkeypatch.setattr("src.api.jobs._machine_lock_busy", lambda: "")
+    monkeypatch.setattr("src.api.modules.jobs.manager._machine_lock_busy", lambda lane="waitlist": "")
 
 
 # --------------------------------------------------------------------------
@@ -293,7 +293,7 @@ def test_machine_lock_busy_blocks_a_trigger(tmp_path, monkeypatch):
     and then dies — a confusing timeout instead of an immediate 409.
     """
     settings = _settings(tmp_path)
-    monkeypatch.setattr("src.api.jobs._machine_lock_busy", lambda: "pid 999")
+    monkeypatch.setattr("src.api.modules.jobs.manager._machine_lock_busy", lambda lane="waitlist": "pid 999")
 
     async def scenario():
         manager = JobManager(settings)
@@ -333,7 +333,7 @@ def test_read_log_tail_handles_a_short_file(tmp_path):
 
 def test_result_block_is_found_without_reading_the_whole_log(tmp_path):
     """The parser tails the file, so a huge log must still yield its results."""
-    from src.api.jobs import RESULT_JSON_BEGIN, RESULT_JSON_END
+    from src.api.modules.jobs.manager import RESULT_JSON_BEGIN, RESULT_JSON_END
 
     log_path = tmp_path / "big.log"
     payload = {"outcome": "completed",

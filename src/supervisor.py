@@ -714,7 +714,7 @@ def run_all_routes() -> bool:
         # ---- Auto-book hook -------------------------------------------
         # Stored booking requests whose date window contains a combo's
         # earliest date are booked in a BACKGROUND process, so the remaining
-        # routes are not held up. Gated behind [booking] auto_book_enabled
+        # routes are not held up. Gated behind [switches] live_booking
         # and never allowed to fail the slot-check run.
         if outcome.get("slot_results"):
             try:
@@ -739,6 +739,20 @@ def run_all_routes() -> bool:
         (logging.info if outcome.get("ok") else logging.error)(
             f"Route {source}-{dest} {outcome['status']}."
         )
+
+    # ---- Flow 2: VFS invitation emails -> booking ------------------------
+    # Once per run, after every route: read the waitlist mailboxes, record
+    # new invitations, and book (or escalate) each open one. Off unless
+    # [switches] invite_booking; never allowed to fail the slot-check run.
+    try:
+        from src.settings import settings as _settings
+        if _settings().switches.invite_booking:
+            from src.booking import invites
+            from src.inbox import watcher as inbox_watcher
+            inbox_watcher.run_pass()
+            invites.process_pending()
+    except Exception as e:
+        logging.exception(f"Invite booking pass failed (non-fatal): {e}")
 
     all_ok = all(o["ok"] for o in outcomes)
     logging.info(f"All routes done. Overall {'OK' if all_ok else 'with failures'}.")

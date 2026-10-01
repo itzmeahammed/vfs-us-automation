@@ -47,7 +47,7 @@ def _app(console_enabled: bool):
     os.environ["VFSAPI_SECRET_TOKEN"] = TOKEN
     os.environ["VFSAPI_ENABLE_CONSOLE"] = "1" if console_enabled else "0"
 
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
     config_mod.get_settings.cache_clear()
 
     import src.api.main as main_mod
@@ -69,7 +69,7 @@ def _restore_env():
     run and passed when run alone. Restoring here keeps `_app` simple while
     making the leak impossible.
     """
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
 
     saved = {k: os.environ.get(k)
              for k in ("VFSAPI_SECRET_TOKEN", "VFSAPI_ENABLE_CONSOLE")}
@@ -133,7 +133,7 @@ def test_console_page_needs_no_token(on):
 def test_serving_the_console_does_not_unauthenticate_the_api(on):
     """The page is public; the data behind it is not."""
     on.get("/console")
-    for path in ("/clients", "/status", "/jobs"):
+    for path in ("/v1/clients", "/v1/waitlist/status", "/v1/jobs"):
         assert on.get(path).status_code == 401, path
 
 
@@ -165,7 +165,7 @@ def test_console_csp_allows_inline_but_nothing_remote(on):
 
 def test_api_responses_keep_the_strict_csp(on):
     """The console's looser policy must not leak onto JSON responses."""
-    r = on.get("/status", headers={"X-Webhook-Secret-Token": TOKEN})
+    r = on.get("/v1/waitlist/status", headers={"X-Webhook-Secret-Token": TOKEN})
     csp = r.headers["content-security-policy"]
     assert csp == "default-src 'none'; frame-ancestors 'none'"
     assert "unsafe-inline" not in csp
@@ -213,7 +213,7 @@ def test_flag_is_settable_from_the_env_file(tmp_path, monkeypatch):
     silently ignored .env.api — the documented way to configure this server.
     Setting it there did nothing, and /console 404'd with no clue why.
     """
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
 
     env_file = tmp_path / ".env.api"
     env_file.write_text(
@@ -229,7 +229,7 @@ def test_flag_is_settable_from_the_env_file(tmp_path, monkeypatch):
 
 def test_flag_defaults_to_off_when_unset(monkeypatch, tmp_path):
     """The safe default survives however it is loaded."""
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
 
     env_file = tmp_path / ".env.api"
     env_file.write_text(f"VFSAPI_SECRET_TOKEN={TOKEN}\n", encoding="utf-8")

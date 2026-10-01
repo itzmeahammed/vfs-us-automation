@@ -17,21 +17,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from fastapi import Depends, HTTPException, status as http_status
 
-from src.api.schemas import ReconcileProposal, ReconcileRequest, ReconcileResponse
-from src.api.security import require_token
+from src.api.modules.waitlist.schemas import ReconcileProposal, ReconcileRequest, ReconcileResponse
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.inbox")
 
-router = APIRouter(prefix="/inbox", tags=["inbox"])
 
-
-@router.post(
-    "/reconcile",
-    response_model=ReconcileResponse,
-    dependencies=[Depends(require_token)],
-)
 def reconcile_inbox(payload: ReconcileRequest) -> ReconcileResponse:
     """Poll mailboxes and reconcile uncertain journal rows.
 

@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 os.environ.setdefault("VFSAPI_SECRET_TOKEN", "d" * 64)
 
-from src.api.jobs import (  # noqa: E402
+from src.api.modules.jobs.manager import (  # noqa: E402
     RESULT_JSON_BEGIN,
     RESULT_JSON_END,
     JobManager,

@@ -26,14 +26,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends
+from fastapi import Depends
 
-from src.api.schemas import UnansweredPayment, UnansweredPaymentsResponse
-from src.api.security import require_token
+from src.api.modules.booking.schemas import UnansweredPayment, UnansweredPaymentsResponse
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.payments")
 
-router = APIRouter(prefix="/payments", tags=["payments"])
 
 #: Fields lifted from a journal row onto the response. An allow-list rather
 #: than passing the row through: the journal is append-only and a future writer
@@ -48,12 +47,6 @@ def _to_model(row: Dict[str, Any]) -> UnansweredPayment:
     })
 
 
-@router.get(
-    "/unanswered",
-    response_model=UnansweredPaymentsResponse,
-    dependencies=[Depends(require_token)],
-    summary="Payments submitted with no recorded outcome",
-)
 def get_unanswered_payments() -> UnansweredPaymentsResponse:
     """THE FIRST THING TO CHECK after a run dies unexpectedly.
 

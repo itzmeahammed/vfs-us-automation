@@ -401,9 +401,12 @@ function fmtTime(iso) {
 }
 
 // ---------------------------------------------------------------- transport
+// Every endpoint is under /v1; call sites write the path after that prefix.
+
 function api(path, opts) {
   opts = opts || {};
-  var headers = { "X-Webhook-Secret-Token": S.token };
+  path = "/v1" + path;
+  var headers = { "X-Webhook-Secret-Token": S.token, "X-Actor": "console" };
   if (opts.body) headers["Content-Type"] = "application/json";
   if (opts.idem)  headers["Idempotency-Key"] = opts.idem;
 
@@ -430,12 +433,13 @@ function api(path, opts) {
 // structured problems[] on 422 — flattening that to "Request failed" would
 // throw away the only part that says how to fix it.
 function describeError(status, data) {
+  if (data && data.error && typeof data.error === "object") data = data.error;
   if (data && Array.isArray(data.problems) && data.problems.length) {
     return data.problems.map(function (p) {
       return (p.field ? p.field + ": " : "") + (p.message || p.detail || "");
     }).join(" · ");
   }
-  var d = data && (data.detail || data.error);
+  var d = data && (data.message || data.detail || data.error);
   if (typeof d === "string" && d) return d;
   if (status === 401) return "Token rejected.";
   if (status === 409) return "A job is already running (single-flight).";
@@ -829,7 +833,7 @@ function kv(k, v) {
 
 function viewClient(id) {
   api("/clients/" + encodeURIComponent(id)).then(function (d) {
-    var c = d.client || {};
+    var c = d.details || {};
     var problems = (d.problems || []).length
       ? "<div class='banner bad'><strong>Not runnable.</strong><br>" +
         d.problems.map(function (p) {
@@ -866,7 +870,7 @@ function trigger(route, clientId, live) {
     // A unique key per click: a retry of THIS click reuses the job rather than
     // starting a second registration run.
     var idem = "console-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
-    api("/trigger/waitlist", { method: "POST", body: body, idem: idem })
+    api("/waitlist/runs", { method: "POST", body: body, idem: idem })
       .then(function (r) {
         var id = r.job && r.job.job_id;
         toast((live ? "Live run" : "Dry run") + " started.", "ok");
@@ -943,7 +947,7 @@ function newClient() {
      { label: "Create", cls: "primary", act: function () {
         var v = function (id) { var e = $("#" + id); return e ? e.value.trim() : ""; };
         var body = {
-          client_id: v("nc_id"), route: v("nc_route"),
+          client_id: v("nc_id"), flow: "waitlist", route: v("nc_route"),
           combos: [v("nc_combo")], enabled: false,
           account: v("nc_acct"), account_password: v("nc_pw"),
           first_name: v("nc_first"), last_name: v("nc_last"),
@@ -975,7 +979,7 @@ function newClient() {
 // ---------------------------------------------------------------- refresh
 function refresh() {
   var jobs = api("/jobs").then(function (d) {
-    S.jobs = (d && d.jobs) || [];
+    S.jobs = (d && d.items) || [];
   }).catch(function () { S.jobs = []; });
 
   var clientsUrl = (S.mode === "client")
@@ -986,11 +990,12 @@ function refresh() {
     if (S.mode === "client") {
       // Detail endpoint returns one object; normalise to the list shape so
       // the rest of the code has a single contract to reason about.
-      var c = d.client || {};
+      var c = d.details || {};
       c.client_id = d.client_id || S.clientId;
+      c.route = d.route; c.combos = d.combos; c.enabled = d.enabled;
       S.clients = [c];
     } else {
-      S.clients = (d && d.clients) || [];
+      S.clients = (d && d.items) || [];
     }
   }).catch(function (e) {
     S.clients = [];
@@ -999,7 +1004,7 @@ function refresh() {
     }
   });
 
-  return api("/status").then(function (st) {
+  return api("/waitlist/status").then(function (st) {
     S.status = st;
     return Promise.all([jobs, clients]);
   }).then(function () {
@@ -1123,7 +1128,7 @@ $("#btnLogin").onclick = function () {
 
   // Verify before showing the console, so a bad token fails here rather than
   // as a wall of errors behind a UI that looks like it worked.
-  api("/status").then(function () {
+  api("/waitlist/status").then(function () {
     saveSession($("#rememberIn").checked);
     start();
   }).catch(function (e) {
@@ -1174,7 +1179,7 @@ document.addEventListener("click", function (e) {
 
 // Resume a remembered session.
 if (loadSession()) {
-  api("/status").then(start).catch(function () { lock(); });
+  api("/waitlist/status").then(start).catch(function () { lock(); });
 }
 
 })();

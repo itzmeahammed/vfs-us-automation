@@ -34,7 +34,7 @@ def client(monkeypatch, tmp_path):
     fastapi_testclient = pytest.importorskip("fastapi.testclient")
 
     monkeypatch.setenv("VFSAPI_SECRET_TOKEN", TEST_TOKEN)
-    from src.api.config import get_settings
+    from src.api.core.config import get_settings
     get_settings.cache_clear()
 
     from src.payment import journal
@@ -63,12 +63,12 @@ def _write_journal(tmp_path, rows):
 # --------------------------------------------------------------------------- #
 
 def test_unanswered_requires_a_token(client):
-    assert client.get("/payments/unanswered").status_code in (401, 403, 429)
+    assert client.get("/v1/booking/payments/unanswered").status_code in (401, 403, 429)
 
 
 def test_no_journal_means_nothing_unanswered(client):
     """A system that has never taken a payment is healthy, not broken."""
-    body = client.get("/payments/unanswered", headers=AUTH).json()
+    body = client.get("/v1/booking/payments/unanswered", headers=AUTH).json()
     assert body["count"] == 0
     assert body["needs_attention"] is False
     assert body["journal_readable"] is True
@@ -80,7 +80,7 @@ def test_a_submitted_payment_with_no_result_is_reported(client, tmp_path):
          "run_id": "abc123", "at": "2026-09-29T10:00:00Z",
          "url": "https://gateway.example/pay"},
     ])
-    body = client.get("/payments/unanswered", headers=AUTH).json()
+    body = client.get("/v1/booking/payments/unanswered", headers=AUTH).json()
     assert body["count"] == 1
     assert body["needs_attention"] is True
     payment = body["payments"][0]
@@ -96,7 +96,7 @@ def test_a_payment_with_a_recorded_result_is_not_reported(client, tmp_path):
         {"event": "payment_submitting", "booking_ref": "REF1"},
         {"event": "payment_result", "booking_ref": "REF1", "ok": True},
     ])
-    body = client.get("/payments/unanswered", headers=AUTH).json()
+    body = client.get("/v1/booking/payments/unanswered", headers=AUTH).json()
     assert body["count"] == 0
     assert body["needs_attention"] is False
 
@@ -108,7 +108,7 @@ def test_only_the_answered_payment_clears(client, tmp_path):
         {"event": "payment_submitting", "booking_ref": "REF2"},
         {"event": "payment_result", "booking_ref": "REF1", "ok": True},
     ])
-    body = client.get("/payments/unanswered", headers=AUTH).json()
+    body = client.get("/v1/booking/payments/unanswered", headers=AUTH).json()
     assert body["count"] == 1
     assert body["payments"][0]["booking_ref"] == "REF2"
 
@@ -125,7 +125,7 @@ def test_an_unreadable_journal_needs_attention_rather_than_reading_as_empty(
 
     monkeypatch.setattr(journal, "unanswered", boom)
 
-    body = client.get("/payments/unanswered", headers=AUTH).json()
+    body = client.get("/v1/booking/payments/unanswered", headers=AUTH).json()
     assert body["journal_readable"] is False
     assert body["needs_attention"] is True, (
         "an unreadable payment journal must be an alert, not a clean bill "
@@ -141,7 +141,7 @@ def test_no_card_field_can_reach_the_response(client, tmp_path):
          "card_number": "4111111111111111", "cvn": "123",
          "expiry": "12/28", "password": "hunter2"},
     ])
-    raw = client.get("/payments/unanswered", headers=AUTH).text
+    raw = client.get("/v1/booking/payments/unanswered", headers=AUTH).text
     for leak in ("4111111111111111", "123", "12/28", "hunter2"):
         assert leak not in raw, f"{leak!r} reached an HTTP response"
 
@@ -231,7 +231,7 @@ def test_job_records_expose_a_run_id_equal_to_the_job_id():
     """One id, not two with a mapping table between them."""
     from datetime import datetime, timezone
 
-    from src.api.jobs import JobRecord, JobStatus
+    from src.api.modules.jobs.manager import JobRecord, JobStatus
 
     record = JobRecord(
         job_id="feedface", run_id="feedface", command=["x"],
@@ -241,7 +241,7 @@ def test_job_records_expose_a_run_id_equal_to_the_job_id():
 
 
 def test_a_job_record_persisted_before_run_id_existed_falls_back_to_job_id():
-    from src.api.jobs import JobRecord
+    from src.api.modules.jobs.manager import JobRecord
 
     record = JobRecord.from_record({
         "job_id": "oldjob1", "command": [], "status": "succeeded",
@@ -260,7 +260,7 @@ def test_the_spawn_env_carries_the_run_id_to_the_child(monkeypatch):
     """
     import asyncio
 
-    from src.api.jobs import JobManager
+    from src.api.modules.jobs.manager import JobManager
 
     captured = {}
 
@@ -303,11 +303,11 @@ def test_the_spawn_env_carries_the_run_id_to_the_child(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_stream_requires_a_token(client):
-    assert client.get("/jobs/whatever/stream").status_code in (401, 403, 429)
+    assert client.get("/v1/jobs/whatever/stream").status_code in (401, 403, 429)
 
 
 def test_stream_404s_for_an_unknown_job(client):
-    response = client.get("/jobs/nosuchjob/stream", headers=AUTH)
+    response = client.get("/v1/jobs/nosuchjob/stream", headers=AUTH)
     assert response.status_code == 404
 
 
@@ -316,8 +316,8 @@ def test_stream_replays_a_finished_jobs_log_and_ends_by_itself(client, tmp_path)
     looping over the events has to be able to fall out of the loop."""
     from datetime import datetime, timezone
 
-    from src.api.jobs import JobRecord, JobStatus
-    from src.api.main import job_manager
+    from src.api.modules.jobs.manager import JobRecord, JobStatus
+    from src.api.modules.jobs.runtime import job_manager
 
     log_file = tmp_path / "job.log"
     log_file.write_text("first line\nsecond line\n", encoding="utf-8")
@@ -331,7 +331,7 @@ def test_stream_replays_a_finished_jobs_log_and_ends_by_itself(client, tmp_path)
     )
     job_manager._jobs["streamtest"] = record
     try:
-        with client.stream("GET", "/jobs/streamtest/stream?from_start=true",
+        with client.stream("GET", "/v1/jobs/streamtest/stream?from_start=true",
                            headers=AUTH) as response:
             assert response.status_code == 200
             assert "text/event-stream" in response.headers["content-type"]
@@ -349,8 +349,8 @@ def test_stream_announces_the_run_id_before_any_log_line(client, tmp_path):
     including when the run then fails before writing anything useful."""
     from datetime import datetime, timezone
 
-    from src.api.jobs import JobRecord, JobStatus
-    from src.api.main import job_manager
+    from src.api.modules.jobs.manager import JobRecord, JobStatus
+    from src.api.modules.jobs.runtime import job_manager
 
     record = JobRecord(
         job_id="announce1", run_id="announce1", command=["x"],
@@ -359,7 +359,7 @@ def test_stream_announces_the_run_id_before_any_log_line(client, tmp_path):
     )
     job_manager._jobs["announce1"] = record
     try:
-        with client.stream("GET", "/jobs/announce1/stream", headers=AUTH) as r:
+        with client.stream("GET", "/v1/jobs/announce1/stream", headers=AUTH) as r:
             body = "".join(r.iter_text())
     finally:
         job_manager._jobs.pop("announce1", None)
@@ -371,7 +371,7 @@ def test_stream_announces_the_run_id_before_any_log_line(client, tmp_path):
 def test_sse_frames_survive_a_log_line_containing_a_newline():
     """An SSE data field is newline-delimited, so an unescaped newline in a log
     line would split one frame into two and corrupt the stream."""
-    from src.api.main import _sse
+    from src.api.modules.jobs.handlers import _sse
 
     frame = _sse("log", {"line": "before\nafter"})
     assert frame.count("data:") == 1

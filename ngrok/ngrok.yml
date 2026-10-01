@@ -33,24 +33,11 @@ endpoints:
       on_http_request:
         - expressions:
             - >-
-              !(req.url.path == '/health'
-                || req.url.path == '/console'
+              !(req.url.path == '/console'
                 || req.url.path == '/docs'
                 || req.url.path == '/redoc'
                 || req.url.path == '/openapi.json'
-                || req.url.path == '/config'
-                || req.url.path == '/pipeline'
-                || req.url.path.startsWith('/trigger/')
-                || req.url.path.startsWith('/jobs')
-                || req.url.path.startsWith('/clients')
-                || req.url.path.startsWith('/routes')
-                || req.url.path.startsWith('/status')
-                || req.url.path.startsWith('/accounts/')
-                || req.url.path.startsWith('/booking/')
-                || req.url.path.startsWith('/booking-requests')
-                || req.url.path.startsWith('/inbox/')
-                || req.url.path.startsWith('/payments/')
-                || req.url.path.startsWith('/webhooks/'))
+                || req.url.path.startsWith('/v1/'))
           actions:
             - type: custom-response
               config:
@@ -59,7 +46,7 @@ endpoints:
                   content-type: application/json
                 body: '{"error":"not_found"}'
         - expressions:
-            - "req.url.path != '/health'"
+            - "req.url.path != '/v1/health'"
             - "req.url.path != '/console'"
             - "req.url.path != '/docs'"
             - "req.url.path != '/redoc'"

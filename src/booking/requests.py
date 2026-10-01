@@ -123,6 +123,24 @@ def path_for(request_id: str) -> str:
     return os.path.join(REQUEST_DIR, f"{check_id(request_id)}.json")
 
 
+def _locked_record(fn):
+    """Run a read-modify-write of one request under its cross-process lock.
+
+    The API and a booking child both edit these files; without the lock, one
+    can write back a stale copy over the other's change (a disable lost under
+    a status update). Re-entrant, so resolve() -> record_event() is fine.
+    """
+    import functools
+
+    from src.utils.filelock import locked
+
+    @functools.wraps(fn)
+    def wrapper(request_id, *args, **kwargs):
+        with locked(path_for(request_id)):
+            return fn(request_id, *args, **kwargs)
+    return wrapper
+
+
 # --------------------------------------------------------------------------- #
 # The record                                                                   #
 # --------------------------------------------------------------------------- #
@@ -398,6 +416,7 @@ def exists(request_id: str) -> bool:
     return os.path.exists(path_for(request_id))
 
 
+@_locked_record
 def create(request_id: str, data: Dict[str, Any]) -> BookingRequest:
     rid = check_id(request_id)
     if exists(rid):
@@ -435,6 +454,7 @@ def list_all(route: Optional[str] = None,
     return out
 
 
+@_locked_record
 def replace_fields(request_id: str, data: Dict[str, Any]) -> BookingRequest:
     """Swap the caller-owned fields, keeping state. Only when EDITABLE."""
     req = get(request_id)
@@ -454,6 +474,7 @@ def replace_fields(request_id: str, data: Dict[str, Any]) -> BookingRequest:
     return BookingRequest(req.request_id, record)
 
 
+@_locked_record
 def set_enabled(request_id: str, enabled: bool) -> BookingRequest:
     req = get(request_id)
     if req.status == BOOKING:
@@ -465,6 +486,7 @@ def set_enabled(request_id: str, enabled: bool) -> BookingRequest:
     return req
 
 
+@_locked_record
 def delete(request_id: str) -> None:
     req = get(request_id)
     if req.status == BOOKING:
@@ -484,6 +506,7 @@ def _append(record: Dict[str, Any], event: str, detail: str = "",
     record["history"] = history[-HISTORY_LIMIT:]
 
 
+@_locked_record
 def record_event(request_id: str, event: str, detail: str = "", *,
                  status: Optional[str] = None, **extra: Any) -> BookingRequest:
     """Append a history entry and, optionally, move the status. Re-reads the
@@ -504,6 +527,32 @@ def record_event(request_id: str, event: str, detail: str = "", *,
     return req
 
 
+STALE_SECONDS = 3 * 3600
+
+
+def flag_stale(now: Optional[float] = None) -> List[str]:
+    """'booking' for over 3h means the run died. Never reset to waiting: it
+    may have paid. Moved to needs_attention for a human."""
+    import time as _time
+
+    now = now or _time.time()
+    moved = []
+    for req in list_all(status=BOOKING):
+        try:
+            changed = datetime.strptime(req.data.get("status_changed_at", ""),
+                                        "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+        age = now - changed.replace(tzinfo=timezone.utc).timestamp()
+        if age > STALE_SECONDS:
+            record_event(req.request_id, "needs_attention",
+                         "the booking process stopped reporting 3h ago (crash "
+                         "or reboot?). Whether it booked or paid is unknown.",
+                         status=NEEDS_ATTENTION)
+            moved.append(req.request_id)
+    return moved
+
+
 def expire_past(today: Optional[date] = None) -> List[str]:
     """Move waiting requests whose window has fully passed to 'expired'."""
     today = today or date.today()
@@ -517,6 +566,7 @@ def expire_past(today: Optional[date] = None) -> List[str]:
     return moved
 
 
+@_locked_record
 def resolve(request_id: str, outcome: str, reason: str = "",
             details: Optional[Dict[str, Any]] = None) -> BookingRequest:
     """A human settles a needs_attention request after checking VFS.

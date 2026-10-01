@@ -15,6 +15,31 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# The four [switches] masters default OFF, so a fresh machine does nothing
+# unattended. The suite tests the behaviour BENEATH them, so it runs with them
+# on; tests that assert a switch being off set it off explicitly. Env vars
+# outrank the INI and survive reload_settings(), unlike patching the object.
+for _flow in ("WAITLIST", "INVITE_BOOKING", "LIVE_BOOKING", "TEST_BOOKING"):
+    os.environ.setdefault(f"VFSCFG_SWITCHES__{_flow}", "true")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_booking_state(tmp_path, monkeypatch):
+    """Keeps the suite out of the REAL booking requests and invitations.
+
+    The inbox watcher records every invitation it classifies into
+    state/invites/, so a test that drives a watcher pass would otherwise leave
+    a fake invitation in the queue the supervisor books from.
+    """
+    from src.booking import invites, requests
+
+    monkeypatch.setattr(invites, "INVITE_DIR", str(tmp_path / "invites"))
+    monkeypatch.setattr(requests, "REQUEST_DIR", str(tmp_path / "booking_requests"))
+    # The API audits every mutating call into state/audit.jsonl — the record
+    # of who spent money. Test calls must never appear in it.
+    monkeypatch.setattr("src.api.core.context.AUDIT_FILE",
+                        str(tmp_path / "audit.jsonl"))
+
 
 @pytest.fixture(autouse=True)
 def _isolate_slot_database(tmp_path, monkeypatch):

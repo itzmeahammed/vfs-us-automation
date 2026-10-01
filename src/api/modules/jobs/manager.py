@@ -45,9 +45,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.api.config import ApiSettings, get_settings
+from src.api.core.config import ApiSettings, get_settings
 from src.utils import run_context
-from src.api.jobstore import JobStore, prune_logs, reconcile
+from src.api.modules.jobs.store import JobStore, prune_logs, reconcile
 
 log = logging.getLogger("vfs.api.jobs")
 
@@ -265,7 +265,17 @@ def _key_fingerprint(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
-def _machine_lock_busy() -> str:
+#: Job lanes. Each lane has its own single-flight slot here and its own
+#: machine-wide lock in src/utils/runlock.py, so a booking run never waits
+#: behind a waitlist registration (or the other way round). Within a lane,
+#: runs stay strictly one at a time — that is what protects the journal and
+#: stops one client being booked twice.
+LANE_WAITLIST = "waitlist"
+LANE_BOOKING = "booking"
+LANES = (LANE_WAITLIST, LANE_BOOKING)
+
+
+def _machine_lock_busy(lane: str = LANE_WAITLIST) -> str:
     """Is another browser-driving run holding the machine-wide lock?
 
     Returns a short holder hint when busy, or "" when the lock is free.
@@ -290,7 +300,9 @@ def _machine_lock_busy() -> str:
         # The WAITLIST lane specifically. Probing the slot-check lane would 409
         # a perfectly valid registration just because a routine slot check
         # happened to be running — the two are independent now.
-        with runlock.acquire("api-trigger-probe", lane=runlock.LANE_WAITLIST,
+        machine_lane = (runlock.LANE_BOOKING if lane == LANE_BOOKING
+                        else runlock.LANE_WAITLIST)
+        with runlock.acquire("api-trigger-probe", lane=machine_lane,
                              timeout=0, on_busy="skip") as handle:
             if handle.held:
                 return ""
@@ -331,7 +343,8 @@ class JobManager:
         self._lock = asyncio.Lock()
         # The id of the one running job, maintained as state rather than
         # rediscovered by scanning every record on each single-flight check.
-        self._active_id: Optional[str] = None
+        # lane -> the job running in it. One slot per lane, not one overall.
+        self._active: Dict[str, str] = {}
         # Durable history. Survives the restart that the in-memory dict cannot.
         self._store = JobStore(self._settings.job_history_file)
         # Idempotency-Key -> (job_id, monotonic timestamp).
@@ -389,16 +402,35 @@ class JobManager:
 
     @property
     def active_job(self) -> Optional[JobRecord]:
-        """The currently running job, if any. O(1)."""
-        if self._active_id is None:
+        """A running job in ANY lane, if any. Kept for callers that ask
+        "is anything running?"; use active_in(lane) for a single lane."""
+        for lane in LANES:
+            record = self.active_in(lane)
+            if record is not None:
+                return record
+        return None
+
+    def active_in(self, lane: str) -> Optional[JobRecord]:
+        """The job running in `lane`, if any. O(1)."""
+        job_id = self._active.get(lane)
+        if job_id is None:
             return None
-        record = self._jobs.get(self._active_id)
+        record = self._jobs.get(job_id)
         # Defensive: if the record was evicted or finished without clearing the
         # pointer, treat the slot as free rather than blocking every trigger.
         if record is None or record.status is not JobStatus.RUNNING:
-            self._active_id = None
+            self._active.pop(lane, None)
             return None
         return record
+
+    def active_jobs(self) -> Dict[str, JobRecord]:
+        return {lane: rec for lane in LANES
+                if (rec := self.active_in(lane)) is not None}
+
+    def _release_lane(self, job_id: str) -> None:
+        for lane, active in list(self._active.items()):
+            if active == job_id:
+                self._active.pop(lane, None)
 
     def get(self, job_id: str) -> Optional[JobRecord]:
         """Look up one job by id, falling back to the durable history.
@@ -427,6 +459,7 @@ class JobManager:
         payload: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
         command_override: Optional[List[str]] = None,
+        lane: Optional[str] = None,
     ) -> Tuple[JobRecord, bool]:
         """Spawn the configured job and return immediately.
 
@@ -448,6 +481,10 @@ class JobManager:
             JobStartError: the process would not start at all (caller: 500).
         """
         settings = self._settings
+        # A command override is a booking CLI; the configured command is the
+        # waitlist one. Callers may say so explicitly.
+        lane = lane or (LANE_BOOKING if command_override is not None
+                        else LANE_WAITLIST)
         if command_override is not None:
             command = [*command_override, *(extra_args or [])]
         else:
@@ -468,18 +505,19 @@ class JobManager:
                         return prior, True
 
             if settings.single_flight:
-                running = self.active_job
+                running = self.active_in(lane)
                 if running is not None:
                     raise JobAlreadyRunningError(
-                        f"A job is already running (job_id={running.job_id}, "
-                        f"pid={running.pid}). Wait for it to finish or cancel it."
+                        f"A {lane} job is already running (job_id="
+                        f"{running.job_id}, pid={running.pid}). Wait for it to "
+                        "finish or cancel it."
                     )
                 # The manager's own check only sees THIS process. A manual
                 # `python -m src.waitlist run`, the autotrigger, or a scheduler
                 # tick drives a browser too, and two at once can double-register
                 # a client. Probe the machine-wide lock so we refuse cleanly
                 # instead of spawning a child that will block on it for 900s.
-                busy = _machine_lock_busy()
+                busy = _machine_lock_busy(lane)
                 if busy:
                     raise JobAlreadyRunningError(
                         "Another browser-driving run already holds the machine "
@@ -502,7 +540,7 @@ class JobManager:
                 status=JobStatus.RUNNING,
                 started_at=datetime.now(timezone.utc),
                 log_file=str(log_path),
-                payload=payload or {},
+                payload={**(payload or {}), "lane": lane},
                 idempotency_key=idempotency_key,
             )
 
@@ -517,7 +555,7 @@ class JobManager:
             record.pid = process.pid
             self._processes[job_id] = process
             self._jobs[job_id] = record
-            self._active_id = job_id
+            self._active[lane] = job_id
             if idempotency_key:
                 self._idempotency[idempotency_key] = (job_id, time.monotonic())
                 self._expire_idempotency()
@@ -657,8 +695,7 @@ class JobManager:
             record.finished_at = datetime.now(timezone.utc)
             self._processes.pop(job_id, None)
             self._tasks.pop(job_id, None)
-            if self._active_id == job_id:
-                self._active_id = None
+            self._release_lane(job_id)
             # The completed state is the one that MUST survive a restart: it
             # carries the parsed per-client results and the needs_attention
             # flag that routes an unresolved submit to a human.
@@ -770,8 +807,7 @@ class JobManager:
         if record.status is JobStatus.RUNNING:
             record.status = JobStatus.CANCELLED
             record.finished_at = datetime.now(timezone.utc)
-            if self._active_id == job_id:
-                self._active_id = None
+            self._release_lane(job_id)
             self._store.append(record.to_record())
 
         log.info("Job %s cancelled: %s", job_id, reason)

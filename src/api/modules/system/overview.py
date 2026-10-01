@@ -12,21 +12,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends
+from fastapi import Depends
 
-from src.api.schemas import PipelineResponse
-from src.api.security import require_token
+from src.api.modules.system.schemas import PipelineResponse
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.pipeline")
 
-router = APIRouter(tags=["pipeline"])
 
-
-@router.get(
-    "/pipeline",
-    response_model=PipelineResponse,
-    dependencies=[Depends(require_token)],
-)
 def get_pipeline() -> PipelineResponse:
     """Full pipeline snapshot: clients, journal, routes, mailboxes, health.
 

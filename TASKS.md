@@ -66,7 +66,7 @@ drive it and what to do when it breaks.
       `tests/fixtures/captured_dom/AE-NOR_appointment_details.html` to enable
       the skipped assertion in `tests/test_booking_walk.py`.
 - [ ] A retention sweep for `runs/` and `logs/` (a run folder is the unit).
-- [ ] Monitor `GET /payments/unanswered` and alert on `needs_attention: true`.
+- [ ] Monitor `GET /v1/booking/payments/unanswered` and alert on `needs_attention: true`.
 - [ ] Two client records lack a date range, so `python -m src.booking check`
       exits 1: `mufaddal-calcuttawala-ae-che-656e31`,
       `osama-che-82433277533`. Add `date_from`/`date_to`, or an explicit

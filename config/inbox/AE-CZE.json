@@ -1,0 +1,28 @@
+{
+  "_comment": "UAE -> Czech Republic email matchers. NOT built from a real Czech email (none seen yet, 2026-10-01): copied from Netherlands, whose mail has the same shape as Greece and Italy, with the country discriminator changed to the Czech portal URL. Replace validity_hours and check the wording against the first real Czech invitation.",
+  "extends": "_default",
+  "matchers": [
+    {
+      "name": "waitlist_invitation",
+      "from_contains": [
+        "vfshelpline.com",
+        "vfsglobal.com"
+      ],
+      "validity_hours": 36,
+      "_comment_validity": "UNVERIFIED. 36 like Greece and Netherlands; Switzerland says 12 and Italy 48. Shorter is the safe guess: it makes the deadline in Telegram earlier, never later.",
+      "body_contains": [
+        "/are/en/cze/"
+      ]
+    },
+    {
+      "name": "waitlist_confirmation",
+      "from_contains": [
+        "vfshelpline.com",
+        "vfsglobal.com"
+      ],
+      "body_contains": [
+        "/are/en/cze/"
+      ]
+    }
+  ]
+}

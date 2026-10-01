@@ -15,30 +15,16 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status as http_status
+from fastapi import Depends, Header, HTTPException, status as http_status
 
-from src.api.schemas import (
-    BookingClientStatus,
-    BookingMode,
-    BookingRouteStatus,
-    BookingStatusResponse,
-    BookingTriggerRequest,
-    ErrorResponse,
-    TriggerResponse,
-    JobResponse,
-)
-from src.api.security import require_token
+from src.api.core.schemas import ErrorResponse
+from src.api.modules.booking.schemas import BookingClientStatus, BookingMode, BookingRouteStatus, BookingStatusResponse, BookingTriggerRequest
+from src.api.modules.jobs.schemas import TriggerResponse, JobResponse
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.booking")
 
-router = APIRouter(prefix="/booking", tags=["booking"])
 
-
-@router.get(
-    "/status",
-    response_model=BookingStatusResponse,
-    dependencies=[Depends(require_token)],
-)
 def get_booking_status() -> BookingStatusResponse:
     """Booking pipeline overview: routes, their config, and per-client phases.
 
@@ -106,17 +92,6 @@ def get_booking_status() -> BookingStatusResponse:
     return BookingStatusResponse(routes=routes, clients=clients)
 
 
-@router.post(
-    "/trigger",
-    response_model=TriggerResponse,
-    status_code=http_status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_token)],
-    responses={
-        401: {"model": ErrorResponse},
-        409: {"model": ErrorResponse},
-        500: {"model": ErrorResponse},
-    },
-)
 async def trigger_booking(
     payload: BookingTriggerRequest,
     idempotency_key: Optional[str] = Header(
@@ -153,7 +128,7 @@ async def trigger_booking(
 
         jq 'select(.run_id=="<run_id>")' logs/app.jsonl
     """
-    from src.api.jobs import JobAlreadyRunningError, JobStartError
+    from src.api.modules.jobs.manager import JobAlreadyRunningError, JobStartError
 
     # Import the shared job_manager from main
     from src.api.main import job_manager

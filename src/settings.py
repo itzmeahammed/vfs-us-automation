@@ -323,15 +323,33 @@ class Bandwidth(_Section):
 
 
 # INI section name -> Settings field name (identical today, explicit for safety).
-class Booking(_Section):
-    """Automatic live-slot booking from stored booking requests.
+class Switches(_Section):
+    """ONE MASTER SWITCH PER FLOW. The operator's front panel.
 
-    auto_book_enabled is the MASTER switch for spending money unattended: when
-    the slot checker sees a date inside a stored request's window, it books
-    and pays with the company card. Everything else only limits it.
+    Each flow runs only when its switch here is on, whatever its detailed
+    settings say. Off is always safe: turning one off stops that flow at its
+    next decision point and touches nothing already recorded.
+
+        waitlist        Flow 1 — register clients on VFS waitlists
+                        ([waitlist] holds the detail: dry runs, caps, auto-trigger)
+        invite_booking  Flow 2 — a VFS invitation email books that client
+        live_booking    Flow 3 — a live slot inside a booking request's window
+                        books it, and PAYS with the company card
+        test_booking    test_mode booking requests may run: every page, then
+                        stop before the payment click. Nothing booked or paid.
+
+    All default OFF in code: a machine with no config does nothing unattended.
     """
 
-    auto_book_enabled: bool = False
+    waitlist: bool = False
+    invite_booking: bool = False
+    live_booking: bool = False
+    test_booking: bool = False
+
+
+class Booking(_Section):
+    """Limits on automatic booking (Flows 2 and 3). The on/off is [switches]."""
+
     # Bookings the auto-booker may START per calendar day, across all runs.
     # A backstop against a bug that keeps matching: each one is a real charge.
     max_per_day: int = Field(default=5, ge=0)
@@ -358,6 +376,7 @@ _INI_SECTIONS = {
     "waitlist": "waitlist",
     "inbox": "inbox",
     "booking": "booking",
+    "switches": "switches",
 }
 
 
@@ -407,6 +426,7 @@ class Settings(BaseSettings):
     webhook: Webhook = Field(default_factory=Webhook)
     inbox: Inbox = Field(default_factory=Inbox)
     booking: Booking = Field(default_factory=Booking)
+    switches: Switches = Field(default_factory=Switches)
 
     @classmethod
     def settings_customise_sources(

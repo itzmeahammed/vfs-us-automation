@@ -320,6 +320,29 @@ def cmd_probe(args) -> int:
 
     from src.booking.probe import run_probe
 
+    # A stored booking request carries everything a live-slot walk needs. It
+    # is passed as the person directly: it is not on the waitlist roster, and
+    # without this a run on a live-only route found "no client files" and
+    # stopped before logging in.
+    person = None
+    request_id = getattr(args, "request_id", None)
+    if request_id:
+        from src.booking import requests as req_store
+        try:
+            req = req_store.get(request_id)
+        except Exception as e:                              # noqa: BLE001
+            print(f"\nProbe could not start: {e}")
+            return 1
+        if req.route != f"{args.source_country}-{args.dest_country}".upper():
+            print(f"\nProbe could not start: request {request_id} is for "
+                  f"{req.route}, not {args.source_country}-{args.dest_country}.")
+            return 1
+        person = req.as_registrant()
+        if not getattr(args, "combo", ""):
+            args.combo = req.combo
+        if not getattr(args, "entry", ""):
+            args.entry = "new"
+
     try:
         result = run_probe(
             source=args.source_country,
@@ -337,6 +360,7 @@ def cmd_probe(args) -> int:
             applicant=_applicant_fields(args.applicant),
             commit=getattr(args, "commit", False),
             capture=getattr(args, "capture", "") or "",
+            person=person,
         )
     except KeyboardInterrupt:
         # Ctrl-C before run_probe's own handler is reachable — during
@@ -451,6 +475,30 @@ def cmd_autobook(args) -> int:
     return autobook.run_queue(args.route.upper(), args.request or [], seen)
 
 
+def cmd_invitebook(args) -> int:
+    """Book clients for one VFS invitation. Started by the supervisor."""
+    _install_redaction()
+    from src.booking import invites
+
+    return invites.run_invite(args.invite, args.client or [])
+
+
+def cmd_invites(args) -> int:
+    """List recorded VFS invitations and what happened to each. Offline."""
+    from src.booking import invites
+
+    items = invites.list_all(status=args.status)
+    if not items:
+        print("No invitations recorded.")
+        return 0
+    for item in items:
+        last = (item.get("history") or [{}])[-1]
+        print(f"  {item['key']}  {item['route']:<7} {item.get('status', ''):<16} "
+              f"deadline {invites._deadline(item)}  "
+              f"last: {last.get('event', '')} {last.get('detail', '')}"[:220])
+    return 0
+
+
 def cmd_requests(args) -> int:
     """List booking requests and where each one is. Offline."""
     from src.booking import requests as store
@@ -511,6 +559,9 @@ def main(argv: List[str] = None) -> int:
     probe.add_argument("-sc", "--source-country", required=True, help="e.g. AE")
     probe.add_argument("-dc", "--dest-country", required=True, help="e.g. GRC")
     probe.add_argument("--registrant", help="client id, for the expected-row match")
+    probe.add_argument("--request", dest="request_id",
+                       help="a stored booking request (config/booking_requests/) "
+                            "to run: supplies applicant, account, combo and dates")
     probe.add_argument("--email", help="force a VFS account (needs --password)")
     probe.add_argument("--password", help="that account's password")
     probe.add_argument("--proxy-url", help='force a proxy; "" forces local IP')
@@ -580,6 +631,18 @@ def main(argv: List[str] = None) -> int:
     auto.add_argument("--seen", action="append", default=[], metavar="ID=DATE",
                       help="the earliest date that triggered this request")
 
+    inv = sub.add_parser(
+        "invitebook", parents=[verbose],
+        help="book clients for one VFS invitation AND PAY. Started by the "
+             "supervisor; not for hand use.")
+    inv.add_argument("--invite", required=True, help="invite id (state/invites)")
+    inv.add_argument("--client", action="append", default=[],
+                     help="client id to book. Repeatable.")
+
+    invs = sub.add_parser("invites", parents=[verbose],
+                          help="list recorded VFS invitations (offline)")
+    invs.add_argument("--status", default=None)
+
     reqs = sub.add_parser("requests", parents=[verbose],
                           help="list booking requests (offline)")
     reqs.add_argument("--route", default=None)
@@ -600,7 +663,8 @@ def main(argv: List[str] = None) -> int:
     initialize_config()
 
     commands = {"check": cmd_check, "status": cmd_status, "probe": cmd_probe,
-                "autobook": cmd_autobook, "requests": cmd_requests}
+                "autobook": cmd_autobook, "requests": cmd_requests,
+                "invitebook": cmd_invitebook, "invites": cmd_invites}
     if args.command not in commands:
         parser.print_help()
         return 1

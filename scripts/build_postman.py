@@ -33,50 +33,24 @@ OUT_DIR = REPO_ROOT / "postman"
 NAME = "VFS Local Trigger API"
 
 #: Folder order in Postman — roughly the order a web UI is built in.
-TAG_ORDER = ["meta", "clients", "booking-requests", "routes", "trigger",
-             "jobs", "booking",
-             "payments", "status", "pipeline", "config", "accounts", "inbox",
-             "webhooks"]
-TAG_TITLES = {"meta": "Health", "trigger": "Waitlist trigger",
-              "booking-requests": "Booking requests (auto-book)",
-              "booking": "Booking (manual)"}
+TAG_ORDER = ["system", "clients", "catalog", "waitlist", "booking", "jobs",
+             "accounts", "notifications"]
+TAG_TITLES = {"system": "System & switches", "clients": "Clients (both flows)",
+              "catalog": "Routes & combos", "waitlist": "Waitlist (Flow 1)",
+              "booking": "Booking runs & invitations", "jobs": "Jobs",
+              "accounts": "VFS accounts", "notifications": "Notifications"}
 
 #: Path parameter -> collection variable. Saved by the test scripts below, so
 #: "Create Client" then "Get Client" works without copying ids around.
 PATH_VARS = {
-    "client_id": ("clientId", "u10432-che"),
+    "client_id": ("clientId", "u10432-nor-1"),
     "job_id": ("jobId", ""),
-    "route": ("route", "AE-CHE"),
+    "route": ("route", "AE-NOR"),
     "email": ("accountEmail", "waitlist-acc1@example.com"),
-    "request_id": ("requestId", "u10432-nor-1"),
+    "key": ("inviteKey", ""),
 }
 
-_CLIENT = {
-    "client_id": "{{clientId}}",
-    "route": "AE-CHE",
-    "combos": ["Dubai - SCHENGEN"],
-    "enabled": False,
-    "account": "waitlist-acc1@example.com",
-    "account_password": "the-password",
-    "first_name": "AHMED",
-    "last_name": "KHAN",
-    "nationality": "India",
-    "passport_number": "A1234567",
-    "date_of_birth": "1990-04-12",
-    "phone_country_code": "971",
-    "phone_number": "501234567",
-    "email": "ahmed@example.com",
-    "address_line_1": "FLAT 101, AL BARSHA TOWER",
-    "address_line_2": "SHEIKH ZAYED ROAD, DUBAI",
-    "gender": "Male",
-}
-
-_BOOKING_REQUEST = {
-    "route": "AE-NOR",
-    "combo": "Norway Visa Application Center - Dubai - Tourist",
-    "date_from": "2026-10-10",
-    "date_to": "2026-10-20",
-    "enabled": False,
+_APPLICANT = {
     "first_name": "AHMED", "last_name": "KHAN",
     "passport_number": "A1234567", "date_of_birth": "1990-04-12",
     "nationality": "India", "gender": "Male",
@@ -88,69 +62,69 @@ _BOOKING_REQUEST = {
     "account": "booking-acc@example.com", "account_password": "the-password",
 }
 
+_LIVE_CLIENT = {
+    "client_id": "{{clientId}}", "flow": "live", "route": "AE-NOR",
+    "combo": "Norway Visa Application Center - Dubai - Tourist",
+    "date_from": "2026-10-10", "date_to": "2026-10-20",
+    "enabled": False, **_APPLICANT,
+}
+
 #: (METHOD, path) -> JSON body. Safe by construction: nothing here books, pays,
 #: or submits a live registration.
 EXAMPLE_BODIES: Dict[tuple, Any] = {
-    ("POST", "/clients"): _CLIENT,
-    ("PUT", "/clients/{client_id}"): _CLIENT,
-    ("PATCH", "/clients/{client_id}"): {"phone_number": "509876543"},
-    ("POST", "/trigger/waitlist"): {
-        "route": "{{route}}", "registrant": "{{clientId}}", "dry_run": True,
-        "reason": "Postman test"},
-    ("POST", "/booking/trigger"): {
-        "route": "AE-NOR", "mode": "probe", "capture": "failure",
-        "reason": "Postman test"},
-    ("POST", "/accounts/health/{email}/bench"): {
-        "route": "{{route}}", "hours": 2, "reason": "benched via Postman"},
-    ("POST", "/status/resolve"): {
-        "route": "{{route}}", "combo": "Dubai - SCHENGEN",
-        "registrant_id": "{{clientId}}", "status": "success",
-        "reason": "verified on the VFS account by hand"},
-    ("PATCH", "/status/switches"): {"auto_trigger_dry_run": True},
-    ("POST", "/inbox/reconcile"): {"dry_run": True},
-    ("POST", "/booking-requests"): {"request_id": "{{requestId}}", **_BOOKING_REQUEST},
-    ("PUT", "/booking-requests/{request_id}"): _BOOKING_REQUEST,
-    ("PATCH", "/booking-requests/{request_id}"): {"date_from": "2026-10-12",
-                                                  "date_to": "2026-10-25"},
-    ("POST", "/booking-requests/{request_id}/resolve"): {
+    ("POST", "/v1/clients"): _LIVE_CLIENT,
+    ("PUT", "/v1/clients/{client_id}"): {k: v for k, v in _LIVE_CLIENT.items()
+                                         if k != "client_id"},
+    ("PATCH", "/v1/clients/{client_id}"): {"date_from": "2026-10-12",
+                                           "date_to": "2026-10-25"},
+    ("POST", "/v1/clients/{client_id}/resolve"): {
         "outcome": "booked", "reason": "confirmed on the VFS account",
         "appointment_date": "2026-10-12", "appointment_time": "09:30",
         "reference": "NOR/DXB/123456"},
+    ("POST", "/v1/booking/runs"): {"client_id": "{{clientId}}", "mode": "probe",
+                                   "reason": "Postman test"},
+    ("POST", "/v1/booking/invitations/{key}/resolve"): {
+        "outcome": "not_booked", "reason": "checked the account"},
+    ("POST", "/v1/waitlist/runs"): {
+        "route": "AE-CHE", "registrant": "u10432-che", "dry_run": True,
+        "reason": "Postman test"},
+    ("POST", "/v1/waitlist/dangling/resolve"): {
+        "route": "AE-CHE", "combo": "Dubai - SCHENGEN",
+        "registrant_id": "u10432-che", "status": "success",
+        "reason": "verified on the VFS account by hand"},
+    ("POST", "/v1/waitlist/reconcile"): {"dry_run": True},
+    ("PATCH", "/v1/switches"): {"test_booking": True},
+    ("POST", "/v1/accounts/{email}/bench"): {
+        "route": "{{route}}", "hours": 2, "reason": "benched via Postman"},
 }
 
 #: Extra warnings prepended to a request's description.
 NOTES = {
-    ("POST", "/trigger/waitlist"):
-        "SAFE AS SHIPPED: `dry_run: true`. Setting it false submits a REAL "
-        "registration on VFS.",
-    ("POST", "/booking/trigger"):
-        "SAFE AS SHIPPED: `mode: probe` logs in and reads, clicks nothing. "
-        "`walk` walks the pages and stops before committing. `commit` BOOKS "
-        "AND PAYS — irreversible — and additionally requires `confirm` equal "
-        "to `route`. Never use `capture: full` with commit (the DOM holds the "
-        "card number).",
-    ("GET", "/jobs/{job_id}/stream"):
-        "Server-Sent Events (`log`, `status`, `end`). Postman shows events as "
-        "they arrive; in a browser use `fetch` + a stream reader (EventSource "
-        "cannot send the auth header). Ends by itself when the job finishes.",
-    ("DELETE", "/clients/{client_id}"):
+    ("POST", "/v1/clients"):
+        "Pick `flow`: `live` books a live slot inside date_from..date_to AND "
+        "PAYS; `waitlist` joins the VFS waitlist and books on invitation. SAFE "
+        "AS SHIPPED: `enabled: false` stores it parked. A 422 lists every "
+        "missing field for the chosen route and flow.",
+    ("POST", "/v1/clients/{client_id}/enable"):
+        "ARMS the client. A live client is booked and paid automatically when "
+        "a slot inside its window is seen (if [switches] live_booking is on).",
+    ("DELETE", "/v1/clients/{client_id}"):
         "Deletes the client file, including their passport data.",
-    ("PATCH", "/status/switches"):
-        "Flips live master switches. Only the fields you send change.",
-    ("POST", "/booking-requests"):
-        "SAFE AS SHIPPED: `enabled: false` stores the request PARKED. With "
-        "`enabled: true` (the API default when omitted) it is ARMED: the next "
-        "slot check that sees an earliest date inside date_from..date_to BOOKS "
-        "AND PAYS with the company card, unattended. A 422 lists every missing "
-        "field. Fields shown are Norway's; the 422 names any other route's.",
-    ("POST", "/booking-requests/{request_id}/enable"):
-        "ARMS the request: a slot inside its window will be booked and paid "
-        "automatically.",
-    ("POST", "/booking-requests/{request_id}/resolve"):
-        "Only for status `needs_attention`, AFTER checking the VFS account. "
-        "`booked` records it for good; `not_booked` re-arms it.",
-    ("POST", "/webhooks/test"):
-        "Sends a real test message to the configured outbound webhook.",
+    ("POST", "/v1/booking/runs"):
+        "SAFE AS SHIPPED: `mode: probe` logs in and reads. `walk` fills every "
+        "page and stops before paying. `commit` BOOKS AND PAYS and needs "
+        "`confirm` equal to the route. Send an Idempotency-Key with commit.",
+    ("POST", "/v1/waitlist/runs"):
+        "SAFE AS SHIPPED: `dry_run: true`. false submits a REAL registration.",
+    ("PATCH", "/v1/switches"):
+        "Master switches. Applies from the NEXT slot-check run (every 30 min).",
+    ("GET", "/v1/jobs/{job_id}/stream"):
+        "Server-Sent Events (`log`, `status`, `end`). In a browser use fetch + "
+        "a stream reader; EventSource cannot send the auth header.",
+    ("POST", "/v1/notifications/telegram/test"):
+        "Sends a real message to the testing-bot chat.",
+    ("POST", "/v1/notifications/webhook/test"):
+        "Sends a real test event to the configured web-app webhook.",
 }
 
 #: Test script per (METHOD, path): capture ids for the requests that follow.
@@ -161,22 +135,22 @@ SAVE_JOB_ID = [
     "  console.log('jobId =', b.job.job_id);",
     "}",
 ]
-SAVE_CLIENT_ID = [
-    "const b = pm.response.json();",
-    "if (b && b.client_id) pm.collectionVariables.set('clientId', b.client_id);",
-]
 TESTS = {
-    ("POST", "/trigger/waitlist"): SAVE_JOB_ID,
-    ("POST", "/booking/trigger"): SAVE_JOB_ID,
-    ("POST", "/clients"): SAVE_CLIENT_ID,
-    ("POST", "/booking-requests"): [
+    ("POST", "/v1/booking/runs"): SAVE_JOB_ID,
+    ("POST", "/v1/waitlist/runs"): SAVE_JOB_ID,
+    ("POST", "/v1/clients"): [
         "const b = pm.response.json();",
-        "if (b && b.request_id) pm.collectionVariables.set('requestId', b.request_id);",
+        "if (b && b.client_id) pm.collectionVariables.set('clientId', b.client_id);",
     ],
-    ("GET", "/jobs"): [
+    ("GET", "/v1/jobs"): [
         "const b = pm.response.json();",
-        "if (b && b.jobs && b.jobs.length && !pm.collectionVariables.get('jobId'))",
-        "  pm.collectionVariables.set('jobId', b.jobs[0].job_id);",
+        "if (b && b.items && b.items.length && !pm.collectionVariables.get('jobId'))",
+        "  pm.collectionVariables.set('jobId', b.items[0].job_id);",
+    ],
+    ("GET", "/v1/booking/invitations"): [
+        "const b = pm.response.json();",
+        "if (b && b.items && b.items.length && !pm.collectionVariables.get('inviteKey'))",
+        "  pm.collectionVariables.set('inviteKey', b.items[0].key);",
     ],
 }
 
@@ -184,6 +158,8 @@ TESTS = {
 #: free tier answers anything without it with an HTML page, not JSON.
 PRE_REQUEST = [
     "pm.request.headers.upsert({key: 'ngrok-skip-browser-warning', value: 'true'});",
+    # Who is acting — recorded in GET /v1/audit. Set `actor` in the environment.
+    "pm.request.headers.upsert({key: 'X-Actor', value: pm.variables.get('actor') || 'postman'});",
     "if (!pm.environment.get('baseUrl') && !pm.collectionVariables.get('baseUrl')) {",
     "  throw new Error('Select the \"VFS API\" environment (top right) - baseUrl is unset.');",
     "}",
@@ -373,6 +349,10 @@ def build_collection(spec: Dict[str, Any]) -> Dict[str, Any]:
         for method, op in operations.items():
             if method.upper() not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
                 continue
+            # /v1 only: the pre-/v1 paths still work but are deprecated, and a
+            # collection people build a web app from must not teach them.
+            if op.get("deprecated") or not path.startswith("/v1"):
+                continue
             tag = (op.get("tags") or ["other"])[0]
             folders.setdefault(tag, []).append(_item(method.upper(), path, op, comps))
 
@@ -389,13 +369,21 @@ def build_collection(spec: Dict[str, Any]) -> Dict[str, Any]:
                 "2. Select the **VFS API** environment; set `baseUrl` to the "
                 "tunnel URL (changes on every free-tier restart) and `token` "
                 "to VFSAPI_SECRET_TOKEN from `.env.api`.\n"
-                "3. Start with **Health**, then **List Clients**.\n\n"
-                "Auth is set once on the collection (X-Webhook-Secret-Token), "
-                "and a pre-request script adds `ngrok-skip-browser-warning` to "
-                "every call. Your web app must send both headers too — from "
-                "its SERVER, never the browser bundle.\n\n"
-                "Triggers save `jobId`, and Create Client saves `clientId`, so "
-                "the follow-up requests work without copying ids.\n\n"
+                "3. Start with **System → Readiness**, then **Clients → List**.\n\n"
+                "This is the /v1 API only. The pre-/v1 paths still answer, "
+                "with a `Deprecation: true` header, but are not listed here.\n\n"
+                "Auth is set once on the collection (X-Webhook-Secret-Token). "
+                "A pre-request script adds `ngrok-skip-browser-warning` and "
+                "`X-Actor` (the environment's `actor`, recorded in "
+                "GET /v1/audit). Your web app sends all three — from its "
+                "SERVER, never the browser bundle — with X-Actor set to the "
+                "signed-in agent.\n\n"
+                "Every error is one envelope: "
+                "{\"error\": {code, message, status, problems[], request_id}}. "
+                "Lists are paginated: ?limit=&offset= → {items, total, "
+                "next_offset}.\n\n"
+                "Runs save `jobId`, Create Client saves `clientId`, List "
+                "Invitations saves `inviteKey`.\n\n"
                 "Rate limit: 120 authenticated requests/min per caller IP."
             ),
             "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
@@ -425,6 +413,7 @@ def build_environment(base_url: str, token: str) -> Dict[str, Any]:
         "values": [
             {"key": "baseUrl", "value": base_url, "type": "default", "enabled": True},
             {"key": "token", "value": token, "type": "secret", "enabled": True},
+            {"key": "actor", "value": "postman", "type": "default", "enabled": True},
         ],
         "_postman_variable_scope": "environment",
     }
@@ -449,7 +438,7 @@ def main() -> int:
         # outranks the file in pydantic-settings and would mask the real token.
         os.environ.setdefault("VFSAPI_SECRET_TOKEN", "x" * 64)
     logging.disable(logging.INFO)
-    from src.api.config import get_settings
+    from src.api.core.config import get_settings
     from src.api.main import app
 
     spec = app.openapi()

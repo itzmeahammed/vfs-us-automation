@@ -24,7 +24,7 @@ HEADERS = {"X-Webhook-Secret-Token": os.environ["VFSAPI_SECRET_TOKEN"]}
 def api():
     from fastapi.testclient import TestClient
 
-    from src.api.security import _reset_rate_limiter
+    from src.api.core.security import _reset_rate_limiter
     _reset_rate_limiter()
 
     from src.api.main import app
@@ -33,13 +33,13 @@ def api():
 
 
 def test_status_requires_auth(api):
-    assert api.get("/status").status_code == 401
-    assert api.get("/status/dangling").status_code == 401
-    assert api.post("/status/resolve", json={}).status_code == 401
+    assert api.get("/v1/waitlist/status").status_code == 401
+    assert api.get("/v1/waitlist/dangling").status_code == 401
+    assert api.post("/v1/waitlist/dangling/resolve", json={}).status_code == 401
 
 
 def test_status_reports_switches(api):
-    r = api.get("/status", headers=HEADERS)
+    r = api.get("/v1/waitlist/status", headers=HEADERS)
     assert r.status_code == 200
     switches = r.json()["switches"]
     for key in ("register_enabled", "dry_run", "auto_trigger_enabled",
@@ -49,14 +49,14 @@ def test_status_reports_switches(api):
 
 def test_posture_is_plain_language(api):
     """An operator should not have to reason about four booleans."""
-    posture = api.get("/status", headers=HEADERS).json()["posture"]
+    posture = api.get("/v1/waitlist/status", headers=HEADERS).json()["posture"]
     assert any(word in posture for word in ("PARKED", "MANUAL", "AUTO"))
 
 
 def test_posture_reflects_the_switches(monkeypatch):
     """Each combination gets its own honest description."""
-    from src.api import status as status_mod
-    from src.api.schemas import SwitchState
+    from src.api.modules.waitlist import status as status_mod
+    from src.api.modules.system.schemas import SwitchState
 
     parked = SwitchState(register_enabled=False, dry_run=True,
                          auto_trigger_enabled=True, auto_trigger_dry_run=False,
@@ -83,7 +83,7 @@ def test_posture_reflects_the_switches(monkeypatch):
 
 
 def test_status_lists_routes(api):
-    routes = api.get("/status", headers=HEADERS).json()["routes"]
+    routes = api.get("/v1/waitlist/status", headers=HEADERS).json()["routes"]
     assert routes, "no routes reported"
     by_id = {r["route"]: r for r in routes}
     assert "AE-CHE" in by_id
@@ -93,14 +93,14 @@ def test_status_lists_routes(api):
 
 def test_not_ready_routes_explain_themselves(api):
     """A route that cannot register must say why, not just report false."""
-    routes = api.get("/status", headers=HEADERS).json()["routes"]
+    routes = api.get("/v1/waitlist/status", headers=HEADERS).json()["routes"]
     for route in routes:
         if not route["ready"]:
             assert route["problems"], f"{route['route']} is not ready but gives no reason"
 
 
 def test_dangling_endpoint_returns_a_list(api):
-    r = api.get("/status/dangling", headers=HEADERS)
+    r = api.get("/v1/waitlist/dangling", headers=HEADERS)
     assert r.status_code == 200
     assert isinstance(r.json(), list)
 
@@ -113,7 +113,7 @@ def test_dangling_entries_surface_in_status(api, monkeypatch):
         "reason": "confirmation could not be read",
         "started_at": "2026-08-19T10:00:00",
     }])
-    body = api.get("/status", headers=HEADERS).json()
+    body = api.get("/v1/waitlist/status", headers=HEADERS).json()
     assert body["needs_attention"] is True
     assert body["dangling"][0]["registrant_id"] == "stuck-client"
     assert body["dangling"][0]["status"] == "unknown"
@@ -121,7 +121,7 @@ def test_dangling_entries_surface_in_status(api, monkeypatch):
 
 def test_resolve_rejects_an_ambiguous_status(api):
     """Resolving replaces ambiguity with fact — 'pending' would defeat that."""
-    r = api.post("/status/resolve", headers=HEADERS, json={
+    r = api.post("/v1/waitlist/dangling/resolve", headers=HEADERS, json={
         "route": "AE-CHE", "combo": "Dubai - SCHENGEN",
         "registrant_id": "x", "status": "pending",
     })
@@ -129,7 +129,7 @@ def test_resolve_rejects_an_ambiguous_status(api):
 
 
 def test_resolve_rejects_unknown_fields(api):
-    r = api.post("/status/resolve", headers=HEADERS, json={
+    r = api.post("/v1/waitlist/dangling/resolve", headers=HEADERS, json={
         "route": "AE-CHE", "combo": "Dubai - SCHENGEN",
         "registrant_id": "x", "status": "success", "surprise": 1,
     })
@@ -148,7 +148,7 @@ def test_resolve_accepts_a_definite_outcome(api, monkeypatch):
                               registrant_id=registrant_id, status=Status.SUCCESS)
 
     monkeypatch.setattr("src.waitlist.journal.resolve", fake_resolve)
-    r = api.post("/status/resolve", headers=HEADERS, json={
+    r = api.post("/v1/waitlist/dangling/resolve", headers=HEADERS, json={
         "route": "AE-CHE", "combo": "Dubai - SCHENGEN",
         "registrant_id": "x", "status": "success",
         "reason": "verified on the portal",
@@ -166,7 +166,7 @@ def test_resolve_accepts_a_definite_outcome(api, monkeypatch):
 
 def test_api_responses_keep_the_strict_csp(api):
     """JSON endpoints must never relax the policy."""
-    r = api.get("/health")
+    r = api.get("/v1/health")
     assert r.headers["Content-Security-Policy"] == \
         "default-src 'none'; frame-ancestors 'none'"
 
@@ -184,7 +184,7 @@ def test_docs_csp_allows_the_swagger_cdn(monkeypatch):
     monkeypatch.setenv("VFSAPI_ENABLE_DOCS", "1")
     # The flag now comes from ApiSettings, which is lru_cached — without this
     # the reload re-reads the settings object built BEFORE the env var was set.
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
     config_mod.get_settings.cache_clear()
     import src.api.main as main_mod
     reloaded = importlib.reload(main_mod)
@@ -199,7 +199,7 @@ def test_docs_csp_allows_the_swagger_cdn(monkeypatch):
             assert "script-src" in csp and "style-src" in csp
 
             # ...but an API route must NOT inherit the relaxed policy.
-            assert reloaded.app and client.get("/health").headers[
+            assert reloaded.app and client.get("/v1/health").headers[
                 "Content-Security-Policy"
             ] == "default-src 'none'; frame-ancestors 'none'"
     finally:
@@ -207,7 +207,7 @@ def test_docs_csp_allows_the_swagger_cdn(monkeypatch):
         # Clearing the settings cache is load-bearing: leaving a docs-enabled
         # ApiSettings cached makes the NEXT test see /docs as enabled and fail.
         monkeypatch.delenv("VFSAPI_ENABLE_DOCS", raising=False)
-        import src.api.config as config_mod
+        import src.api.core.config as config_mod
         config_mod.get_settings.cache_clear()
         importlib.reload(main_mod)
 
@@ -220,7 +220,7 @@ def test_docs_are_disabled_by_default():
     A test that fails because the operator turned a feature on is testing the
     machine, not the code.
     """
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
 
     fields = config_mod.ApiSettings.model_fields
     assert fields["enable_docs"].default is False
@@ -242,7 +242,7 @@ def test_openapi_declares_the_security_scheme(monkeypatch):
     monkeypatch.setenv("VFSAPI_ENABLE_DOCS", "1")
     # The flag now comes from ApiSettings, which is lru_cached — without this
     # the reload re-reads the settings object built BEFORE the env var was set.
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
     config_mod.get_settings.cache_clear()
     import src.api.main as main_mod
     reloaded = importlib.reload(main_mod)
@@ -258,10 +258,10 @@ def test_openapi_declares_the_security_scheme(monkeypatch):
             assert schemes["APIKeyHeader"]["name"] == "X-Webhook-Secret-Token"
 
             # Protected endpoints must reference it...
-            assert spec["paths"]["/status"]["get"].get("security")
-            assert spec["paths"]["/clients"]["post"].get("security")
+            assert spec["paths"]["/v1/waitlist/status"]["get"].get("security")
+            assert spec["paths"]["/v1/clients"]["post"].get("security")
             # ...and /health must stay public.
-            assert not spec["paths"]["/health"]["get"].get("security")
+            assert not spec["paths"]["/v1/health"]["get"].get("security")
     finally:
         monkeypatch.delenv("VFSAPI_ENABLE_DOCS", raising=False)
         importlib.reload(main_mod)
@@ -274,7 +274,7 @@ def test_auth_behaviour_unchanged_by_the_security_scheme(api):
     and distinguish missing from wrong — the disclosure the opaque 401 avoids.
     """
     for headers in ({}, {"X-Webhook-Secret-Token": "wrong-token"}):
-        r = api.get("/status", headers=headers)
+        r = api.get("/v1/waitlist/status", headers=headers)
         assert r.status_code == 401
-        assert r.json()["detail"] == \
+        assert r.json()["error"]["message"] == \
             "Unauthorized: missing or invalid authentication token."
