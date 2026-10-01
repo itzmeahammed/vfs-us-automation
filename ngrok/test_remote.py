@@ -101,76 +101,66 @@ def main() -> int:
     print(f"\nTesting {base}\n")
 
     # 1. Reachability, no auth needed.
-    status, body = call(f"{base}/health")
-    check("/health reachable", status == 200 and isinstance(body, dict)
+    status, body = call(f"{base}/v1/health")
+    check("/v1/health reachable", status == 200 and isinstance(body, dict)
           and body.get("status") == "ok", f"status={status}")
     if status is None:
         print(f"\n  Could not reach the tunnel at all: {body}")
-        print("  Is the agent running? Is the URL current? "
-              "(Free-tier URLs change on every restart.)")
+        print("  Is the agent running? Is the URL current?")
         return 1
 
     # 2. HTML instead of JSON means the ngrok interstitial got through.
-    check("/health returns JSON, not the ngrok interstitial",
+    check("/v1/health returns JSON, not the ngrok interstitial",
           isinstance(body, dict),
           "send 'ngrok-skip-browser-warning: true'" if not isinstance(body, dict) else "")
 
-    # 3. Authenticated read.
-    status, body = call(f"{base}/clients", token=token)
-    check("authenticated GET /clients", status == 200,
-          f"status={status}, {str(body)[:120]}")
-
-    # 4. Route readiness — proves the full router stack is reachable.
-    status, body = call(f"{base}/routes/AE-CHE/readiness", token=token)
-    check("GET /routes/AE-CHE/readiness", status == 200,
-          f"combos={body.get('combos') if isinstance(body, dict) else body}")
-
-    # 5. Status endpoint.
-    status, _ = call(f"{base}/status", token=token)
-    check("GET /status", status == 200, f"status={status}")
-
-    # 6. One read per router behind the edge allowlist. A 404 whose body is
-    #    exactly {"error":"not_found"} came from the ngrok EDGE, not the app —
-    #    the app's own 404 carries a detail — so the path is missing from
-    #    ngrok/traffic-policy.yml.
-    for path in ("/booking/status", "/payments/unanswered", "/pipeline",
-                 "/config", "/accounts/health", "/webhooks/deadletters",
-                 "/jobs?limit=1"):
+    # 3. One read per module. A 404 whose body is exactly {"error":"not_found"}
+    #    came from the ngrok EDGE (the app's own errors are the /v1 envelope),
+    #    so the path is missing from ngrok/traffic-policy.yml.
+    for path in ("/v1/health/ready", "/v1/switches", "/v1/clients?limit=1",
+                 "/v1/routes", "/v1/waitlist/status", "/v1/booking/status",
+                 "/v1/booking/invitations", "/v1/booking/payments/unanswered",
+                 "/v1/jobs?limit=1", "/v1/accounts", "/v1/overview",
+                 "/v1/notifications/webhook/deadletters"):
         status, body = call(f"{base}{path}", token=token)
         edge_blocked = body == {"error": "not_found"}
-        check(f"GET {path}", status == 200,
+        ok = status == 200 or (path == "/v1/health/ready" and status == 503)
+        check(f"GET {path}", ok,
               f"status={status}"
               + (" — blocked at the ngrok edge; see traffic-policy.yml"
                  if edge_blocked else ""))
 
-    # 7. PATCH reaches the app. A nonexistent client, so nothing changes: the
-    #    app answers 404/422, whereas an edge that does not allow PATCH
-    #    answers 405 {"error":"method_not_allowed"}.
-    status, body = call(f"{base}/clients/tunnel-test-nonexistent", token=token,
-                        method="PATCH", body={})
+    # 4. PATCH reaches the app. A nonexistent client, so nothing changes: the
+    #    app answers 404, whereas an edge that does not allow PATCH answers 405.
+    status, body = call(f"{base}/v1/clients/tunnel-test-nonexistent", token=token,
+                        method="PATCH", body={"city": "x"})
     check("PATCH passes the edge", status not in (405, None)
           and body != {"error": "method_not_allowed"}, f"status={status}")
 
-    # 8. Optional dry-run trigger.
+    # 5. Old paths are gone, refused at the edge.
+    status, _ = call(f"{base}/clients", token=token)
+    check("pre-/v1 paths are refused", status == 404, f"status={status}")
+
+    # 6. Optional dry-run registration.
     if args.trigger:
-        status, body = call(f"{base}/trigger/waitlist", token=token, method="POST",
+        status, body = call(f"{base}/v1/waitlist/runs", token=token, method="POST",
                             body={"route": "AE-CHE", "dry_run": True,
                                   "reason": "tunnel connectivity test"})
         job = body.get("job", {}) if isinstance(body, dict) else {}
-        check("POST /trigger/waitlist (dry run)", status in (202, 409),
+        check("POST /v1/waitlist/runs (dry run)", status in (202, 409),
               f"status={status} job={job.get('job_id')}"
               + (" (409 = a job is already running, which is fine)"
                  if status == 409 else ""))
 
     # --- The one that must never fail --------------------------------------
     print()
-    status, _ = call(f"{base}/clients")                      # deliberately no token
-    check("UNAUTHENTICATED /clients is refused", status in (401, 403, 404),
+    status, _ = call(f"{base}/v1/clients")                   # deliberately no token
+    check("UNAUTHENTICATED /v1/clients is refused", status in (401, 403, 404),
           f"status={status}"
           + ("  <-- THE API IS EXPOSED WITHOUT AUTH. Stop the tunnel."
              if status == 200 else ""))
 
-    status, _ = call(f"{base}/clients", token="wrong-" + "x" * 60)
+    status, _ = call(f"{base}/v1/clients", token="wrong-" + "x" * 60)
     check("a WRONG token is refused", status in (401, 403, 404), f"status={status}")
 
     print(f"\nRESULT: {passed} passed, {failed} failed\n")

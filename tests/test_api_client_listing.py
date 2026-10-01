@@ -190,14 +190,14 @@ def api():
     Unlike the store fixtures above, these tests assert on shape rather than on
     specific clients, so pointing at a temp dir would test nothing useful.
     """
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
     config_mod.get_settings.cache_clear()
 
     # The rate limiter is a per-process singleton — correct in production, but
     # it makes a whole test file look like one client flooding the endpoint,
     # and it leaks into every test that runs after this one. Reset it per test
     # rather than weakening the limit.
-    from src.api.security import _reset_rate_limiter
+    from src.api.core.security import _reset_rate_limiter
     _reset_rate_limiter()
 
     from fastapi.testclient import TestClient
@@ -207,50 +207,48 @@ def api():
 
 
 def test_the_default_listing_stays_cheap(api):
-    """No pre-flight, no journal — a picker should not pay for a dashboard."""
-    body = api.get("/clients", headers=HEADERS).json()
-    assert body["included"] == []
-    for row in body["clients"]:
+    """No pre-flight by default — a picker should not pay for a dashboard."""
+    body = api.get("/v1/clients", headers=HEADERS).json()
+    for row in body["items"]:
         assert row["runnable"] is None
-        assert row["last_status"] is None
+        assert row["problem_count"] is None
         # ...but timestamps are free, so they are always there.
         assert row["created_at"]
 
 
-def test_include_status_reports_runnability(api):
-    body = api.get("/clients?include=status", headers=HEADERS).json()
-    assert body["included"] == ["status"]
-    for row in body["clients"]:
+def test_include_problems_reports_runnability(api):
+    body = api.get("/v1/clients?include=problems", headers=HEADERS).json()
+    assert body["items"], "the fixture creates clients"
+    for row in body["items"]:
         assert isinstance(row["runnable"], bool)
         assert isinstance(row["problem_count"], int)
-        assert row["last_status"] is None, "journal was not requested"
 
 
-def test_include_journal_reports_the_last_run(api):
-    body = api.get("/clients?include=journal", headers=HEADERS).json()
-    assert body["included"] == ["journal"]
-    for row in body["clients"]:
+def test_waitlist_rows_always_carry_the_last_run(api):
+    """The journal is read once per listing, so its summary is always there."""
+    body = api.get("/v1/clients?flow=waitlist", headers=HEADERS).json()
+    for row in body["items"]:
         assert isinstance(row["run_count"], int)
-        assert row["runnable"] is None, "status was not requested"
+        assert "last_status" in row and "last_run_at" in row
 
 
-def test_include_all_is_both(api):
-    body = api.get("/clients?include=all", headers=HEADERS).json()
-    assert body["included"] == ["journal", "status"]
+def test_an_unknown_include_is_refused(api):
+    r = api.get("/v1/clients?include=journal", headers=HEADERS)
+    assert r.status_code == 422
+    assert "problems" in r.json()["error"]["message"]
 
 
 def test_enabled_filter(api):
-    body = api.get("/clients?enabled=true", headers=HEADERS).json()
-    assert all(r["enabled"] for r in body["clients"])
-    assert body["count"] == len(body["clients"])
+    body = api.get("/v1/clients?enabled=true", headers=HEADERS).json()
+    assert all(r["enabled"] for r in body["items"])
+    assert body["total"] == len(body["items"])
 
 
-def test_runnable_filter_implies_the_status_work(api):
+def test_runnable_filter_implies_the_problems_work(api):
     """Filtering on a field the caller did not ask to compute must still work."""
-    body = api.get("/clients?runnable=true", headers=HEADERS).json()
-    assert "status" in body["included"]
-    assert all(r["runnable"] for r in body["clients"])
+    body = api.get("/v1/clients?runnable=true", headers=HEADERS).json()
+    assert all(r["runnable"] is True for r in body["items"])
 
 
 def test_listing_still_needs_a_token(api):
-    assert api.get("/clients?include=all").status_code == 401
+    assert api.get("/v1/clients?include=problems").status_code == 401

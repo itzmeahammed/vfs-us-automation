@@ -168,7 +168,7 @@ def api():
     # a full run, while passing when run alone.
     saved = os.environ.get("VFSAPI_SECRET_TOKEN")
     os.environ["VFSAPI_SECRET_TOKEN"] = "t" * 64
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
     config_mod.get_settings.cache_clear()
     from fastapi.testclient import TestClient
     import src.api.main as main_mod
@@ -185,7 +185,7 @@ def api():
 
 
 def test_readiness_returns_the_fields(api):
-    r = api.get("/routes/AE-CHE/readiness",
+    r = api.get("/v1/routes/AE-CHE/readiness",
                 headers={"X-Webhook-Secret-Token": "t" * 64})
     assert r.status_code == 200
     body = r.json()
@@ -194,7 +194,7 @@ def test_readiness_returns_the_fields(api):
 
 
 def test_readiness_still_needs_a_token(api):
-    assert api.get("/routes/AE-CHE/readiness").status_code == 401
+    assert api.get("/v1/routes/AE-CHE/readiness").status_code == 401
 
 
 # --------------------------------------------------------------------------
@@ -366,11 +366,10 @@ def test_an_unharvested_dropdown_does_not_reject_anything():
 def test_choice_rejection_reaches_the_api(api):
     body = _client(client_id="zz-choice-api", gender="male", enabled=False,
                    account="x@y.com", account_password="p")
-    r = api.post("/clients", headers={"X-Webhook-Secret-Token": "t" * 64},
-                 json=body)
+    r = api.post("/v1/clients", headers={"X-Webhook-Secret-Token": "t" * 64},
+                 json={**body, "flow": "waitlist"})
     assert r.status_code == 422
-    problems = r.json()["detail"]["problems"] if isinstance(
-        r.json().get("detail"), dict) else r.json()["problems"]
+    problems = r.json()["error"]["problems"]
     assert any(p["field"] == "gender" for p in problems)
 
 

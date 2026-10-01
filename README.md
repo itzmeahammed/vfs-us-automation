@@ -43,16 +43,21 @@ has [an index explaining what each archived file was for](docs/archive/README.md
 
 ### The API
 
-The bot is driven over HTTP. 30 endpoints; the ones that matter:
+The bot is driven over HTTP. Every endpoint is under `/v1` (46 in all, code in
+`src/api/modules/<area>/`); the ones that matter:
 
 | Endpoint | What it does |
 |---|---|
-| `POST /booking/trigger` | Book: `mode` = `probe` \| `walk` \| `commit` |
-| `POST /trigger/waitlist` | Register a client on a waitlist |
-| `GET /jobs/{id}/stream` | Follow a run live (SSE) |
-| `GET /payments/unanswered` | **Check this after any crash** |
-| `GET /booking/status` | Routes and per-client phases |
+| `POST /v1/clients` | Add a client; `flow` = `waitlist` \| `live` |
+| `GET /v1/clients/{id}/timeline` | Everything that happened to one client |
+| `POST /v1/booking/runs` | Book now: `mode` = `probe` \| `walk` \| `commit` |
+| `POST /v1/waitlist/runs` | Register on a waitlist now |
+| `GET /v1/jobs/{id}/stream` | Follow a run live (SSE) |
+| `GET /v1/booking/payments/unanswered` | **Check this after any crash** |
+| `GET /v1/health/ready` | Can this machine do what its switches say? |
+| `GET/PATCH /v1/switches` | The four master switches |
 
+Postman collection: `postman/` (regenerate with `python -m scripts.build_postman`).
 Full schema: run with `VFSAPI_ENABLE_DOCS=1` and open `/docs`. Usage examples
 are in [RUNBOOK.md](RUNBOOK.md#3-booking-through-the-api).
 

@@ -34,7 +34,7 @@ from src.utils.config_reader import initialize_config  # noqa: E402
 
 initialize_config()
 
-from src.api.status import _describe_posture  # noqa: E402
+from src.api.modules.waitlist.status import _describe_posture  # noqa: E402
 from src.settings import settings  # noqa: E402
 from src.waitlist import guards  # noqa: E402
 

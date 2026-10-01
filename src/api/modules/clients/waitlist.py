@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
-    APIRouter,
     Depends,
     File,
     Form,
@@ -37,25 +36,13 @@ from fastapi import (
     status,
 )
 
-from src.api.schemas import (
-    ClientCreateRequest,
-    ClientDetailResponse,
-    ClientJournalResponse,
-    ClientListResponse,
-    ClientPatchRequest,
-    ClientSummary,
-    ClientWriteResponse,
-    JournalRow,
-    ProblemModel,
-    RouteReadinessResponse,
-    RouteSummary,
-    RoutesListResponse,
-)
-from src.api.security import require_token
+from src.api.core.schemas import ProblemModel
+from src.api.modules.catalog.schemas import RouteReadinessResponse
+from src.api.modules.clients.schemas import ClientCreateRequest, ClientDetailResponse, ClientJournalResponse, ClientListResponse, ClientPatchRequest, ClientSummary, ClientWriteResponse, JournalRow
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.clients")
 
-router = APIRouter(prefix="/clients", tags=["clients"])
 
 # Keys never returned to a caller, in any endpoint.
 _SECRET_KEYS = frozenset({"account_password", "password", "proxy"})
@@ -173,12 +160,6 @@ def _raise_validation(problems: List[Any]) -> None:
 # --------------------------------------------------------------------------
 
 
-@router.post(
-    "",
-    response_model=ClientWriteResponse,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_token)],
-)
 def create_client(payload: ClientCreateRequest) -> ClientWriteResponse:
     """Create a client file from the web app's data.
 
@@ -230,11 +211,6 @@ def create_client(payload: ClientCreateRequest) -> ClientWriteResponse:
     )
 
 
-@router.get(
-    "",
-    response_model=ClientListResponse,
-    dependencies=[Depends(require_token)],
-)
 def list_clients(
     route: Optional[str] = Query(default=None, description="Filter by route id."),
     include: Optional[str] = Query(
@@ -323,11 +299,6 @@ def list_clients(
                               included=sorted(wanted))
 
 
-@router.get(
-    "/{client_id}",
-    response_model=ClientDetailResponse,
-    dependencies=[Depends(require_token)],
-)
 def get_client(client_id: str) -> ClientDetailResponse:
     """One client, with secrets stripped and PII masked.
 
@@ -351,11 +322,6 @@ def get_client(client_id: str) -> ClientDetailResponse:
     )
 
 
-@router.put(
-    "/{client_id}",
-    response_model=ClientWriteResponse,
-    dependencies=[Depends(require_token)],
-)
 def update_client(client_id: str,
                   payload: ClientCreateRequest) -> ClientWriteResponse:
     """REPLACE a client. Fields you do not send are REMOVED.
@@ -405,11 +371,6 @@ def update_client(client_id: str,
     )
 
 
-@router.patch(
-    "/{client_id}",
-    response_model=ClientWriteResponse,
-    dependencies=[Depends(require_token)],
-)
 def patch_client(client_id: str,
                  payload: ClientPatchRequest) -> ClientWriteResponse:
     """Partially update a client: only the fields you send are changed.
@@ -457,10 +418,6 @@ def patch_client(client_id: str,
     )
 
 
-@router.delete(
-    "/{client_id}",
-    dependencies=[Depends(require_token)],
-)
 def delete_client(client_id: str) -> Dict[str, Any]:
     """Delete a client file, and any documents held for them."""
     from src.waitlist import documents, store
@@ -487,11 +444,6 @@ def delete_client(client_id: str) -> Dict[str, Any]:
     return {"client_id": client_id, "deleted": True, "documents_removed": removed}
 
 
-@router.post(
-    "/{client_id}/enable",
-    response_model=ClientWriteResponse,
-    dependencies=[Depends(require_token)],
-)
 def enable_client(client_id: str) -> ClientWriteResponse:
     """Arm a client for registration.
 
@@ -520,11 +472,6 @@ def enable_client(client_id: str) -> ClientWriteResponse:
     )
 
 
-@router.post(
-    "/{client_id}/disable",
-    response_model=ClientWriteResponse,
-    dependencies=[Depends(require_token)],
-)
 def disable_client(client_id: str) -> ClientWriteResponse:
     """Park a client without deleting their data."""
     from src.waitlist import store
@@ -564,11 +511,6 @@ def disable_client(client_id: str) -> ClientWriteResponse:
 # liability. See src/waitlist/documents.py for that reasoning.
 
 
-@router.post(
-    "/{client_id}/documents",
-    dependencies=[Depends(require_token)],
-    status_code=status.HTTP_201_CREATED,
-)
 async def upload_document(
     client_id: str,
     file: UploadFile = File(..., description="PNG, JPG or PDF. Max 2 MB."),
@@ -664,10 +606,6 @@ async def upload_document(
     }
 
 
-@router.get(
-    "/{client_id}/documents",
-    dependencies=[Depends(require_token)],
-)
 async def list_documents(client_id: str) -> Dict[str, Any]:
     """What documents are held for this client. Never returns the file itself.
 
@@ -693,11 +631,6 @@ async def list_documents(client_id: str) -> Dict[str, Any]:
     return {"client_id": client_id, "count": len(held), "documents": held}
 
 
-@router.get(
-    "/{client_id}/journal",
-    response_model=ClientJournalResponse,
-    dependencies=[Depends(require_token)],
-)
 def get_client_journal(client_id: str) -> ClientJournalResponse:
     """Full registration history for one client, newest first.
 
@@ -736,10 +669,6 @@ def get_client_journal(client_id: str) -> ClientJournalResponse:
     )
 
 
-@router.delete(
-    "/{client_id}/documents",
-    dependencies=[Depends(require_token)],
-)
 async def delete_documents(client_id: str) -> Dict[str, Any]:
     """Remove every document held for a client.
 
@@ -756,74 +685,4 @@ async def delete_documents(client_id: str) -> Dict[str, Any]:
 # Route readiness (not client-specific, but the web app needs it to build a form)
 # --------------------------------------------------------------------------
 
-routes_router = APIRouter(prefix="/routes", tags=["routes"])
 
-
-@routes_router.get(
-    "",
-    response_model=RoutesListResponse,
-    dependencies=[Depends(require_token)],
-)
-def list_routes() -> RoutesListResponse:
-    """All configured routes with readiness summary and client count.
-
-    The web app needs this to populate a route picker before it can call
-    GET /routes/{route}/readiness for the form fields.
-    """
-    from src.waitlist import store, validate
-
-    route_ids: List[str] = []
-    try:
-        from src.utils.config_reader import get_config_section
-        route_ids = sorted(
-            r.upper() for r in (get_config_section("vfs-url") or {})
-        )
-    except Exception:                              # noqa: BLE001
-        log.exception("Could not read the route list from the bot config.")
-
-    summaries: List[RouteSummary] = []
-    for route_id in route_ids:
-        try:
-            readiness = validate.route_readiness(route_id)
-            clients = store.list_ids(route=route_id)
-            summaries.append(RouteSummary(
-                route=route_id,
-                ready=readiness.ready,
-                combos=readiness.combos,
-                clients=len(clients),
-                problems=[p.message for p in readiness.problems],
-            ))
-        except Exception as exc:                   # noqa: BLE001
-            summaries.append(RouteSummary(
-                route=route_id, ready=False, problems=[str(exc)],
-            ))
-
-    return RoutesListResponse(count=len(summaries), routes=summaries)
-
-
-@routes_router.get(
-    "/{route}/readiness",
-    response_model=RouteReadinessResponse,
-    dependencies=[Depends(require_token)],
-)
-def route_readiness(route: str) -> RouteReadinessResponse:
-    """Can this route accept waitlist registrations, and what are its combos?
-
-    The web app should call this before showing a signup form: it returns the
-    valid combination labels to populate the dropdown, and says plainly when a
-    route is not accepting registrations (and why).
-    """
-    from src.waitlist import validate
-
-    readiness = validate.route_readiness(route)
-    return RouteReadinessResponse(
-        route=readiness.route,
-        ready=readiness.ready,
-        combos=readiness.combos,
-        # Returned even when ready=False: the web app can still render and
-        # validate the form while a route is being brought online, and a caller
-        # debugging "why won't this route accept anyone" benefits from seeing
-        # what it would ask for.
-        fields=validate.required_fields(readiness.route),
-        problems=_problems_to_models(readiness.problems),
-    )

@@ -11,27 +11,14 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
+from fastapi import Depends, HTTPException, Query, status as http_status
 
-from src.api.schemas import (
-    AccountBenchRequest,
-    AccountClearResponse,
-    AccountHealth,
-    AccountHealthResponse,
-    AccountRouteHealth,
-)
-from src.api.security import require_token
+from src.api.modules.accounts.schemas import AccountBenchRequest, AccountClearResponse, AccountHealth, AccountHealthResponse, AccountRouteHealth
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.accounts")
 
-router = APIRouter(prefix="/accounts", tags=["accounts"])
 
-
-@router.get(
-    "/health",
-    response_model=AccountHealthResponse,
-    dependencies=[Depends(require_token)],
-)
 def get_account_health() -> AccountHealthResponse:
     """All accounts' circuit-breaker state.
 
@@ -65,11 +52,6 @@ def get_account_health() -> AccountHealthResponse:
     return AccountHealthResponse(count=len(accounts), accounts=accounts)
 
 
-@router.post(
-    "/health/{email}/clear",
-    response_model=AccountClearResponse,
-    dependencies=[Depends(require_token)],
-)
 def clear_account(
     email: str,
     route: Optional[str] = Query(
@@ -98,10 +80,6 @@ def clear_account(
     return AccountClearResponse(email=email, route=route, cleared=True)
 
 
-@router.post(
-    "/health/{email}/bench",
-    dependencies=[Depends(require_token)],
-)
 def bench_account(email: str, payload: AccountBenchRequest) -> Dict[str, Any]:
     """Bench an account on a specific route for a number of hours.
 

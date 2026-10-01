@@ -143,16 +143,21 @@ const res = await fetch(`${process.env.VFS_WEBHOOK_URL}/trigger/waitlist`, {
 });
 ```
 
-What the edge lets through (`traffic-policy.yml`, rule 1) — every router the
-app mounts:
+What the edge lets through (`traffic-policy.yml`, rule 1): every `/v1/*` path,
+plus the deprecated pre-/v1 paths, which still answer with a `Deprecation: true`
+header. Build against `/v1` — see the Postman collection in `postman/`.
 
-| Prefix | Methods |
+| `/v1` module | Paths |
 |---|---|
-| `/clients`, `/routes`, `/status` | GET, POST, PUT, PATCH, DELETE |
-| `/trigger/waitlist`, `/booking/trigger` | POST (start a job, 202) |
-| `/jobs`, `/jobs/{id}/logs`, `/jobs/{id}/stream` (SSE), `/jobs/{id}/cancel` | GET, POST |
-| `/booking/status`, `/payments/unanswered`, `/pipeline`, `/config`, `/accounts/health`, `/webhooks/deadletters` | GET |
-| `/accounts/health/{email}/…`, `/inbox/reconcile`, `/webhooks/test` | POST |
+| system | `/v1/health` (no auth), `/v1/health/ready`, `/v1/switches`, `/v1/config`, `/v1/overview`, `/v1/audit` |
+| clients | `/v1/clients` — one resource, `flow: waitlist \| live` |
+| catalog | `/v1/routes`, `/v1/routes/{route}/readiness` |
+| waitlist | `/v1/waitlist/runs`, `/status`, `/dangling`, `/reconcile` |
+| booking | `/v1/booking/runs`, `/invitations`, `/payments/unanswered` |
+| jobs | `/v1/jobs`, `/active`, `/{id}`, `/logs`, `/stream`, `/cancel` |
+| accounts, notifications | `/v1/accounts`, `/v1/notifications/...` |
+
+Send `X-Actor: <agent>` on every call; it is recorded in `GET /v1/audit`.
 
 Adding a router to `src/api/main.py` means adding it to rule 1 and running
 `python ngrok/build_config.py`; `tests/test_tunnel_policy.py` fails until you do.
@@ -202,6 +207,6 @@ in it. Value comparison stays in `src/api/security.py`, in constant time.
 | HTML instead of JSON | Send `ngrok-skip-browser-warning: true`. |
 | `502` from ngrok | The API is down. `curl http://127.0.0.1:8000/health` |
 | `401` with a token sent | Header must be exactly `X-Webhook-Secret-Token`. Check for a trailing newline from copy-paste. |
-| `409` on trigger | A job is already running (single-flight). `GET /jobs` |
+| `409` on trigger | A job is already running (one per lane). `GET /v1/jobs/active` |
 | URL changed after restart | Free-tier behaviour. Reserve a domain or keep it configurable. |
 | Tunnel up but nothing arrives | Watch live traffic at <http://127.0.0.1:4040> |

@@ -257,15 +257,33 @@ def card_problem() -> str:
         return f"company card unusable: {exc}"
 
 
-def gate_problem(route: str) -> str:
+def is_test(req: store.BookingRequest) -> bool:
+    """A TEST request walks every page and stops before the payment click.
+
+    The full chain runs for real — slot check, match, Telegram, background
+    process, login, every form, the slot pick — and nothing is booked or
+    charged, because nothing past the commit boundary is clicked. It exists
+    so the pipeline can be proven end to end without a card, which is the one
+    thing a fake card cannot do: on Norway the appointment is created BEFORE
+    the card page, so a fake card leaves a real, unpaid booking behind.
+    """
+    return bool(req.data.get("test_mode"))
+
+
+def gate_problem(route: str, test: bool = False) -> str:
     """Why nothing may be booked on `route` right now, or ''."""
     from src.booking import config as booking_config
 
-    if not _cfg().auto_book_enabled:
-        return "[booking] auto_book_enabled is false"
+    from src.settings import settings
+
+    switches = settings().switches
+    if test and not switches.test_booking:
+        return "test booking is switched off ([switches] test_booking = false)"
+    if not test and not switches.live_booking:
+        return "live booking is switched off ([switches] live_booking = false)"
     if not booking_config.is_enabled(route):
         return f"booking is disabled in config/booking/{route}.json"
-    return card_problem()
+    return "" if test else card_problem()
 
 
 # --------------------------------------------------------------------------- #
@@ -281,6 +299,8 @@ def handle_route_checked(route: str, slot_results: List[Any]) -> List[Match]:
     """
     try:
         store.expire_past()
+        for request_id in store.flag_stale():
+            _telegram(format_message("needs_attention", store.get(request_id)))
         requests = store.list_all(route=route)
         if not any(r.is_armed() for r in requests):
             return []
@@ -293,26 +313,38 @@ def handle_route_checked(route: str, slot_results: List[Any]) -> List[Match]:
                      sum(r.is_armed() for r in requests))
             return []
 
-        blocked = gate_problem(route)
-        if blocked:
-            log.error("Auto-book %s: %d request(s) matched but NOT booking — %s.",
-                      route, len(matches), blocked)
-            _alert_once(f"autobook-gate:{route}:{blocked}",
-                        f"Booking requests matched a live slot on {route} but "
-                        f"were NOT booked: {blocked}.")
+        by_id = {r.request_id: r for r in requests}
+        runnable = []
+        for m in matches:
+            blocked = gate_problem(route, test=is_test(by_id[m.request_id]))
+            if blocked:
+                log.error("Auto-book %s: %s matched but NOT booking — %s.",
+                          route, m.request_id, blocked)
+                _alert_once(f"autobook-gate:{m.request_id}:{blocked}",
+                            format_message("blocked", by_id[m.request_id],
+                                           seen_date=m.seen_date, reason=blocked))
+            else:
+                runnable.append(m)
+        if not runnable:
             return matches
+        matches = runnable
 
         log.warning("Auto-book %s: %s", route, ", ".join(
             f"{m.request_id} (earliest {m.seen_date} on {m.combo})" for m in matches))
-        spawn(route, matches)
+        log_path = spawn(route, matches)
+        for position, m in enumerate(matches, start=1):
+            _telegram(format_message(
+                "triggered", by_id[m.request_id], seen_date=m.seen_date,
+                log_path=log_path if isinstance(log_path, str) else "",
+                queue=f"{position} of {len(matches)}" if len(matches) > 1 else ""))
         return matches
     except Exception as exc:                                # noqa: BLE001
         log.exception("Auto-book check failed for %s (non-fatal): %s", route, exc)
         return []
 
 
-def spawn(route: str, matches: List[Match]) -> Optional[int]:
-    """Start the booking in a detached child. Returns its pid."""
+def spawn(route: str, matches: List[Match]) -> str:
+    """Start the booking in a detached child. Returns its log file."""
     os.makedirs(SPAWN_LOG_DIR, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(SPAWN_LOG_DIR, f"{stamp}_{route}.log")
@@ -335,7 +367,7 @@ def spawn(route: str, matches: List[Match]) -> Optional[int]:
                                 **kwargs)
     log.warning("Auto-book %s: booking process started (pid %s), log %s",
                 route, proc.pid, log_path)
-    return proc.pid
+    return os.path.relpath(log_path, REPO_ROOT)
 
 
 # --------------------------------------------------------------------------- #
@@ -360,12 +392,13 @@ def run_queue(route: str, request_ids: List[str],
         if not lock.held:
             log.warning("Another booking is running — leaving %s for the next "
                         "slot check.", ", ".join(request_ids))
+            for request_id in request_ids:
+                try:
+                    _telegram(format_message("busy", store.get(request_id),
+                                             seen_date=seen.get(request_id, "")))
+                except Exception:                           # noqa: BLE001
+                    pass
             return 0
-
-        problem = gate_problem(route)
-        if problem:
-            log.error("Not booking on %s: %s", route, problem)
-            return 1
 
         commit_step = booking_config.commit_step_name(route, booking_config.ENTRY_NEW)
         for request_id in request_ids:
@@ -393,12 +426,22 @@ def _book_one(route: str, request_id: str, seen_date: str,
         return
 
     cfg = _cfg()
-    if committed_today(store.list_all()) >= cfg.max_per_day:
+    test = is_test(req)
+    problem = gate_problem(route, test=test)
+    if problem:
+        # Said on Telegram too: the supervisor already announced "triggered",
+        # and a refusal that only reaches a log file reads as silence.
+        log.error("Not booking %s: %s", request_id, problem)
+        _alert_once(f"autobook-gate:{request_id}:{problem}",
+                    format_message("blocked", req, seen_date=seen_date,
+                                   reason=problem))
+        return
+    if not test and committed_today(store.list_all()) >= cfg.max_per_day:
         log.error("Daily cap reached ([booking] max_per_day = %d) — %s waits "
                   "for tomorrow.", cfg.max_per_day, request_id)
         _alert_once(f"autobook-cap:{date.today()}",
-                    f"Auto-booking daily cap ({cfg.max_per_day}) reached; "
-                    "further matches wait until tomorrow.")
+                    format_message("cap", req, seen_date=seen_date,
+                                   reason=f"{cfg.max_per_day} payment(s) today"))
         return
 
     problems = [p for p in store.precheck(request_id, req.data)
@@ -411,7 +454,8 @@ def _book_one(route: str, request_id: str, seen_date: str,
         return
 
     store.record_event(request_id, "attempt_started",
-                       f"earliest {seen_date or '?'} seen on {req.combo}",
+                       ("TEST RUN (stops before payment) — " if test else "")
+                       + f"earliest {seen_date or '?'} seen on {req.combo}",
                        status=store.BOOKING, seen_date=seen_date)
     rows_before = len(payment_journal.read_all())
     source, _, dest = route.partition("-")
@@ -421,12 +465,17 @@ def _book_one(route: str, request_id: str, seen_date: str,
         result = run_probe(source=source, dest=dest,
                            person=req.as_registrant(),
                            entry="new", combo=req.combo,
-                           walk=True, commit=True, capture="failure")
+                           walk=True, commit=not test, capture="failure")
     except Exception as exc:                                # noqa: BLE001
         # run_probe raises only before Chrome: config, account, window. The
         # payment journal is still checked, because "before Chrome" is an
         # assumption and a wrong one would be the expensive direction.
         result = _Failed(str(exc))
+
+    if test:
+        _finish_test(request_id, result, commit_step, seen_date,
+                     payment_journal.read_all()[rows_before:])
+        return
 
     payment_rows = payment_journal.read_all()[rows_before:]
     outcome = classify(result, commit_step, payment_rows)
@@ -442,7 +491,60 @@ def _book_one(route: str, request_id: str, seen_date: str,
                        status=outcome.status, **outcome.details)
     log.warning("Auto-book %s -> %s: %s", request_id, outcome.status, outcome.detail)
     if outcome.notify:
-        _notify(store.get(request_id), outcome)
+        _notify(store.get(request_id), outcome, seen_date)
+    else:
+        _telegram(format_message("retry", store.get(request_id),
+                                 seen_date=seen_date, reason=outcome.detail))
+
+
+def classify_test(result: Any, commit_step: str) -> Tuple[bool, str]:
+    """(passed, detail) for a TEST run. PURE.
+
+    Passed means the walk reached the committing step with every page before
+    it done — the dry run's own "stopped at the commit boundary" — which is
+    everything a real booking does short of the payment click.
+    """
+    walk = getattr(result, "walk", None)
+    if walk is None:
+        return False, "; ".join(getattr(result, "errors", None) or []) or "no walk ran"
+    steps = getattr(walk, "steps", None) or []
+    if walk.ok and walk.stopped_at == commit_step:
+        picked = " ".join(str(_found(walk, k) or "") for k in
+                          ("chosen_date", "chosen_time")).strip()
+        return True, (f"walked {len(steps)} page(s) and stopped at "
+                      f"'{commit_step}' before paying"
+                      + (f"; slot that would be booked: {picked}" if picked else ""))
+    return False, (f"stopped at '{walk.stopped_at or '?'}': "
+                   f"{walk.reason or 'no reason given'}")
+
+
+def _finish_test(request_id: str, result: Any, commit_step: str,
+                 seen_date: str, payment_rows: List[Dict[str, Any]]) -> None:
+    """Record a test run and PARK the request.
+
+    Parked whether it passed or failed: a test request left armed would log in
+    again on every slot check, and VFS blocks an account after a few logins in
+    a short window. Re-enable it to test again.
+    """
+    if payment_rows:
+        # Cannot happen with commit=False — and if it ever does, it is the
+        # most important thing in this file to shout about.
+        outcome = Outcome(store.NEEDS_ATTENTION, "needs_attention",
+                          "TEST run wrote payment journal rows — a payment may "
+                          "have been submitted. Check the card and VFS NOW.", {})
+        store.record_event(request_id, outcome.event, outcome.detail,
+                           status=outcome.status)
+        _notify(store.get(request_id), outcome, seen_date)
+        return
+
+    passed, detail = classify_test(result, commit_step)
+    store.record_event(request_id, "test_passed" if passed else "test_failed",
+                       detail, status=store.WAITING)
+    req = store.set_enabled(request_id, False)
+    log.warning("Auto-book TEST %s -> %s: %s", request_id,
+                "PASSED" if passed else "FAILED", detail)
+    _telegram(format_message("test_passed" if passed else "test_failed", req,
+                             seen_date=seen_date, reason=detail))
 
 
 @dataclass
@@ -462,7 +564,107 @@ class _Failed:
 # --------------------------------------------------------------------------- #
 
 
-def _notify(req: store.BookingRequest, outcome: Outcome) -> None:
+_HEADLINES = {
+    "triggered": "🎯 BOOKING TRIGGERED",
+    "blocked": "⛔ SLOT MATCHED — NOT BOOKING",
+    "busy": "⏳ WAITING FOR ANOTHER BOOKING",
+    "retry": "↩️ ATTEMPT FAILED — WILL RETRY",
+    "booked": "✅ BOOKED AND PAID",
+    "needs_attention": "⚠️ BOOKING NEEDS A HUMAN",
+    "cap": "🛑 DAILY BOOKING CAP REACHED",
+    "test_passed": "🧪✅ TEST RUN PASSED",
+    "test_failed": "🧪❌ TEST RUN FAILED",
+}
+
+#: What the reader should do next, per message kind.
+_FOOTERS = {
+    "triggered": "Logging in and booking now. Next message: the result.",
+    "triggered_test": "TEST MODE: logging in and walking every page; it stops "
+                      "BEFORE the payment click. Next message: the result.",
+    "blocked": "Nothing was booked or paid. Fix the reason above; the next "
+               "slot check retries by itself.",
+    "busy": "Nothing was booked. It stays waiting and the next slot check "
+            "tries again.",
+    "retry": "Nothing was paid. It stays waiting; the next matching slot "
+             "check tries again.",
+    "booked": "Appointment booked and paid with the company card.",
+    "needs_attention": "It will NOT retry. Check the VFS account and the card, "
+                       "then POST /booking-requests/{id}/resolve.",
+    "cap": "Further matches wait until tomorrow. Raise [booking] max_per_day "
+           "to allow more.",
+    "test_passed": "Nothing was booked or paid. The request is now PARKED; "
+                   "remove test_mode and enable it to book for real.",
+    "test_failed": "Nothing was booked or paid. The request is now PARKED; "
+                   "fix the reason and enable it to test again.",
+}
+
+
+def _mask_email(email: str) -> str:
+    local, at, domain = str(email or "").partition("@")
+    if not at:
+        return "shared booking account"
+    return f"{local[:2]}***@{domain}"
+
+
+def format_message(kind: str, req: store.BookingRequest, **info: Any) -> str:
+    """The Telegram text for one booking event. PURE apart from settings.
+
+    Carries enough to act on without opening a file: who, what, which dates,
+    why. Never the passport number or the password.
+    """
+    start, end = req.window()
+    name = " ".join(str(req.data.get(k) or "") for k in
+                    ("first_name", "last_name")).strip()
+    headline = _HEADLINES.get(kind, kind.upper())
+    if is_test(req) and kind in ("triggered", "blocked", "busy"):
+        headline = f"🧪 TEST — {headline}"
+    lines = [f"{headline} — {req.route}",
+             f"Request: {req.request_id}" + (f" ({name})" if name else ""),
+             f"Combo: {req.combo}",
+             f"Window: {start} → {end}"]
+    if info.get("seen_date"):
+        lines.append(f"Earliest seen: {info['seen_date']}")
+    if kind in ("triggered", "retry", "needs_attention", "booked"):
+        attempt = int(req.data.get("attempts") or 0) + (1 if kind == "triggered" else 0)
+        lines.append(f"Account: {_mask_email(req.data.get('account'))}")
+        lines.append(f"Attempt: {attempt} of {_cfg().max_attempts}")
+    if info.get("queue"):
+        lines.append(f"Queue: {info['queue']}")
+    booked = req.data.get("booked") or {}
+    if kind == "booked":
+        when = " ".join(str(booked.get(k, "")) for k in
+                        ("appointment_date", "appointment_time")).strip()
+        lines.append(f"Appointment: {when or 'see the VFS account'}")
+        for key, label in (("requestrefno", "Payment ref"),
+                           ("transactionid", "Transaction"),
+                           ("booking_ref", "Booking ref")):
+            if booked.get(key):
+                lines.append(f"{label}: {booked[key]}")
+    reason = info.get("reason") or (req.data.get("last_error")
+                                    if kind in ("needs_attention", "retry") else "")
+    if reason:
+        lines.append(f"Reason: {str(reason)[:400]}")
+    if info.get("log_path"):
+        lines.append(f"Log: {info['log_path']}")
+    lines.append("")
+    footer_key = f"{kind}_test" if is_test(req) and f"{kind}_test" in _FOOTERS else kind
+    lines.append(_FOOTERS.get(footer_key, "").replace("{id}", req.request_id))
+    return "\n".join(lines).strip()
+
+
+def _telegram(text: str) -> None:
+    """To the 'testing bot' chat (the [telegram] summary channel). Never raises."""
+    try:
+        if not _cfg().telegram_enabled:
+            return
+        from src.utils import telegram
+        telegram.send_error(text)
+    except Exception as exc:                                # noqa: BLE001
+        log.warning("Could not send the booking Telegram: %s", exc)
+
+
+def _notify(req: store.BookingRequest, outcome: Outcome,
+            seen_date: str = "") -> None:
     payload = {"request_id": req.request_id, "route": req.route,
                "combo": req.combo, "status": outcome.status,
                "detail": outcome.detail, **outcome.details}
@@ -472,24 +674,9 @@ def _notify(req: store.BookingRequest, outcome: Outcome) -> None:
     except Exception as exc:                                # noqa: BLE001
         log.warning("Could not post the booking webhook: %s", exc)
 
-    if not _cfg().telegram_enabled:
-        return
-    try:
-        from src.utils import telegram
-        if outcome.status == store.BOOKED:
-            when = " ".join(str(outcome.details.get(k, "")) for k in
-                            ("appointment_date", "appointment_time")).strip()
-            telegram.send_message(
-                f"✅ BOOKED {req.request_id} — {req.combo}"
-                + (f" on {when}" if when else "") + ". Paid with the company card.")
-        else:
-            telegram.send_error(
-                f"⚠️ BOOKING NEEDS A HUMAN: {req.request_id} ({req.route}, "
-                f"{req.combo}) — {outcome.detail}. It will not retry. Check the "
-                "VFS account, then POST /booking-requests/"
-                f"{req.request_id}/resolve.")
-    except Exception as exc:                                # noqa: BLE001
-        log.warning("Could not send the booking Telegram: %s", exc)
+    kind = "booked" if outcome.status == store.BOOKED else "needs_attention"
+    _telegram(format_message(kind, req, seen_date=seen_date,
+                             reason=outcome.detail if kind != "booked" else ""))
 
 
 def _alert_once(key: str, text: str) -> None:
@@ -498,6 +685,8 @@ def _alert_once(key: str, text: str) -> None:
     try:
         from src.utils import telegram, waitlist_cooldown
         if waitlist_cooldown.is_on_cooldown(key):
+            return
+        if not _cfg().telegram_enabled:
             return
         waitlist_cooldown.record_sent(key)
         telegram.send_error(text)

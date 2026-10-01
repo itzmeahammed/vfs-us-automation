@@ -322,7 +322,7 @@ def test_no_window_is_still_a_VALID_RECORD():
 def test_the_api_accepts_the_date_fields():
     """The consumer writes these through the client API, so the request models
     must not strip them."""
-    from src.api.schemas import ClientPatchRequest
+    from src.api.modules.clients.schemas import ClientPatchRequest
 
     patch = ClientPatchRequest(**{"date_from": "2026-11-10",
                                   "date_to": "2026-11-20"})

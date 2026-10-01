@@ -10,14 +10,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends
+from fastapi import Depends
 
-from src.api.schemas import ConfigResponse
-from src.api.security import require_token
+from src.api.modules.system.schemas import ConfigResponse
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.config_view")
 
-router = APIRouter(tags=["config"])
 
 # Keys to strip from any section before returning.
 _SECRET_KEYS = frozenset({
@@ -31,11 +30,6 @@ def _strip_secrets(data: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in data.items() if k.lower() not in _SECRET_KEYS}
 
 
-@router.get(
-    "/config",
-    response_model=ConfigResponse,
-    dependencies=[Depends(require_token)],
-)
 def get_config() -> ConfigResponse:
     """Read-only dump of operational settings, secrets stripped.
 

@@ -58,9 +58,9 @@ Over the API, the same id answers:
 
 | Call | Answers |
 |---|---|
-| `GET /jobs/{run_id}` | status, exit code, per-client results |
-| `GET /jobs/{run_id}/stream` | follow it live (SSE) |
-| `GET /jobs/{run_id}/logs` | the log after it finishes |
+| `GET /v1/jobs/{run_id}` | status, exit code, per-client results |
+| `GET /v1/jobs/{run_id}/stream` | follow it live (SSE) |
+| `GET /v1/jobs/{run_id}/logs` | the log after it finishes |
 
 For an API-triggered run `job_id == run_id`, so there is no mapping to look up.
 
@@ -92,27 +92,20 @@ Three modes, increasing risk. Nothing but `mode` decides how far a run goes.
 TOKEN=...   # VFSAPI_SECRET_TOKEN
 API=localhost:8000
 
+# Runs take a client_id (either flow): it supplies route, combo, applicant
+# and, for a live client, the date window. X-Actor is recorded in /v1/audit.
+
 # 1. READ-ONLY — log in, read the dashboard, click nothing
-curl -sX POST $API/booking/trigger \
-  -H "X-Webhook-Secret-Token: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"route":"AE-NOR","mode":"probe"}' | jq
+curl -sX POST $API/v1/booking/runs   -H "X-Webhook-Secret-Token: $TOKEN" -H "X-Actor: you" -H 'Content-Type: application/json'   -d '{"client_id":"test-nor-1","mode":"probe"}' | jq
 
 # 2. REVERSIBLE — walk the pages, stop in front of the committing step
-curl -sX POST $API/booking/trigger \
-  -H "X-Webhook-Secret-Token: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"route":"AE-NOR","mode":"walk","registrant":"mufaddal-nor"}' | jq
+curl -sX POST $API/v1/booking/runs   -H "X-Webhook-Secret-Token: $TOKEN" -H "X-Actor: you" -H 'Content-Type: application/json'   -d '{"client_id":"test-nor-1","mode":"walk"}' | jq
 
 # 3. NO UNDO — books the appointment AND submits a real payment
-curl -sX POST $API/booking/trigger \
-  -H "X-Webhook-Secret-Token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -H "Idempotency-Key: $(uuidgen)" \
-  -d '{
-        "route":"AE-NOR",
+curl -sX POST $API/v1/booking/runs   -H "X-Webhook-Secret-Token: $TOKEN" -H "X-Actor: you"   -H 'Content-Type: application/json'   -H "Idempotency-Key: $(uuidgen)"   -d '{
+        "client_id":"test-nor-1",
         "mode":"commit",
         "confirm":"AE-NOR",
-        "registrant":"mufaddal-nor",
-        "combo":"Norway Visa Application Center - Dubai - Tourist",
         "reason":"invitation received 2026-09-29"
       }' | jq
 ```
@@ -148,7 +141,7 @@ opens and before an account session is spent.
 The slot is **already booked**; only the payment failed. Do not re-run the
 walk — it would book a second appointment.
 
-1. `GET /payments/unanswered`.
+1. `GET /v1/booking/payments/unanswered`.
 2. Look at `runs/<ROUTE>/<run_id>/` for the failure screenshot.
 3. Resolve at the gateway by hand.
 
@@ -169,7 +162,7 @@ Check the portal **before** resolving. `success` blocks the client permanently;
 ### The API says a job is already running (409)
 
 Runs are serialised on purpose: two at once can double-register a client. Wait,
-or `POST /jobs/{id}/cancel`. A manual `python -m src.waitlist run` holds the
+or `POST /v1/jobs/{id}/cancel`. A manual `python -m src.waitlist run` holds the
 same machine lock, so the API will refuse while one is in flight.
 
 ### The API restarted mid-job
@@ -197,7 +190,7 @@ inspections rather than logging in repeatedly.
 - [ ] `VFSAPI_ENABLE_DOCS` unset in production (an open schema maps your API)
 - [ ] The API binds loopback only; the tunnel is the public edge
 - [ ] A retention sweep prunes `runs/` and `logs/`
-- [ ] `GET /payments/unanswered` is **monitored** — alert on
+- [ ] `GET /v1/booking/payments/unanswered` is **monitored** — alert on
       `needs_attention: true`
 - [ ] One real `mode: commit` run has been done and verified end to end
 

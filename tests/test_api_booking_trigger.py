@@ -24,7 +24,7 @@ import io
 import pytest
 from pydantic import ValidationError
 
-from src.api.schemas import BookingMode, BookingTriggerRequest
+from src.api.modules.booking.schemas import BookingMode, BookingTriggerRequest
 
 
 def _parse(args):

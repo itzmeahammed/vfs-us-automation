@@ -69,14 +69,14 @@ Write-Host "ngrok: $NgrokExe" -ForegroundColor DarkGray
 # --- 1. The API must be up FIRST -------------------------------------------
 function Test-Api {
     try {
-        $r = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 3
+        $r = Invoke-RestMethod "http://127.0.0.1:$Port/v1/health" -TimeoutSec 3
         return $r.status -eq 'ok'
     } catch { return $false }
 }
 
 if (-not (Test-Api)) {
     if (-not $StartApi) {
-        throw ("The API is not answering on http://127.0.0.1:$Port/health. " +
+        throw ("The API is not answering on http://127.0.0.1:$Port/v1/health. " +
                "Start it with 'python -m src.api', or re-run this with -StartApi. " +
                "Publishing a tunnel to a dead port just yields 502s.")
     }
@@ -139,16 +139,16 @@ if (-not $token -and (Test-Path "$repo\.env.api")) {
 }
 
 try {
-    $h = Invoke-RestMethod "$publicUrl/health" -TimeoutSec 10 `
+    $h = Invoke-RestMethod "$publicUrl/v1/health" -TimeoutSec 10 `
             -Headers @{ 'ngrok-skip-browser-warning' = 'true' }
-    Write-Host "[ok] /health through the tunnel: $($h.status)" -ForegroundColor Green
+    Write-Host "[ok] /v1/health through the tunnel: $($h.status)" -ForegroundColor Green
 } catch {
-    Write-Warning "Tunnel is up but /health failed through it: $_"
+    Write-Warning "Tunnel is up but /v1/health failed through it: $_"
 }
 
 if ($token) {
     try {
-        $null = Invoke-RestMethod "$publicUrl/clients" -TimeoutSec 10 -Headers @{
+        $null = Invoke-RestMethod "$publicUrl/v1/clients" -TimeoutSec 10 -Headers @{
             'X-Webhook-Secret-Token'    = $token
             'ngrok-skip-browser-warning'= 'true'
         }
@@ -160,9 +160,9 @@ if ($token) {
     # tunnel is exposing the API without auth, which is the one unacceptable
     # outcome - so it is checked explicitly rather than assumed.
     try {
-        $null = Invoke-RestMethod "$publicUrl/clients" -TimeoutSec 10 `
+        $null = Invoke-RestMethod "$publicUrl/v1/clients" -TimeoutSec 10 `
                     -Headers @{ 'ngrok-skip-browser-warning' = 'true' }
-        Write-Host "[FAIL] /clients answered WITHOUT a token. Do not use this tunnel." -ForegroundColor Red
+        Write-Host "[FAIL] /v1/clients answered WITHOUT a token. Do not use this tunnel." -ForegroundColor Red
     } catch {
         Write-Host "[ok] Unauthenticated request correctly refused" -ForegroundColor Green
     }

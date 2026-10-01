@@ -19,21 +19,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from fastapi import Depends, HTTPException, status as http_status
 
-from src.api.schemas import (
-    DanglingEntry,
-    ResolveRequest,
-    StatusResponse,
-    SwitchState,
-    SwitchesUpdateRequest,
-    SwitchesUpdateResponse,
-)
-from src.api.security import require_token
+from src.api.modules.system.schemas import SwitchState, SwitchesUpdateRequest, SwitchesUpdateResponse
+from src.api.modules.waitlist.schemas import DanglingEntry, ResolveRequest, StatusResponse
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.status")
-
-router = APIRouter(tags=["status"])
 
 
 def _switches() -> SwitchState:
@@ -45,7 +37,12 @@ def _switches() -> SwitchState:
     from src.settings import settings
 
     cfg = settings().waitlist
+    masters = settings().switches
     return SwitchState(
+        waitlist=bool(masters.waitlist),
+        invite_booking=bool(masters.invite_booking),
+        live_booking=bool(masters.live_booking),
+        test_booking=bool(masters.test_booking),
         register_enabled=bool(cfg.register_enabled),
         dry_run=bool(cfg.dry_run),
         auto_trigger_enabled=bool(getattr(cfg, "auto_trigger_enabled", False)),
@@ -56,6 +53,14 @@ def _switches() -> SwitchState:
 
 
 def _describe_posture(switches: SwitchState) -> str:
+    # Only a master that was actually READ as off reports OFF. A SwitchState
+    # built without it (older callers describing just the detail switches)
+    # has the field defaulted, and that default is not a statement about
+    # this machine.
+    explicit = "waitlist" in getattr(switches, "model_fields_set", {"waitlist"})
+    if getattr(switches, "waitlist", True) is False and explicit:
+        return ("OFF — [switches] waitlist is false: the waitlist flow does "
+                "nothing, whatever the settings below say.")
     """One plain sentence: would a waitlist opening register anyone right now?"""
     if not switches.register_enabled:
         return ("PARKED — [waitlist] register_enabled is false, so nothing can "
@@ -80,11 +85,6 @@ def _describe_posture(switches: SwitchState) -> str:
             "without a human in the loop.")
 
 
-@router.get(
-    "/status",
-    response_model=StatusResponse,
-    dependencies=[Depends(require_token)],
-)
 def get_status() -> StatusResponse:
     """Everything an operator needs in one call.
 
@@ -195,11 +195,6 @@ def get_status() -> StatusResponse:
     )
 
 
-@router.get(
-    "/status/dangling",
-    response_model=List[DanglingEntry],
-    dependencies=[Depends(require_token)],
-)
 def get_dangling() -> List[DanglingEntry]:
     """Journal rows needing a human decision.
 
@@ -222,10 +217,6 @@ def get_dangling() -> List[DanglingEntry]:
     ]
 
 
-@router.post(
-    "/status/resolve",
-    dependencies=[Depends(require_token)],
-)
 def resolve_entry(payload: ResolveRequest) -> Dict[str, Any]:
     """Record what a human found on the VFS portal, unblocking the client.
 
@@ -259,53 +250,77 @@ def resolve_entry(payload: ResolveRequest) -> Dict[str, Any]:
 # Switches (operational toggles)
 # --------------------------------------------------------------------------
 
-# The INI keys that correspond to each switch field.
+# Each switch field -> (INI section, key).
 _SWITCH_INI_KEYS = {
-    "register_enabled": "register_enabled",
-    "dry_run": "dry_run",
-    "auto_trigger_enabled": "auto_trigger_enabled",
-    "auto_trigger_dry_run": "auto_trigger_dry_run",
-    "max_per_run": "max_per_run",
-    "max_per_day": "max_per_day",
+    "register_enabled": ("waitlist", "register_enabled"),
+    "dry_run": ("waitlist", "dry_run"),
+    "auto_trigger_enabled": ("waitlist", "auto_trigger_enabled"),
+    "auto_trigger_dry_run": ("waitlist", "auto_trigger_dry_run"),
+    "max_per_run": ("waitlist", "max_per_run"),
+    "max_per_day": ("waitlist", "max_per_day"),
+    "waitlist": ("switches", "waitlist"),
+    "invite_booking": ("switches", "invite_booking"),
+    "live_booking": ("switches", "live_booking"),
+    "test_booking": ("switches", "test_booking"),
 }
 
 
-def _write_ini_switches(updates: Dict[str, Any]) -> None:
-    """Write switch values to config/config.local.ini [waitlist] section.
+def set_ini_value(text: str, section: str, key: str, value: str) -> str:
+    """Set `key = value` in `[section]` of INI `text`, changing nothing else.
 
-    Uses configparser to read-modify-write the local override file, so other
-    sections and keys are preserved. The file is the gitignored local override
-    that wins over config/config.ini.
+    Text-level on purpose. configparser.write() re-emits the file without a
+    single comment, and config.local.ini is mostly comments — the operator's
+    notes on why each value is what it is. The old writer erased them on the
+    first API toggle. Commented-out keys (`; key = ...`) are left alone; the
+    live line is replaced in place, or added at the end of the section.
     """
-    import configparser
+    lines = text.splitlines()
+    header = f"[{section}]".lower()
+    start = next((i for i, ln in enumerate(lines)
+                  if ln.strip().lower() == header), None)
+    new_line = f"{key} = {value}"
+    if start is None:
+        body = text.rstrip("\n")
+        return (body + "\n\n" if body else "") + f"[{section}]\n{new_line}\n"
+
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].strip().startswith("[")), len(lines))
+    for i in range(start + 1, end):
+        stripped = lines[i].strip()
+        if stripped.startswith((";", "#")) or "=" not in stripped:
+            continue
+        if stripped.split("=", 1)[0].strip().lower() == key.lower():
+            lines[i] = new_line
+            return "\n".join(lines) + "\n"
+
+    insert_at = end
+    while insert_at > start + 1 and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    lines.insert(insert_at, new_line)
+    return "\n".join(lines) + "\n"
+
+
+def _write_ini_switches(updates: Dict[str, Any]) -> None:
+    """Write switch values to config/config.local.ini, keeping its comments."""
     import os
 
     ini_path = os.path.join("config", "config.local.ini")
-    parser = configparser.ConfigParser()
-    parser.read(ini_path, encoding="utf-8")
-
-    if not parser.has_section("waitlist"):
-        parser.add_section("waitlist")
+    text = ""
+    if os.path.exists(ini_path):
+        with open(ini_path, "r", encoding="utf-8") as fh:
+            text = fh.read()
 
     for field_name, value in updates.items():
-        ini_key = _SWITCH_INI_KEYS.get(field_name)
-        if ini_key is None:
+        target = _SWITCH_INI_KEYS.get(field_name)
+        if target is None:
             continue
-        # Booleans -> lowercase string for INI
-        if isinstance(value, bool):
-            parser.set("waitlist", ini_key, str(value).lower())
-        else:
-            parser.set("waitlist", ini_key, str(value))
+        rendered = str(value).lower() if isinstance(value, bool) else str(value)
+        text = set_ini_value(text, target[0], target[1], rendered)
 
     with open(ini_path, "w", encoding="utf-8") as fh:
-        parser.write(fh)
+        fh.write(text)
 
 
-@router.patch(
-    "/status/switches",
-    response_model=SwitchesUpdateResponse,
-    dependencies=[Depends(require_token)],
-)
 def update_switches(payload: SwitchesUpdateRequest) -> SwitchesUpdateResponse:
     """Toggle operational switches (register_enabled, dry_run, etc.).
 

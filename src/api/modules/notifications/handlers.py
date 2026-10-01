@@ -9,21 +9,14 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import Depends
 
-from src.api.schemas import WebhookDeadletterResponse, WebhookTestResponse
-from src.api.security import require_token
+from src.api.modules.notifications.schemas import WebhookDeadletterResponse, WebhookTestResponse
+from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.webhooks")
 
-router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
-
-@router.post(
-    "/test",
-    response_model=WebhookTestResponse,
-    dependencies=[Depends(require_token)],
-)
 def test_webhook() -> WebhookTestResponse:
     """Send a test ping to verify the outbound webhook works end to end.
 
@@ -43,11 +36,6 @@ def test_webhook() -> WebhookTestResponse:
     )
 
 
-@router.get(
-    "/deadletters",
-    response_model=WebhookDeadletterResponse,
-    dependencies=[Depends(require_token)],
-)
 def get_deadletters() -> WebhookDeadletterResponse:
     """How many webhook deliveries failed and are waiting in the dead-letter log."""
     from src.utils.webhook import deadletter_count, is_configured

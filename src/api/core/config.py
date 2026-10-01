@@ -25,8 +25,8 @@ from typing import List
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo root = .../vfs-malta-slot-checker  (this file is src/api/config.py)
-REPO_ROOT: Path = Path(__file__).resolve().parents[2]
+# Repo root = .../vfs-malta-slot-checker  (this file is src/api/core/config.py)
+REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 
 # Minimum acceptable shared-secret length. 32 chars is ~128 bits of entropy when
 # generated with secrets.token_hex(16); we ask for a bit more headroom because

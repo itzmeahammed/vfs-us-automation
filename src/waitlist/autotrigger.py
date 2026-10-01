@@ -248,6 +248,11 @@ def handle_waitlist_opened(route: str, result_labels: List[str]) -> List[Trigger
         from src.settings import settings
         cfg = settings().waitlist
 
+        if not settings().switches.waitlist:
+            log.info("Waitlist opened on %s but the waitlist flow is OFF "
+                     "([switches] waitlist = false).", route)
+            return plans
+
         if not getattr(cfg, "auto_trigger_enabled", False):
             log.info("Waitlist opened on %s but auto-trigger is OFF "
                      "([waitlist] auto_trigger_enabled = false).", route)

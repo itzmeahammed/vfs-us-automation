@@ -52,6 +52,16 @@ def _request(**over) -> Dict[str, Any]:
     return data
 
 
+@pytest.fixture(autouse=True)
+def no_real_telegram(monkeypatch):
+    """Every booking event sends a Telegram. A test must never reach the
+    real chat — capture instead, so tests can assert on what WOULD be sent."""
+    sent = []
+    monkeypatch.setattr(autobook, "_telegram", sent.append)
+    monkeypatch.setattr(autobook, "_alert_once", lambda key, text: sent.append(text))
+    return sent
+
+
 @pytest.fixture()
 def request_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "REQUEST_DIR", str(tmp_path / "booking_requests"))
@@ -292,7 +302,6 @@ def test_hook_spawns_only_when_gates_pass(request_dir, monkeypatch):
     monkeypatch.setattr(store, "expire_past", lambda: [])
     spawned = []
     monkeypatch.setattr(autobook, "spawn", lambda route, m: spawned.append(m))
-    monkeypatch.setattr(autobook, "_alert_once", lambda *a: None)
 
     # Window does not contain 2099 -> nothing.
     assert autobook.handle_route_checked(ROUTE, SLOT_RESULTS) == []
@@ -302,11 +311,11 @@ def test_hook_spawns_only_when_gates_pass(request_dir, monkeypatch):
     monkeypatch.setattr(autobook, "find_matches",
                         lambda route, e, reqs: [autobook.Match("r1", ROUTE, COMBO, "2026-10-12")])
 
-    monkeypatch.setattr(autobook, "gate_problem", lambda route: "no company card")
+    monkeypatch.setattr(autobook, "gate_problem", lambda route, **kw: "no company card")
     autobook.handle_route_checked(ROUTE, SLOT_RESULTS)
     assert spawned == []                               # gate held
 
-    monkeypatch.setattr(autobook, "gate_problem", lambda route: "")
+    monkeypatch.setattr(autobook, "gate_problem", lambda route, **kw: "")
     autobook.handle_route_checked(ROUTE, SLOT_RESULTS)
     assert [m.request_id for m in spawned[0]] == ["r1"]
 
@@ -331,7 +340,7 @@ def _run_child(monkeypatch, result, rows):
         journal.extend(rows)
         return result
     monkeypatch.setattr(probe, "run_probe", fake_probe)
-    monkeypatch.setattr(autobook, "gate_problem", lambda route: "")
+    monkeypatch.setattr(autobook, "gate_problem", lambda route, **kw: "")
     monkeypatch.setattr(autobook, "_notify", lambda req, out: None)
     monkeypatch.setattr(store, "precheck", lambda rid, data, today=None: [])
     return autobook.run_queue(ROUTE, ["r1"], {"r1": "2026-10-12"})
@@ -380,7 +389,7 @@ def test_child_skips_a_request_disabled_since_it_was_matched(request_dir, monkey
 def api(request_dir, monkeypatch):
     from fastapi.testclient import TestClient
 
-    from src.api.security import _reset_rate_limiter
+    from src.api.core.security import _reset_rate_limiter
     from src.api.main import app
 
     _reset_rate_limiter()
@@ -392,56 +401,219 @@ HEADERS = {"X-Webhook-Secret-Token": os.environ["VFSAPI_SECRET_TOKEN"]}
 
 
 def test_api_names_every_missing_field(api):
-    r = api.post("/booking-requests", headers=HEADERS, json={
-        "request_id": "r1", "route": ROUTE, "combo": COMBO,
+    r = api.post("/v1/clients", headers=HEADERS, json={
+        "client_id": "r1", "flow": "live", "route": ROUTE, "combo": COMBO,
         "date_from": "2026-10-10", "date_to": "2026-10-20"})
     assert r.status_code == 422
-    fields = {p["field"] for p in r.json()["problems"]}
+    fields = {p["field"] for p in r.json()["error"]["problems"]}
     assert {"passport_number", "city", "postcode", "email"} <= fields
 
 
 def test_api_refuses_a_waitlist_only_route_and_a_bad_window(api):
-    r = api.post("/booking-requests", headers=HEADERS, json={
-        "request_id": "r1", **_request(route="AE-GRC", date_from="2026-10-20",
-                                       date_to="2026-10-10")})
+    r = api.post("/v1/clients", headers=HEADERS, json={
+        "client_id": "r1", "flow": "live",
+        **_request(route="AE-GRC", date_from="2026-10-20", date_to="2026-10-10")})
     assert r.status_code == 422
 
 
 def test_api_full_lifecycle(api):
-    body = {"request_id": "r1", **_request(date_from="2099-01-10",
-                                           date_to="2099-01-20")}
+    body = {"client_id": "r1", "flow": "live", **_request()}
     body["date_from"], body["date_to"] = _future_window()
-    r = api.post("/booking-requests", headers=HEADERS, json=body)
+    r = api.post("/v1/clients", headers=HEADERS, json=body)
     assert r.status_code == 201, r.text
     got = r.json()
     assert got["status"] == "waiting" and got["enabled"] is True
-    assert "account_password" not in got["request"]
-    assert got["request"]["passport_number"] != "A1234567"      # masked
+    assert "account_password" not in got["details"]
+    assert got["details"]["passport_number"] != "A1234567"      # masked
 
-    assert api.post("/booking-requests", headers=HEADERS, json=body).status_code == 409
-    assert api.get("/booking-requests", headers=HEADERS).json()["count"] == 1
+    assert api.post("/v1/clients", headers=HEADERS, json=body).status_code == 409
+    assert api.get("/v1/clients?flow=live", headers=HEADERS).json()["total"] == 1
 
-    r = api.patch("/booking-requests/r1", headers=HEADERS, json={"city": "Abu Dhabi"})
-    assert r.status_code == 200 and r.json()["request"]["city"] == "Abu Dhabi"
+    r = api.patch("/v1/clients/r1", headers=HEADERS, json={"city": "Abu Dhabi"})
+    assert r.status_code == 200 and r.json()["details"]["city"] == "Abu Dhabi"
     assert store.get("r1").data["account_password"] == "pw-not-returned"
 
-    assert api.post("/booking-requests/r1/disable", headers=HEADERS).json()["enabled"] is False
-    assert api.post("/booking-requests/r1/enable", headers=HEADERS).json()["enabled"] is True
+    assert api.post("/v1/clients/r1/disable", headers=HEADERS).json()["enabled"] is False
+    assert api.post("/v1/clients/r1/enable", headers=HEADERS).json()["enabled"] is True
 
-    assert api.post("/booking-requests/r1/resolve", headers=HEADERS,
+    assert api.post("/v1/clients/r1/resolve", headers=HEADERS,
                     json={"outcome": "booked"}).status_code == 409
 
     store.record_event("r1", "attempt_started", status=store.BOOKING)
-    assert api.delete("/booking-requests/r1", headers=HEADERS).status_code == 409
+    assert api.delete("/v1/clients/r1", headers=HEADERS).status_code == 409
     store.record_event("r1", "needs_attention", "x", status=store.NEEDS_ATTENTION)
-    r = api.post("/booking-requests/r1/resolve", headers=HEADERS,
+    r = api.post("/v1/clients/r1/resolve", headers=HEADERS,
                  json={"outcome": "booked", "appointment_date": "2026-10-12"})
     assert r.json()["status"] == "booked"
 
-    assert api.get("/booking-requests/nope", headers=HEADERS).status_code == 404
+    assert api.get("/v1/clients/nope", headers=HEADERS).status_code == 404
 
 
 def _future_window():
     from datetime import timedelta
     start = date.today() + timedelta(days=10)
     return start.isoformat(), (start + timedelta(days=10)).isoformat()
+
+
+# --------------------------------------------------------------------------- #
+# Telegram messages                                                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_trigger_and_outcome_messages_reach_the_chat(request_dir, monkeypatch,
+                                                     no_real_telegram):
+    store.create("r1", _request())
+    monkeypatch.setattr(store, "expire_past", lambda: [])
+    monkeypatch.setattr(autobook, "earliest_by_combo",
+                        lambda route, results: {autobook._norm(COMBO): (COMBO, "2026-10-12")})
+    monkeypatch.setattr(autobook, "find_matches",
+                        lambda route, e, reqs: [autobook.Match("r1", ROUTE, COMBO, "2026-10-12")])
+    monkeypatch.setattr(autobook, "gate_problem", lambda route, **kw: "")
+    monkeypatch.setattr(autobook, "spawn", lambda route, m: "logs/booking_auto/x.log")
+
+    autobook.handle_route_checked(ROUTE, SLOT_RESULTS)
+    text = no_real_telegram[-1]
+    assert "BOOKING TRIGGERED" in text and "r1 (AHMED KHAN)" in text
+    assert "2026-10-10 → 2026-10-20" in text and "Earliest seen: 2026-10-12" in text
+    assert "Attempt: 1 of" in text and "logs/booking_auto/x.log" in text
+
+
+def test_blocked_message_names_the_reason(request_dir, monkeypatch, no_real_telegram):
+    store.create("r1", _request())
+    monkeypatch.setattr(store, "expire_past", lambda: [])
+    monkeypatch.setattr(autobook, "find_matches",
+                        lambda route, e, reqs: [autobook.Match("r1", ROUTE, COMBO, "2026-10-12")])
+    monkeypatch.setattr(autobook, "gate_problem", lambda route, **kw: "no company card")
+    autobook.handle_route_checked(ROUTE, SLOT_RESULTS)
+    assert "NOT BOOKING" in no_real_telegram[-1]
+    assert "no company card" in no_real_telegram[-1]
+
+
+def test_each_outcome_sends_its_own_message(request_dir, monkeypatch, no_real_telegram):
+    store.create("r1", _request())
+    walk = _Walk(PRE + [_Step("payment")], stopped_at="payment")
+    monkeypatch.setattr(autobook, "_notify",
+                        autobook._notify.__wrapped__ if hasattr(autobook._notify, "__wrapped__")
+                        else autobook._notify)
+    from src.utils import webhook
+    monkeypatch.setattr(webhook, "notify_booking", lambda payload: None)
+
+    from src.booking import probe
+    from src.payment import journal as payment_journal
+    journal = []
+    monkeypatch.setattr(payment_journal, "read_all", lambda: list(journal))
+
+    def fake_probe(**kwargs):
+        journal.extend([SUBMITTING, {"event": "payment_result", "outcome": "success",
+                                     "requestrefno": "R-77"}])
+        return _Result(walk=walk)
+    monkeypatch.setattr(probe, "run_probe", fake_probe)
+    monkeypatch.setattr(autobook, "gate_problem", lambda route, **kw: "")
+    monkeypatch.setattr(store, "precheck", lambda rid, data, today=None: [])
+
+    autobook.run_queue(ROUTE, ["r1"], {"r1": "2026-10-12"})
+    text = no_real_telegram[-1]
+    assert "BOOKED AND PAID" in text
+    assert "Appointment: 2026-10-12 09:30" in text and "Payment ref: R-77" in text
+
+
+def test_messages_never_carry_the_passport_or_password(request_dir):
+    req = store.create("r1", _request())
+    for kind in ("triggered", "blocked", "busy", "retry", "booked",
+                 "needs_attention", "cap"):
+        text = autobook.format_message(kind, req, seen_date="2026-10-12",
+                                       reason="x")
+        assert "A1234567" not in text and "pw-not-returned" not in text
+        assert "booker@example.com" not in text           # masked
+
+
+# --------------------------------------------------------------------------- #
+# Test mode: the whole chain, stopping before the payment click                #
+# --------------------------------------------------------------------------- #
+
+
+def test_a_test_request_needs_no_card_but_a_real_one_does(monkeypatch):
+    monkeypatch.setattr(autobook, "card_problem", lambda: "no company card")
+    assert autobook.gate_problem(ROUTE, test=True) == ""
+    assert autobook.gate_problem(ROUTE, test=False) == "no company card"
+
+
+def test_classify_test_passes_only_at_the_commit_boundary():
+    reached = _Walk(PRE + [_Step("payment")], stopped_at="payment")
+    passed, detail = autobook.classify_test(_Result(walk=reached), "payment")
+    assert passed and "2026-10-12 09:30" in detail
+
+    short = _Walk(PRE[:2] + [_Step("select_slot", ok=False)],
+                  stopped_at="select_slot", reason="no date in range")
+    assert autobook.classify_test(_Result(walk=short), "payment") == (
+        False, "stopped at 'select_slot': no date in range")
+    assert autobook.classify_test(_Result(errors=["login failed"]), "payment")[0] is False
+
+
+def _run_test_child(monkeypatch, result, rows=()):
+    from src.booking import probe
+    from src.payment import journal as payment_journal
+
+    journal = []
+    monkeypatch.setattr(payment_journal, "read_all", lambda: list(journal))
+    seen_kwargs = {}
+
+    def fake_probe(**kwargs):
+        seen_kwargs.update(kwargs)
+        journal.extend(rows)
+        return result
+    monkeypatch.setattr(probe, "run_probe", fake_probe)
+    monkeypatch.setattr(autobook, "card_problem", lambda: "no company card")
+    monkeypatch.setattr(store, "precheck", lambda rid, data, today=None: [])
+    from src.utils import webhook
+    monkeypatch.setattr(webhook, "notify_booking", lambda payload: None)
+    autobook.run_queue(ROUTE, ["t1"], {"t1": "2026-10-05"})
+    return seen_kwargs
+
+
+def test_a_test_run_never_commits_and_parks_itself(request_dir, monkeypatch,
+                                                   no_real_telegram):
+    store.create("t1", _request(test_mode=True))
+    walk = _Walk(PRE + [_Step("payment")], stopped_at="payment")
+    kwargs = _run_test_child(monkeypatch, _Result(walk=walk))
+
+    assert kwargs["commit"] is False                     # never pays
+    req = store.get("t1")
+    assert req.status == store.WAITING and req.enabled is False
+    assert req.data["history"][-2]["event"] == "test_passed"
+    assert "TEST RUN PASSED" in no_real_telegram[-1]
+
+
+def test_a_failed_test_run_also_parks_and_says_why(request_dir, monkeypatch,
+                                                   no_real_telegram):
+    store.create("t1", _request(test_mode=True))
+    _run_test_child(monkeypatch, _Result(errors=["Cloudflare not passed"]))
+    assert store.get("t1").enabled is False
+    assert "TEST RUN FAILED" in no_real_telegram[-1]
+    assert "Cloudflare not passed" in no_real_telegram[-1]
+
+
+def test_payment_rows_during_a_test_run_are_an_emergency(request_dir, monkeypatch,
+                                                        no_real_telegram):
+    store.create("t1", _request(test_mode=True))
+    walk = _Walk(PRE + [_Step("payment")], stopped_at="payment")
+    _run_test_child(monkeypatch, _Result(walk=walk), rows=[SUBMITTING])
+    assert store.get("t1").status == store.NEEDS_ATTENTION
+
+
+def test_trigger_message_is_marked_as_a_test(request_dir):
+    req = store.create("t1", _request(test_mode=True))
+    text = autobook.format_message("triggered", req, seen_date="2026-10-05")
+    assert text.startswith("🧪 TEST — 🎯 BOOKING TRIGGERED")
+    assert "BEFORE the payment click" in text
+
+
+def test_a_refusal_in_the_booking_process_reaches_telegram(request_dir, monkeypatch,
+                                                           no_real_telegram):
+    store.create("t1", _request(test_mode=True))
+    monkeypatch.setattr(autobook, "gate_problem",
+                        lambda route, **kw: "test booking is switched off")
+    autobook.run_queue(ROUTE, ["t1"], {"t1": "2026-10-05"})
+    assert "NOT BOOKING" in no_real_telegram[-1]
+    assert "switched off" in no_real_telegram[-1]
+    assert store.get("t1").data["attempts"] == 0

@@ -34,7 +34,7 @@ PDF = b"%PDF-1.4" + b"\x00" * 400
 AUTH = {"X-Webhook-Secret-Token": TOKEN}
 
 CLIENT = {
-    "client_id": "doc-test", "route": "AE-CHE",
+    "client_id": "doc-test", "flow": "waitlist", "route": "AE-CHE",
     "combos": ["Dubai - SCHENGEN"],
     "account": "p@example.com", "account_password": "x" * 10,
     "first_name": "AVA", "last_name": "STONE", "nationality": "INDIA",
@@ -54,14 +54,14 @@ def api(tmp_path, monkeypatch):
     os.environ["VFSAPI_SECRET_TOKEN"] = TOKEN
     monkeypatch.setenv("VFS_DOCUMENT_ROOT", str(tmp_path / "docs"))
 
-    import src.api.config as config_mod
+    import src.api.core.config as config_mod
     config_mod.get_settings.cache_clear()
 
     # The per-IP limiter is process-global and every test here shares one
     # client IP, so without this the later tests 429 instead of exercising what
     # they claim to. Reset per test rather than raising the limit — the limit
     # itself is worth keeping honest.
-    from src.api.security import _reset_rate_limiter
+    from src.api.core.security import _reset_rate_limiter
     _reset_rate_limiter()
 
     from src.utils.config_reader import initialize_config
@@ -72,14 +72,14 @@ def api(tmp_path, monkeypatch):
     import src.api.main as main_mod
     client = TestClient(main_mod.app, raise_server_exceptions=False)
 
-    client.post("/clients", json=CLIENT, headers=AUTH)
+    client.post("/v1/clients", json=CLIENT, headers=AUTH)
     try:
         yield client
     finally:
         # These deletes still need THIS fixture's token, so the restore below
         # must come after them.
-        client.delete("/clients/doc-test/documents", headers=AUTH)
-        client.delete("/clients/doc-test", headers=AUTH)
+        client.delete("/v1/clients/doc-test/documents", headers=AUTH)
+        client.delete("/v1/clients/doc-test", headers=AUTH)
         if _saved_token is None:
             os.environ.pop("VFSAPI_SECRET_TOKEN", None)
         else:
@@ -90,7 +90,7 @@ def api(tmp_path, monkeypatch):
 
 
 def _upload(api, data: bytes, filename: str = "passport.png"):
-    return api.post("/clients/doc-test/documents", headers=AUTH,
+    return api.post("/v1/clients/doc-test/documents", headers=AUTH,
                     files={"file": (filename, data, "application/octet-stream")})
 
 
@@ -107,7 +107,7 @@ def test_a_valid_png_is_accepted(api):
 
 def test_the_upload_is_listed_afterwards(api):
     _upload(api, PNG)
-    body = api.get("/clients/doc-test/documents", headers=AUTH).json()
+    body = api.get("/v1/clients/doc-test/documents", headers=AUTH).json()
     assert body["count"] == 1
     assert body["documents"][0]["kind"] == "passport_bio"
 
@@ -121,10 +121,10 @@ def test_the_stored_path_is_never_returned(api):
 
 def test_documents_can_be_deleted(api):
     _upload(api, PNG)
-    r = api.delete("/clients/doc-test/documents", headers=AUTH)
+    r = api.delete("/v1/clients/doc-test/documents", headers=AUTH)
     assert r.status_code == 200
     assert r.json()["removed"] == 1
-    assert api.get("/clients/doc-test/documents", headers=AUTH).json()["count"] == 0
+    assert api.get("/v1/clients/doc-test/documents", headers=AUTH).json()["count"] == 0
 
 
 # --------------------------------------------------------------------------
@@ -136,13 +136,13 @@ def test_pdf_bytes_named_png_are_rejected(api):
     """THE point of magic-byte sniffing."""
     r = _upload(api, PDF, "passport.png")
     assert r.status_code == 422
-    assert "contents" in r.json()["detail"]
+    assert "contents" in r.json()["error"]["message"]
 
 
 def test_an_unaccepted_extension_is_rejected(api):
     r = _upload(api, b"hello", "notes.txt")
     assert r.status_code == 422
-    assert ".txt" in r.json()["detail"]
+    assert ".txt" in r.json()["error"]["message"]
 
 
 def test_an_empty_file_is_rejected(api):
@@ -152,7 +152,7 @@ def test_an_empty_file_is_rejected(api):
 def test_a_rejected_upload_stores_nothing(api):
     """A failed validation must not leave a file behind."""
     _upload(api, PDF, "passport.png")
-    assert api.get("/clients/doc-test/documents", headers=AUTH).json()["count"] == 0
+    assert api.get("/v1/clients/doc-test/documents", headers=AUTH).json()["count"] == 0
 
 
 # --------------------------------------------------------------------------
@@ -184,23 +184,23 @@ def test_a_file_over_the_portal_limit_is_rejected(api):
 
 def test_uploading_for_an_unknown_client_is_refused(api):
     """Otherwise a typo'd id leaves an orphaned passport scan on disk."""
-    r = api.post("/clients/nope/documents", headers=AUTH,
+    r = api.post("/v1/clients/nope/documents", headers=AUTH,
                  files={"file": ("p.png", PNG, "application/octet-stream")})
     assert r.status_code == 404
 
 
 def test_upload_requires_the_token(api):
-    r = api.post("/clients/doc-test/documents",
+    r = api.post("/v1/clients/doc-test/documents",
                  files={"file": ("p.png", PNG, "application/octet-stream")})
     assert r.status_code == 401
 
 
 def test_listing_requires_the_token(api):
-    assert api.get("/clients/doc-test/documents").status_code == 401
+    assert api.get("/v1/clients/doc-test/documents").status_code == 401
 
 
 def test_an_unknown_document_kind_is_refused(api):
-    r = api.post("/clients/doc-test/documents", headers=AUTH,
+    r = api.post("/v1/clients/doc-test/documents", headers=AUTH,
                  data={"kind": "birth_certificate"},
                  files={"file": ("p.png", PNG, "application/octet-stream")})
     assert r.status_code == 422
@@ -216,7 +216,7 @@ def test_json_endpoints_keep_the_small_cap(api):
     import src.api.main as main_mod
 
     assert main_mod.documents_max_upload_bytes() > 64 * 1024
-    r = api.post("/clients", headers=AUTH,
+    r = api.post("/v1/clients", headers=AUTH,
                  json={"client_id": "x" * 70_000, "route": "AE-CHE",
                        "combos": ["Dubai - SCHENGEN"]})
     assert r.status_code == 413
@@ -237,9 +237,9 @@ def test_deleting_a_client_also_deletes_their_documents(api):
     them — the scan stayed on disk with nothing referencing it.
     """
     _upload(api, PNG)
-    assert api.get("/clients/doc-test/documents", headers=AUTH).json()["count"] == 1
+    assert api.get("/v1/clients/doc-test/documents", headers=AUTH).json()["count"] == 1
 
-    body = api.delete("/clients/doc-test", headers=AUTH).json()
+    body = api.delete("/v1/clients/doc-test", headers=AUTH).json()
     assert body["documents_removed"] == 1
 
     from src.waitlist import documents
@@ -247,6 +247,6 @@ def test_deleting_a_client_also_deletes_their_documents(api):
 
 
 def test_deleting_a_client_with_no_documents_still_succeeds(api):
-    body = api.delete("/clients/doc-test", headers=AUTH).json()
+    body = api.delete("/v1/clients/doc-test", headers=AUTH).json()
     assert body["deleted"] is True
     assert body["documents_removed"] == 0

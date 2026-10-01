@@ -540,6 +540,17 @@ def run_pass(state: Optional[seen_state.SeenState] = None) -> PassResult:
         finally:
             seen_state.save(state)
 
+    # RECORD, don't act: invitations go to the Flow 2 queue so that ANY pass —
+    # the supervisor's or a manual `watch` — is seen by the booking side. A
+    # message is marked seen once classified here, so an invitation dropped
+    # now would never be offered again. Acting on it is gated separately
+    # ([switches] invite_booking), in src/booking/invites.py.
+    try:
+        from src.booking import invites
+        invites.record(result.invitations())
+    except Exception as e:                                  # noqa: BLE001
+        log.error(f"Could not record invitations for booking: {e}")
+
     return result
 
 

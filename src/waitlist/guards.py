@@ -78,6 +78,13 @@ def check(route: str, combo: str, registrant,
     """
     cfg = settings().waitlist
 
+    # 0 — the operator's front-panel switch for the whole waitlist flow.
+    if not settings().switches.waitlist:
+        return GuardVerdict(
+            False,
+            "the waitlist flow is switched off ([switches] waitlist = false)",
+        )
+
     # 1 — master switch.
     if not cfg.register_enabled:
         return GuardVerdict(
