@@ -1573,3 +1573,39 @@ def test_a_single_day_is_expressed_as_both_ends_the_same(monkeypatch):
         values=_window("2026-11-12", "2026-11-12"))
 
     assert page.picked_date == "2026-11-12"
+
+
+def test_walk_flow_hands_the_client_window_to_the_slot_picker(monkeypatch):
+    """The slot step must see the same values the form steps do.
+
+    walk_flow called _do_slot_pick without them, so a record with
+    date_from/date_to passed the pre-flight window check, logged in, filled
+    three pages — and then stopped at select_slot saying it had no date range
+    (2026-10-02, u10432-nor-2).
+    """
+    from unittest import mock
+
+    from src.booking import config as booking_config
+    from src.booking import walk as walk_mod
+    from src.waitlist import register
+
+    step = {"name": "select_slot", "type": "slot_pick"}
+    monkeypatch.setattr(booking_config, "steps_for", lambda *a, **k: [step])
+    monkeypatch.setattr(register, "_await_page", lambda *a, **k: None)
+    monkeypatch.setattr(walk_mod, "_page_text", lambda *a, **k: "")
+    monkeypatch.setattr(walk_mod, "_dwell", lambda *a, **k: None)
+    seen = {}
+
+    def fake_pick(page, step, report, timeout_ms, values=None):
+        seen["values"] = values
+
+    monkeypatch.setattr(walk_mod, "_do_slot_pick", fake_pick)
+    page = mock.MagicMock()
+    page.url = "https://example.invalid/book-appointment"
+    values = {"date_from": "2026-10-10", "date_to": "2026-10-20"}
+
+    walk_mod.walk_flow(page, "AE-NOR", entry="new", values=values,
+                       capture="off")
+
+    assert seen["values"]["date_from"] == "2026-10-10"
+    assert seen["values"]["date_to"] == "2026-10-20"

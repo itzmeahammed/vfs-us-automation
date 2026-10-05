@@ -125,6 +125,11 @@ class BookingTriggerRequest(BaseModel):
         default=None, max_length=280,
         description="Free-text note recorded with the job. Not passed to argv.",
     )
+    started_by: Optional[str] = Field(
+        default=None, max_length=80, pattern=r"^[A-Za-z0-9._@:+-]+$",
+        description="Who started the run, recorded in a booking request's "
+                    "history. Set by the API from X-Actor; not for callers.",
+    )
 
     @field_validator("route")
     @classmethod
@@ -265,6 +270,8 @@ class BookingTriggerRequest(BaseModel):
             args += ["--registrant", self.registrant]
         if self.request_id:
             args += ["--request", self.request_id]
+        if self.started_by:
+            args += ["--started-by", self.started_by]
         if self.combo:
             args += ["--combo", self.combo]
         if self.entry:

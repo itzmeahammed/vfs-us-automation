@@ -105,6 +105,28 @@ class JsonLinesFormatter(logging.Formatter):
                                "msg": "<unserialisable log record>"})
 
 
+#: Put on a record (extra={QUIET_TRACEBACK: True}) to keep its traceback in
+#: the files but off the console. For failures the code already understands —
+#: a wrong account, a closed browser — where the one-line message is the whole
+#: story and twenty frames of Playwright internals only bury it. The console is
+#: what an API job's log shows.
+QUIET_TRACEBACK = "quiet_traceback"
+
+
+class ConsoleFormatter(logging.Formatter):
+    """The console format, minus the traceback of a record marked quiet."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not getattr(record, QUIET_TRACEBACK, False):
+            return super().format(record)
+        saved = record.exc_info, record.exc_text, record.stack_info
+        record.exc_info = record.exc_text = record.stack_info = None
+        try:
+            return super().format(record)
+        finally:
+            record.exc_info, record.exc_text, record.stack_info = saved
+
+
 def setup(
     *,
     verbose: bool = False,
@@ -136,7 +158,7 @@ def setup(
 
     if console:
         stream = logging.StreamHandler()
-        stream.setFormatter(logging.Formatter(
+        stream.setFormatter(ConsoleFormatter(
             "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S"))
         handlers.append(stream)
 

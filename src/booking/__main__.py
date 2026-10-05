@@ -343,8 +343,8 @@ def cmd_probe(args) -> int:
         if not getattr(args, "entry", ""):
             args.entry = "new"
 
-    try:
-        result = run_probe(
+    def _run():
+        return run_probe(
             source=args.source_country,
             dest=args.dest_country,
             registrant_id=args.registrant,
@@ -362,6 +362,23 @@ def cmd_probe(args) -> int:
             capture=getattr(args, "capture", "") or "",
             person=person,
         )
+
+    try:
+        if request_id and args.walk:
+            # A walk or commit on a stored request is a tracked attempt: the
+            # booking lock, the request's status and its history, the same as
+            # when the bot books it. Without this a manual commit that paid
+            # left the request "waiting", for the bot to book and pay again.
+            from src.booking import autobook
+            try:
+                result = autobook.manual_run(
+                    request_id, commit=getattr(args, "commit", False),
+                    run=_run, started_by=getattr(args, "started_by", "") or "")
+            except autobook.ManualRunRefused as e:
+                print(f"\nRefused: {e}")
+                return 3
+        else:
+            result = _run()
     except KeyboardInterrupt:
         # Ctrl-C before run_probe's own handler is reachable — during
         # launch, login, or after it has returned. Nothing is in flight
@@ -376,7 +393,9 @@ def cmd_probe(args) -> int:
     print("=" * 68)
     if result.interrupted:
         print("INTERRUPTED BY Ctrl-C")
-    print(f"BOOKING PROBE — {result.route}  ({result.account})")
+    mode = ("COMMIT" if getattr(args, "commit", False)
+            else "WALK" if args.walk else "PROBE")
+    print(f"BOOKING {mode} — {result.route}  ({result.account})")
     print("=" * 68)
 
     if result.errors:
@@ -384,18 +403,21 @@ def cmd_probe(args) -> int:
         for error in result.errors:
             print(f"  {error}")
 
-    print(f"\nApplication cards found: {len(result.rows)}")
-    for row in result.rows:
-        print(f"  {row.summary()}")
+    # A live-slot ('new') run never reads the dashboard, so "0 cards" would
+    # read as a finding when it is only a section that does not apply.
+    if (getattr(args, "entry", "") or "") != "new":
+        print(f"\nApplication cards found: {len(result.rows)}")
+        for row in result.rows:
+            print(f"  {row.summary()}")
 
-    if not result.rows:
-        print("  (none — this account may hold no active applications, or the "
-              "card selector may not match this portal)")
+        if not result.rows:
+            print("  (none — this account may hold no active applications, or "
+                  "the card selector may not match this portal)")
 
-    print(f"\nBookable now (waitlist status says slots available): "
-          f"{len(result.bookable)}")
-    for row in result.bookable:
-        print(f"  {row.summary()}")
+        print(f"\nBookable now (waitlist status says slots available): "
+              f"{len(result.bookable)}")
+        for row in result.bookable:
+            print(f"  {row.summary()}")
 
     if result.match_reason:
         print(f"\nClient match: "
@@ -403,7 +425,11 @@ def cmd_probe(args) -> int:
         print(f"  reason: {result.match_reason}")
 
     if result.walk is None:
-        print("\nNothing was clicked. No VFS state changed.")
+        if args.walk:
+            print("\nThe walk never started (the run stopped before the first "
+                  "booking page). Nothing was clicked. No VFS state changed.")
+        else:
+            print("\nNothing was clicked. No VFS state changed.")
         return _probe_exit_code(result)
 
     print()
@@ -562,6 +588,9 @@ def main(argv: List[str] = None) -> int:
     probe.add_argument("--request", dest="request_id",
                        help="a stored booking request (config/booking_requests/) "
                             "to run: supplies applicant, account, combo and dates")
+    probe.add_argument("--started-by", dest="started_by", default="",
+                       help="who started this run, for the request's history "
+                            "and Telegram (the API passes X-Actor)")
     probe.add_argument("--email", help="force a VFS account (needs --password)")
     probe.add_argument("--password", help="that account's password")
     probe.add_argument("--proxy-url", help='force a proxy; "" forces local IP')

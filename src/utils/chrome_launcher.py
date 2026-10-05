@@ -32,6 +32,30 @@ import urllib.request
 # normal Chrome, which uses a different user-data-dir.
 PROFILE_PREFIX = "vfs-chrome-profile-"
 
+# How long start() waits for another run to finish with a profile before giving
+# up. A dashboard probe holds one for about a minute, so this rides out the
+# common case (the slot checker reaching an account a probe is using) without
+# stalling a whole supervisor pass behind a long walk.
+PROFILE_WAIT_S = 90
+
+
+class ProfileInUseError(RuntimeError):
+    """Another live run is driving this account's Chrome profile.
+
+    Raised instead of launching. Launching anyway is what killed a live probe
+    on 2026-10-02: start() clears "stale" Chrome on the profile before it
+    launches, and a Chrome another run is still using is not stale. Two
+    sessions on one account would also log each other out at VFS.
+    """
+
+
+def _lock_holder() -> str:
+    """Which program holds a profile, for the error message. Deliberately not
+    sys.argv: a probe's command line can carry --password."""
+    import sys
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    return getattr(spec, "name", "") or "another process"
+
 
 def _profile_base() -> str:
     return os.environ.get("TEMP") or "/tmp"
@@ -368,7 +392,68 @@ class ChromeProcess:
         except Exception as e:
             logging.debug(f"egress marker check failed (ignored): {e}")
 
+    def _acquire_profile(self) -> None:
+        """Take this profile for the life of the Chrome, or raise.
+
+        Only a profile shared between runs (one per account) needs it; a
+        throwaway profile is named by PID and is never shared. The OS drops
+        the lock if this process dies, so a crashed run cannot wedge an
+        account.
+        """
+        self._profile_fd = None
+        if self._owns_profile:
+            return
+        from src.utils.filelock import _try_lock
+
+        lock_path = os.path.normpath(self.profile_dir) + ".inuse"
+        info_path = lock_path + ".json"
+        os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        deadline = time.monotonic() + PROFILE_WAIT_S
+        announced = False
+        while not _try_lock(fd):
+            holder = ""
+            try:
+                with open(info_path, "r", encoding="utf-8") as f:
+                    holder = f.read().strip()
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise ProfileInUseError(
+                    "This account's browser is in use by another run"
+                    + (f" ({holder})" if holder else "")
+                    + f" and was still busy after {PROFILE_WAIT_S}s. Not "
+                    "launching: it would close that run's Chrome, and two "
+                    "sessions on one account log each other out at VFS.")
+            if not announced:
+                logging.info("This account's browser is in use by another run"
+                             + (f" ({holder})" if holder else "")
+                             + f" — waiting up to {PROFILE_WAIT_S}s for it.")
+                announced = True
+            time.sleep(2)
+        self._profile_fd = fd
+        try:
+            with open(info_path, "w", encoding="utf-8") as f:
+                f.write(f"{_lock_holder()}, pid {os.getpid()}, since "
+                        f"{time.strftime('%H:%M:%S')}")
+        except OSError:
+            pass
+
+    def _release_profile(self) -> None:
+        fd = getattr(self, "_profile_fd", None)
+        if fd is None:
+            return
+        from src.utils.filelock import _unlock
+        self._profile_fd = None
+        _unlock(fd)
+        os.close(fd)
+
     def start(self) -> "ChromeProcess":
+        # One run per account profile at a time. Taken BEFORE the stale-Chrome
+        # kill below, which would otherwise close a live run's browser.
+        self._acquire_profile()
+
         # Clean slate before launching, but SCOPED TO THIS RUN. Kill only Chrome
         # holding OUR profile dir (a crashed previous run using the same account
         # would still own its lock), and never delete a profile another live run
@@ -544,8 +629,15 @@ class ChromeProcess:
     def close(self) -> None:
         """
         Kills Chrome and its entire process tree. Safe to call more than once.
-        Also stops the local proxy forwarder, if one was started.
+        Also stops the local proxy forwarder, if one was started, and frees the
+        account profile for the next run.
         """
+        try:
+            self._close_chrome()
+        finally:
+            self._release_profile()
+
+    def _close_chrome(self) -> None:
         if self._forwarder:
             # Capture the billed byte count + per-host breakdown BEFORE stopping,
             # then report this route's proxy usage (only the real browser run logs

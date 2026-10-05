@@ -560,6 +560,138 @@ class _Failed:
 
 
 # --------------------------------------------------------------------------- #
+# Manual runs on a stored request                                              #
+# --------------------------------------------------------------------------- #
+#
+# A run started by hand (POST /v1/booking/runs with a client_id, or
+# `probe --request`) used to bypass all of the above: no lock, no status, no
+# attempt count. A manual commit that PAID left the request "waiting", and the
+# next slot check inside the window would book and charge the client again.
+# It also took no booking lock, so it could run at the same moment as the
+# automatic booking of the same client.
+#
+# Now a manual run goes through the same lane lock, the same status machine
+# and the same classify() as the automatic path. Only the trigger differs.
+
+
+class ManualRunRefused(Exception):
+    """A manual run on a request that must not run now. Nothing was started."""
+
+
+def manual_refusal(req: store.BookingRequest, commit: bool) -> str:
+    """Why this request cannot take a manual run, or "". PURE.
+
+    A walk spends nothing, so it is refused only while another run is driving
+    the request. A commit may spend money, so it needs status "waiting":
+    "booked" would book twice, and "needs_attention" means a human has not yet
+    said whether the last attempt paid.
+    """
+    if req.status == store.BOOKING:
+        return (f"{req.request_id} is being booked right now by another run. "
+                "Wait for its result.")
+    if not commit:
+        return ""
+    if req.status == store.BOOKED:
+        return (f"{req.request_id} is already BOOKED — a commit would book and "
+                "charge a second time.")
+    if req.status == store.NEEDS_ATTENTION:
+        return (f"{req.request_id} needs a human first: "
+                f"{req.data.get('last_error') or 'the last attempt is unresolved'}. "
+                f"Check VFS and the card, then POST /v1/clients/"
+                f"{req.request_id}/resolve.")
+    if req.status == store.EXPIRED:
+        return f"{req.request_id} has expired (its window has passed)."
+    if req.status != store.WAITING:
+        return f"{req.request_id} is {req.status}, not waiting."
+    return ""
+
+
+def manual_run(request_id: str, *, commit: bool, run: Any,
+               started_by: str = "") -> Any:
+    """Run `run()` (a run_probe call) as a tracked attempt on a request.
+
+    Raises ManualRunRefused before anything starts. Returns run()'s result.
+    """
+    from src.booking import config as booking_config
+    from src.payment import journal as payment_journal
+    from src.utils import runlock
+
+    who = f"MANUAL ({started_by})" if started_by else "MANUAL"
+    with runlock.acquire("manual-booking", lane=runlock.LANE_BOOKING,
+                         timeout=0, on_busy="skip") as lock:
+        if not lock.held:
+            raise ManualRunRefused(
+                "Another booking is running on this machine"
+                + (f" ({lock.holder_hint})" if getattr(lock, "holder_hint", "")
+                   else "") + ". Try again when it finishes.")
+
+        # Re-read under the lock: the automatic path may have just finished.
+        req = store.get(request_id)
+        refusal = manual_refusal(req, commit)
+        if refusal:
+            raise ManualRunRefused(refusal)
+
+        if not commit:
+            # Nothing can be spent, so no status change and no attempt counted:
+            # a rehearsal must not use up the client's automatic attempts.
+            result = run()
+            commit_step = booking_config.commit_step_name(
+                req.route, booking_config.ENTRY_NEW)
+            passed, detail = classify_test(result, commit_step)
+            store.record_event(request_id,
+                               "manual_walk_passed" if passed
+                               else "manual_walk_failed",
+                               f"{who}: {detail}")
+            return result
+
+        # Telegram first: "triggered" counts the attempt that is about to start.
+        _telegram(format_message("triggered", req,
+                                 manual=started_by or "operator"))
+        store.record_event(request_id, "attempt_started",
+                           f"{who} commit", status=store.BOOKING)
+        rows_before = len(payment_journal.read_all())
+        raised: Optional[Exception] = None
+        try:
+            result = run()
+        except Exception as exc:                            # noqa: BLE001
+            # run_probe raises only before Chrome (config, account, window),
+            # the same as on the automatic path, which treats it as a failed
+            # attempt. classify() still reads the payment journal, so if that
+            # assumption is ever wrong it fails towards needs_attention.
+            raised, result = exc, _Failed(str(exc))
+        except BaseException as exc:
+            # Ctrl-C or a kill mid-run. The request must not stay "booking"
+            # forever, and an interrupt gives no proof nothing was paid.
+            store.record_event(
+                request_id, "needs_attention",
+                f"{who}: the run crashed ({type(exc).__name__}: {exc}). "
+                "Whether it booked or paid is unknown.",
+                status=store.NEEDS_ATTENTION)
+            _notify(store.get(request_id),
+                    Outcome(store.NEEDS_ATTENTION, "needs_attention",
+                            f"manual run crashed: {exc}", {}))
+            raise
+
+        commit_step = booking_config.commit_step_name(
+            req.route, booking_config.ENTRY_NEW)
+        outcome = classify(result, commit_step,
+                           payment_journal.read_all()[rows_before:])
+        store.record_event(request_id, outcome.event, f"{who}: {outcome.detail}",
+                           status=outcome.status, **outcome.details)
+        log.warning("Manual booking %s -> %s: %s", request_id, outcome.status,
+                    outcome.detail)
+        if outcome.notify:
+            _notify(store.get(request_id), outcome)
+        else:
+            _telegram(format_message("retry", store.get(request_id),
+                                     reason=outcome.detail,
+                                     manual=started_by or "operator"))
+        if raised is not None:
+            raise raised
+        return result
+
+
+# --------------------------------------------------------------------------- #
 # Notification — never raises                                                  #
 # --------------------------------------------------------------------------- #
 
@@ -589,7 +721,7 @@ _FOOTERS = {
              "check tries again.",
     "booked": "Appointment booked and paid with the company card.",
     "needs_attention": "It will NOT retry. Check the VFS account and the card, "
-                       "then POST /booking-requests/{id}/resolve.",
+                       "then POST /v1/clients/{id}/resolve.",
     "cap": "Further matches wait until tomorrow. Raise [booking] max_per_day "
            "to allow more.",
     "test_passed": "Nothing was booked or paid. The request is now PARKED; "
@@ -630,6 +762,8 @@ def format_message(kind: str, req: store.BookingRequest, **info: Any) -> str:
         lines.append(f"Attempt: {attempt} of {_cfg().max_attempts}")
     if info.get("queue"):
         lines.append(f"Queue: {info['queue']}")
+    if info.get("manual"):
+        lines.append(f"Started by hand: {info['manual']}")
     booked = req.data.get("booked") or {}
     if kind == "booked":
         when = " ".join(str(booked.get(k, "")) for k in

@@ -72,7 +72,16 @@ async def run_booking(body: RunRequest, request: Request,
         cid = body.client_id.strip().lower()
         if req_store.exists(cid):
             req = req_store.get(cid)
-            fields.update(route=req.route, request_id=cid, entry="new")
+            # Refused here, before a process is spawned, with the same rule
+            # the run re-checks under the booking lock.
+            if body.mode != "probe":
+                from src.booking import autobook
+                refusal = autobook.manual_refusal(req, commit=body.mode == "commit")
+                if refusal:
+                    raise ApiError(409, refusal, "request_not_runnable")
+            actor = actor_for(request)
+            fields.update(route=req.route, request_id=cid, entry="new",
+                          started_by=actor if actor != "unknown" else None)
         else:
             from src.waitlist import registrant as registrant_mod
             try:

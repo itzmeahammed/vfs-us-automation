@@ -33,7 +33,7 @@ from src.slots import store as slot_store
 from src.utils import (
     account_health, connectivity, credentials, proxy_pool, telegram, telegram_message,
 )
-from src.utils.chrome_launcher import ChromeProcess
+from src.utils.chrome_launcher import ChromeProcess, ProfileInUseError
 from src.utils.config_reader import (
     get_config_section,
     get_config_value,
@@ -436,6 +436,13 @@ def _run_route(source: str = "AE", dest: str = "MT", route_index: int = 0,
             # fall through to a same-IP retry — a fresh browser may pass.
             logging.warning(f"{route}: {last_error} [{account}] — no alternate IP; "
                             "retrying on the same IP.")
+        except ProfileInUseError as e:
+            # A probe, walk or booking is using this account right now. Not the
+            # account's fault and not worth a retry this pass: skip, untouched,
+            # and the next scheduled pass checks the route again.
+            logging.warning(f"{source}-{dest}: skipped — {e} [{account}]")
+            return _outcome(source, dest, "SKIPPED", attempt, error=str(e),
+                            account=account, proxy=proxy_label)
         except EmailNotRegisteredError as e:
             # Neutral: the account simply isn't registered on THIS portal — not a
             # success and not a failure, so leave its health untouched. Skip.

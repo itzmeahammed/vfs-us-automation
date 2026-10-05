@@ -617,3 +617,115 @@ def test_a_refusal_in_the_booking_process_reaches_telegram(request_dir, monkeypa
     assert "NOT BOOKING" in no_real_telegram[-1]
     assert "switched off" in no_real_telegram[-1]
     assert store.get("t1").data["attempts"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Manual runs on a stored request                                              #
+# --------------------------------------------------------------------------- #
+#
+# A manual commit used to leave the request "waiting" even after it paid, so
+# the next in-window slot check booked and charged the client again.
+
+
+def _manual(monkeypatch, result, rows, *, commit=True, raises=None):
+    from src.payment import journal as payment_journal
+
+    journal = [{"event": "old"}]
+    monkeypatch.setattr(payment_journal, "read_all", lambda: list(journal))
+    monkeypatch.setattr(autobook, "_notify", lambda req, out: None)
+
+    def run():
+        journal.extend(rows)
+        if raises:
+            raise raises
+        return result
+    return autobook.manual_run("r1", commit=commit, run=run, started_by="sara")
+
+
+def test_a_manual_commit_that_pays_marks_the_request_booked(request_dir, monkeypatch):
+    store.create("r1", _request())
+    walk = _Walk(PRE + [_Step("payment")], stopped_at="payment")
+    _manual(monkeypatch, _Result(walk=walk),
+            [SUBMITTING, {"event": "payment_result", "outcome": "success"}])
+    req = store.get("r1")
+    assert req.status == store.BOOKED and req.data["attempts"] == 1
+    assert not req.is_armed()           # the bot will not book it again
+    assert "MANUAL (sara)" in req.data["history"][-1]["detail"]
+
+
+def test_a_manual_commit_failing_before_payment_goes_back_to_waiting(
+        request_dir, monkeypatch):
+    store.create("r1", _request())
+    walk = _Walk(PRE[:2] + [_Step("select_slot", ok=False)],
+                 stopped_at="select_slot", reason="no date inside the window")
+    _manual(monkeypatch, _Result(walk=walk), [])
+    req = store.get("r1")
+    assert req.status == store.WAITING and req.data["attempts"] == 1
+
+
+def test_a_manual_commit_that_raises_before_chrome_is_a_failed_attempt(
+        request_dir, monkeypatch):
+    store.create("r1", _request())
+    with pytest.raises(RuntimeError):
+        _manual(monkeypatch, None, [], raises=RuntimeError("account DISABLED"))
+    req = store.get("r1")
+    assert req.status == store.WAITING
+    assert "account DISABLED" in req.data["last_error"]
+
+
+def test_a_manual_commit_interrupted_mid_run_needs_a_human(request_dir, monkeypatch):
+    store.create("r1", _request())
+    with pytest.raises(KeyboardInterrupt):
+        _manual(monkeypatch, None, [SUBMITTING], raises=KeyboardInterrupt())
+    assert store.get("r1").status == store.NEEDS_ATTENTION
+
+
+def test_a_manual_walk_changes_no_status_and_uses_no_attempt(request_dir, monkeypatch):
+    store.create("r1", _request())
+    walk = _Walk(PRE + [_Step("payment")], stopped_at="payment")
+    _manual(monkeypatch, _Result(walk=walk), [], commit=False)
+    req = store.get("r1")
+    assert req.status == store.WAITING and int(req.data.get("attempts") or 0) == 0
+    assert req.data["history"][-1]["event"] == "manual_walk_passed"
+
+
+@pytest.mark.parametrize("status", [store.BOOKED, store.NEEDS_ATTENTION,
+                                    store.BOOKING, store.EXPIRED])
+def test_a_manual_commit_is_refused_unless_waiting(request_dir, monkeypatch, status):
+    store.create("r1", _request())
+    store.record_event("r1", "set", status=status)
+    ran = []
+    with pytest.raises(autobook.ManualRunRefused):
+        autobook.manual_run("r1", commit=True, run=lambda: ran.append(1))
+    assert not ran
+
+
+def test_a_manual_walk_is_refused_only_while_another_run_books(request_dir):
+    assert autobook.manual_refusal(_mk("r1", status=store.BOOKED), commit=False) == ""
+    assert autobook.manual_refusal(_mk("r1", status=store.BOOKING), commit=False)
+
+
+def test_a_disabled_request_can_still_be_committed_by_hand(request_dir):
+    # Disabling stops the BOT; an operator's explicit commit is the override.
+    assert autobook.manual_refusal(_mk("r1", enabled=False), commit=True) == ""
+
+
+def test_the_cli_routes_a_request_walk_through_the_tracked_path(
+        request_dir, monkeypatch):
+    from src.booking import __main__ as cli
+    from src.booking import probe
+
+    store.create("r1", _request())
+    seen = {}
+
+    def fake_manual(request_id, *, commit, run, started_by=""):
+        seen.update(request_id=request_id, commit=commit, started_by=started_by)
+        raise autobook.ManualRunRefused("stop here")
+    monkeypatch.setattr(autobook, "manual_run", fake_manual)
+    monkeypatch.setattr(probe, "run_probe", lambda **kw: pytest.fail("untracked"))
+    monkeypatch.setattr(cli, "_setup_logging", lambda verbose: None)
+
+    code = cli.main(["probe", "-sc", "AE", "-dc", "NOR", "--request", "r1",
+                     "--walk", "--started-by", "sara"])
+    assert code == 3
+    assert seen == {"request_id": "r1", "commit": False, "started_by": "sara"}

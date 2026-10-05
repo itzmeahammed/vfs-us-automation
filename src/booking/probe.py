@@ -39,6 +39,8 @@ from typing import Any, Dict, List, Optional
 
 from src.booking import config as booking_config
 from src.booking.errors import BookingConfigError, BookingSkipped
+from src.utils.chrome_launcher import ProfileInUseError
+from src.utils.log_setup import QUIET_TRACEBACK
 from src.vfs_bot.errors import AccessRestrictedError
 from src.booking.identity import Candidate, resolve
 
@@ -342,6 +344,36 @@ def match_row(rows: List[DashboardRow], reference: str = "",
 # The probe                                                                    #
 # --------------------------------------------------------------------------- #
 
+def _mode_banner(walk: bool, commit: bool) -> str:
+    if commit:
+        return "COMMIT (books and PAYS)"
+    if walk:
+        return "WALK (fills every page, stops before payment)"
+    return "probe (READ-ONLY — clicks nothing)"
+
+
+def _explain_failure(e: Exception) -> "tuple[str, bool]":
+    """(message for the operator, whether this is a failure we understand).
+
+    Understood failures are logged as one line. Anything else keeps its
+    traceback on the console, because then the traceback IS the diagnosis.
+    """
+    name = type(e).__name__
+    if name == "TargetClosedError":
+        return ("Chrome was closed while the run was using it — something "
+                "outside this run closed it, or it crashed. Nothing was "
+                "clicked after that point.", True)
+    if name == "EmailNotRegisteredError":
+        return (f"{e} The account used for this run is not a VFS account on "
+                "this portal — check the email in the client/request file.",
+                True)
+    if isinstance(e, ProfileInUseError):
+        return str(e), True
+    if type(e).__module__ == "src.vfs_bot.errors":
+        return f"{name}: {e}", True
+    return str(e), False
+
+
 def _assert_account_healthy(email: str, route: str) -> None:
     """Refuse to log in with an account the circuit breaker has benched.
 
@@ -446,7 +478,9 @@ def run_probe(source: str, dest: str,
 
     route = f"{source.upper()}-{dest.upper()}"
     result = ProbeResult(route=route)
-    log.info(f"=== Booking probe: {route} (READ-ONLY — clicks nothing) ===")
+    # The CLI subcommand is "probe" for every mode; the banner says which one
+    # this run is, so a walk or a commit never announces itself as read-only.
+    log.info(f"=== Booking {_mode_banner(walk, commit)}: {route} ===")
 
     # A probe needs an ACCOUNT; a client is optional. With --email the caller has
     # supplied the account directly, which is the normal way to look at a brand
@@ -716,8 +750,15 @@ def run_probe(source: str, dest: str,
         log.error(f"Probe blocked: {e}")
         result.errors.append(str(e))
     except Exception as e:
-        log.exception(f"Probe failed: {e}")
-        result.errors.append(str(e))
+        reason, known = _explain_failure(e)
+        if known:
+            # The message is the diagnosis. The traceback still goes to
+            # logs/app.jsonl and logs/booking.log, just not to the job log.
+            log.error(f"Probe failed: {reason}", exc_info=True,
+                      extra={QUIET_TRACEBACK: True})
+        else:
+            log.exception(f"Probe failed: {reason}")
+        result.errors.append(reason)
         # Same reasoning as a short walk: a failure with the browser still up is
         # recoverable by hand, and the login it holds is the scarce resource.
         if keep_open and page is not None:

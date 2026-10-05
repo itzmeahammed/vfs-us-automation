@@ -179,6 +179,28 @@ def test_a_manual_run_of_a_live_client_runs_that_request(api, monkeypatch):
     assert args[args.index("--request") + 1] == "live-1"
     assert "--walk" in args and "--commit" not in args
     assert args[args.index("-dc") + 1] == "NOR"
+    # Who started it reaches the request's history and Telegram.
+    assert args[args.index("--started-by") + 1] == "agent.test@example.com"
+
+
+def test_a_commit_on_a_booked_client_is_refused_before_spawning(api, monkeypatch):
+    from src.booking import requests as req_store
+
+    api.post("/v1/clients", headers=H, json=LIVE)
+    req_store.record_event("live-1", "booked", "by hand", status=req_store.BOOKED)
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("a job was spawned")
+    monkeypatch.setattr("src.api.modules.booking.handlers.trigger_booking",
+                        must_not_run)
+
+    r = api.post("/v1/booking/runs", headers=H,
+                 json={"client_id": "live-1", "mode": "commit",
+                       "confirm": "AE-NOR"})
+    assert r.status_code == 409, r.text
+    body = r.json()["error"]
+    assert body["code"] == "request_not_runnable"
+    assert "already BOOKED" in body["message"]
 
 
 def test_a_commit_run_still_needs_confirm(api):

@@ -7,8 +7,14 @@ no VfsBot instance state, aside from the CdpConnectError translation.
 """
 
 import logging
+import warnings
 
-from playwright_stealth import stealth_sync
+# playwright_stealth imports pkg_resources, which warns on every start and puts
+# three lines of noise at the top of every job log. Silenced for that import
+# only; the warning is the library's to fix, not something a run can act on.
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+    from playwright_stealth import stealth_sync
 
 from src.vfs_bot import session
 from src.vfs_bot.errors import CdpConnectError

@@ -961,7 +961,12 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                    "letting the page settle before filling")
 
             if step.get("type") == "slot_pick":
-                _do_slot_pick(page, step, report, timeout_ms)
+                # The client's values carry the date window. Without them the
+                # picker sees no window and refuses — after a login and three
+                # pages of form, on a record whose dates the pre-flight check
+                # had already read and approved (2026-10-02, u10432-nor-2).
+                _do_slot_pick(page, step, report, timeout_ms,
+                              values=values or {})
             elif step.get("type") == "form" and step.get("fields"):
                 _fill_form(page, step, report, values or {}, timeout_ms)
             elif step.get("scroll_to_bottom"):
