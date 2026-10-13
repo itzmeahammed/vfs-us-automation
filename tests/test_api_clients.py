@@ -142,7 +142,61 @@ def test_disabled_route_is_not_ready_and_says_why(api):
 def test_unknown_route_is_not_ready(api):
     r = api.get("/v1/routes/ZZ-ZZZ/readiness", headers=HEADERS)
     assert r.status_code == 200
-    assert r.json()["ready"] is False
+    body = r.json()
+    assert body["ready"] is False
+    assert body["flow"] is None
+    assert body["flows"]["live"]["ready"] is False
+
+
+def test_waitlist_route_picks_the_waitlist_flow(api):
+    """AE-CHE registers on the waitlist; its booking map is not enabled."""
+    body = api.get(f"/v1/routes/{READY_ROUTE}/readiness", headers=HEADERS).json()
+    assert body["flow"] == "waitlist"
+    assert body["available_flows"] == ["waitlist"]
+    assert body["flows"]["waitlist"]["ready"] is True
+    assert body["flows"]["live"]["ready"] is False
+    assert body["flows"]["live"]["problems"], "a not-ready flow must explain why"
+
+
+def test_live_route_picks_the_live_flow(api):
+    """AE-NOR has open slots and no waitlist: the flow is live booking."""
+    body = api.get("/v1/routes/AE-NOR/readiness", headers=HEADERS).json()
+    assert body["ready"] is True
+    assert body["flow"] == "live"
+    assert body["flows"]["live"]["ready"] is True
+    assert body["flows"]["waitlist"]["ready"] is False
+    assert body["combos"]
+
+
+def test_both_flows_ready_prefers_live(api, monkeypatch):
+    monkeypatch.setattr("src.booking.requests.route_problems", lambda route: [])
+    body = api.get(f"/v1/routes/{READY_ROUTE}/readiness", headers=HEADERS).json()
+    assert body["flow"] == "live"
+    assert body["available_flows"] == ["live", "waitlist"]
+
+
+def test_a_switched_off_flow_is_ready_with_a_warning(api, monkeypatch):
+    """The master switch is machine-wide, not a fact about the country."""
+    from src.settings import settings
+    monkeypatch.setattr(settings().switches, "waitlist", False)
+    flow = api.get(f"/v1/routes/{READY_ROUTE}/readiness",
+                   headers=HEADERS).json()["flows"]["waitlist"]
+    assert flow["ready"] is True
+    assert [p["severity"] for p in flow["problems"]] == ["warning"]
+
+
+def test_route_listing_reports_the_flow_per_country(api):
+    r = api.get("/v1/routes", headers=HEADERS)
+    assert r.status_code == 200
+    by_id = {row["route"]: row for row in r.json()["routes"]}
+    assert by_id[READY_ROUTE]["flow"] == "waitlist"
+    assert by_id["AE-NOR"]["flow"] == "live"
+    assert by_id["AE-DEU"]["flow"] is None
+    for row in by_id.values():
+        assert row["ready"] is (row["flow"] is not None)
+        assert set(row["flows"]) == {"waitlist", "live"}
+        if not row["ready"]:
+            assert row["problems"], f"{row['route']} is not ready and says nothing"
 
 
 # --------------------------------------------------------------------------

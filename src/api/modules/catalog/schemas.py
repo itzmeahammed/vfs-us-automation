@@ -64,11 +64,48 @@ class RouteFieldModel(BaseModel):
             "never. Shows at a glance whether a list is observed or stale."
         ),
     )
+_FLOW_DESCRIPTION = (
+    "The flow the bot picked for this country: send it as `flow` in "
+    "POST /clients. 'live' books an open slot inside a date range; "
+    "'waitlist' registers and books when VFS emails an invitation. When a "
+    "country is ready for both, this is 'live'. null means neither is ready."
+)
+_AVAILABLE_DESCRIPTION = (
+    "Every flow this country is ready for, preferred first. Two entries "
+    "means the caller may choose either."
+)
+_READY_DESCRIPTION = "True when at least one flow is ready, i.e. `flow` is set."
+
+
+class FlowReadiness(BaseModel):
+    """One flow on one route: usable or not, and why not."""
+
+    ready: bool
+    problems: List[ProblemModel] = Field(
+        default_factory=list,
+        description=(
+            "severity 'error' is why this flow is not ready. 'warning' leaves "
+            "it ready: a master switch is off, so clients are accepted but "
+            "nothing runs for them yet."
+        ),
+    )
+
+
+class RouteFlowsModel(BaseModel):
+    waitlist: FlowReadiness
+    live: FlowReadiness
+
+
 class RouteReadinessResponse(BaseModel):
-    """Whether a route accepts registrations, its combos, and its form fields."""
+    """Which flow a route runs on, its combos, and its form fields."""
 
     route: str
-    ready: bool
+    flow: Optional[Literal["live", "waitlist"]] = Field(
+        default=None, description=_FLOW_DESCRIPTION)
+    available_flows: List[str] = Field(
+        default_factory=list, description=_AVAILABLE_DESCRIPTION)
+    flows: RouteFlowsModel
+    ready: bool = Field(description=_READY_DESCRIPTION)
     combos: List[str] = Field(
         default_factory=list,
         description="Valid combination labels — use these to populate a form.",
@@ -80,15 +117,36 @@ class RouteReadinessResponse(BaseModel):
             "rather than hardcoding a field list: routes genuinely differ (one "
             "needs address lines, another needs a passport scan), and a "
             "hardcoded form silently creates clients that can never register. "
-            "Send them as top-level keys in the POST /clients body."
+            "Send them as top-level keys in the POST /clients body. These are "
+            "the WAITLIST form's fields; a live client's fields are checked by "
+            "POST /clients itself."
         ),
     )
-    problems: List[ProblemModel] = Field(default_factory=list)
+    problems: List[ProblemModel] = Field(
+        default_factory=list,
+        description=(
+            "Problems of the picked flow. When no flow is ready, both flows' "
+            "problems, so the caller sees everything standing in the way."
+        ),
+    )
+class RouteFlowSummary(BaseModel):
+    ready: bool
+    problems: List[str] = Field(default_factory=list)
+class RouteFlowsSummary(BaseModel):
+    waitlist: RouteFlowSummary
+    live: RouteFlowSummary
 class RouteSummary(BaseModel):
     """One route in the routes listing."""
 
     route: str
-    ready: bool
+    flow: Optional[Literal["live", "waitlist"]] = Field(
+        default=None, description=_FLOW_DESCRIPTION)
+    available_flows: List[str] = Field(
+        default_factory=list, description=_AVAILABLE_DESCRIPTION)
+    flows: Optional[RouteFlowsSummary] = Field(
+        default=None,
+        description="Per-flow readiness. null only if the check itself failed.")
+    ready: bool = Field(description=_READY_DESCRIPTION)
     combos: List[str] = Field(default_factory=list)
     clients: int = 0
     problems: List[str] = Field(default_factory=list)

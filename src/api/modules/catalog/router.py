@@ -1,7 +1,9 @@
 """Catalog: the countries (routes) and their centre/category combos.
 
-    GET /v1/routes                       every route and what it supports
-    GET /v1/routes/{route}/readiness     combos, required fields, blockers
+    GET /v1/routes                       every route and the flow it runs on
+    GET /v1/routes/{route}/readiness     flow, combos, required fields, blockers
+
+Both answer `flow`: "live" or "waitlist", decided per country by the bot.
 
 A web form builds its route and combo dropdowns from these, so it can never
 offer a combo the bot cannot select.

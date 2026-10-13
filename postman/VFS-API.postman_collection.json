@@ -1410,7 +1410,7 @@
                 "routes"
               ]
             },
-            "description": "All configured routes with readiness summary and client count.\n\nThe web app needs this to populate a route picker before it can call\nGET /routes/{route}/readiness for the form fields."
+            "description": "All configured routes: the flow each runs on, and client count.\n\n`flow` is the bot's decision per country — \"live\" or \"waitlist\" — and is\nwhat to send as `flow` in POST /clients. `flows` says whether each of the\ntwo is ready, and why not. The web app needs this to populate a route\npicker before it can call GET /routes/{route}/readiness for the form fields."
           },
           "response": [
             {
@@ -1438,7 +1438,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"count\": 0,\n  \"routes\": [\n    {\n      \"route\": \"string\",\n      \"ready\": false,\n      \"combos\": [\n        \"string\"\n      ],\n      \"clients\": 0,\n      \"problems\": [\n        \"string\"\n      ]\n    }\n  ]\n}"
+              "body": "{\n  \"count\": 0,\n  \"routes\": [\n    {\n      \"route\": \"string\",\n      \"flow\": \"live\",\n      \"available_flows\": [\n        \"string\"\n      ],\n      \"flows\": null,\n      \"ready\": false,\n      \"combos\": [\n        \"string\"\n      ],\n      \"clients\": 0,\n      \"problems\": [\n        \"string\"\n      ]\n    }\n  ]\n}"
             }
           ]
         },
@@ -1459,7 +1459,7 @@
                 "readiness"
               ]
             },
-            "description": "Can this route accept waitlist registrations, and what are its combos?\n\nThe web app should call this before showing a signup form: it returns the\nvalid combination labels to populate the dropdown, and says plainly when a\nroute is not accepting registrations (and why)."
+            "description": "Which flow does this route run on, and what are its combos?\n\n`flow` is the bot's decision for this country — \"live\" or \"waitlist\" — and\nis what to send as `flow` in POST /clients; `flows` reports each of the two\nseparately. The web app should call this before showing a signup form: it\nreturns the valid combination labels to populate the dropdown, and says\nplainly when a route is not accepting clients (and why)."
           },
           "response": [
             {
@@ -1489,7 +1489,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"route\": \"string\",\n  \"ready\": false,\n  \"combos\": [\n    \"string\"\n  ],\n  \"fields\": [\n    {\n      \"name\": \"string\",\n      \"label\": \"string\",\n      \"kind\": \"string\",\n      \"required\": false,\n      \"step\": \"string\",\n      \"notes\": \"\",\n      \"options\": [\n        \"string\"\n      ],\n      \"options_status\": \"not_a_choice\",\n      \"options_captured_at\": \"\"\n    }\n  ],\n  \"problems\": [\n    {\n      \"field\": \"string\",\n      \"message\": \"string\",\n      \"severity\": \"error\",\n      \"hint\": \"\"\n    }\n  ]\n}"
+              "body": "{\n  \"route\": \"string\",\n  \"flow\": \"live\",\n  \"available_flows\": [\n    \"string\"\n  ],\n  \"flows\": {\n    \"waitlist\": {\n      \"ready\": false,\n      \"problems\": []\n    },\n    \"live\": {\n      \"ready\": false,\n      \"problems\": []\n    }\n  },\n  \"ready\": false,\n  \"combos\": [\n    \"string\"\n  ],\n  \"fields\": [\n    {\n      \"name\": \"string\",\n      \"label\": \"string\",\n      \"kind\": \"string\",\n      \"required\": false,\n      \"step\": \"string\",\n      \"notes\": \"\",\n      \"options\": [\n        \"string\"\n      ],\n      \"options_status\": \"not_a_choice\",\n      \"options_captured_at\": \"\"\n    }\n  ],\n  \"problems\": [\n    {\n      \"field\": \"string\",\n      \"message\": \"string\",\n      \"severity\": \"error\",\n      \"hint\": \"\"\n    }\n  ]\n}"
             }
           ]
         }

@@ -228,6 +228,37 @@ def route_combos(route: str) -> List[str]:
         return []
 
 
+def route_problems(route: str) -> List[Any]:
+    """Why `route` cannot book from a LIVE slot. [] means it can.
+
+    The country-level half of precheck(), on its own so GET /routes can answer
+    "is live booking set up here?" without a request to validate.
+    """
+    from src.booking import config as booking_config
+
+    if route not in booking_config.configured_routes():
+        return [_problem(
+            "route", f"{route} has no booking config (config/booking/{route}.json).",
+            hint="Live booking is set up per country; see RUNBOOK.md.")]
+    try:
+        modes = booking_config.entry_modes(route)
+    except Exception as exc:                                # noqa: BLE001
+        return [_problem("route", f"{route}'s booking config is unreadable: {exc}")]
+    if not modes:
+        return [_problem("route", f"{route}'s booking config describes no "
+                                  "complete flow, so nothing can be booked.")]
+    if booking_config.ENTRY_NEW not in modes:
+        return [_problem(
+            "route", f"{route} books only from a waitlist invitation, not "
+                     "from a live slot.",
+            hint="Use POST /clients to put this client on the waitlist.")]
+    if not booking_config.is_enabled(route):
+        return [_problem(
+            "route", f"Booking is switched off for {route} "
+                     f"(config/booking/{route}.json \"enabled\": false).")]
+    return []
+
+
 def _slot_step(route: str) -> Optional[Dict[str, Any]]:
     from src.booking import config as booking_config
     from src.booking.walk import SLOT_STEP_TYPE
@@ -262,7 +293,6 @@ def precheck(request_id: str, data: Dict[str, Any],
     looking at the form — not discovered after a login, or after the slot is
     taken and payment is half filled.
     """
-    from src.booking import config as booking_config
     from src.booking import walk
     from src.waitlist import validate
 
@@ -277,28 +307,10 @@ def precheck(request_id: str, data: Dict[str, Any],
     route_ok = False
     if not route:
         problems.append(_problem("route", "Missing \"route\", e.g. \"AE-NOR\"."))
-    elif route not in booking_config.configured_routes():
-        problems.append(_problem(
-            "route", f"{route} has no booking config (config/booking/{route}.json).",
-            hint="Live booking is set up per country; see RUNBOOK.md."))
     else:
-        try:
-            modes = booking_config.entry_modes(route)
-        except Exception as exc:                            # noqa: BLE001
-            modes = []
-            problems.append(_problem("route", f"{route}'s booking config is "
-                                              f"unreadable: {exc}"))
-        if modes and booking_config.ENTRY_NEW not in modes:
-            problems.append(_problem(
-                "route", f"{route} books only from a waitlist invitation, not "
-                         "from a live slot.",
-                hint="Use POST /clients to put this client on the waitlist."))
-        elif modes and not booking_config.is_enabled(route):
-            problems.append(_problem(
-                "route", f"Booking is switched off for {route} "
-                         f"(config/booking/{route}.json \"enabled\": false)."))
-        elif modes:
-            route_ok = True
+        route_blockers = route_problems(route)
+        problems.extend(route_blockers)
+        route_ok = not route_blockers
 
     # --- combo ------------------------------------------------------------- #
     combo = str(data.get("combo") or "").strip()
