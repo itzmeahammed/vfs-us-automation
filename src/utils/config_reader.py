@@ -1,12 +1,68 @@
 import os
 import re
 from configparser import ConfigParser
-from typing import Dict, Set
+from typing import Dict, Optional, Set, Tuple
 
 _config: ConfigParser = None
 # The directory the config was loaded from, remembered so helpers that need the
 # RAW files (e.g. commented_section_keys) can re-scan them.
 _config_dir: str = "config"
+# Values set with set_config_value(). They exist only in memory, so a reload
+# from disk has to put them back or the bot loses the Chrome it attached to.
+_runtime_overrides: Dict[Tuple[str, str], str] = {}
+# What the files looked like when they were last read: (path, mtime, size) per
+# file. reload_if_changed() compares against it.
+_loaded_signature: Optional[Tuple] = None
+
+
+def _config_files(config_dir: str) -> list:
+    """Every file the config is built from, in the order it is read."""
+    names = [
+        e.name for e in os.scandir(config_dir)
+        if e.is_file() and e.name.endswith(".ini")
+    ]
+    # Read base configs first, then *.local.ini overrides LAST so their values
+    # win (real secrets live in config.local.ini; config.ini holds blanks).
+    names.sort(key=lambda n: (n.endswith(".local.ini"), n))
+    paths = [os.path.join(config_dir, name) for name in names]
+    # Read user defined config file
+    user_config_path = os.environ.get("VFS_BOT_CONFIG_PATH")
+    if user_config_path:
+        paths.append(user_config_path)
+    return paths
+
+
+def _signature(paths: list) -> Tuple:
+    out = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+            out.append((path, st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append((path, None, None))
+    return tuple(out)
+
+
+def _load(config_dir: str) -> None:
+    """Build the config from disk and swap it in.
+
+    The new parser is complete before it replaces the old one, so another
+    thread never reads a half-loaded config, and a file that does not parse
+    leaves the previous config in place.
+    """
+    global _config, _loaded_signature
+    paths = _config_files(config_dir)
+    # Recorded BEFORE parsing: a file that fails to parse is then reported once,
+    # not on every reload_if_changed() until someone fixes it.
+    _loaded_signature = _signature(paths)
+    fresh = ConfigParser()
+    for path in paths:
+        fresh.read(path)
+    for (section, key), value in _runtime_overrides.items():
+        if not fresh.has_section(section):
+            fresh.add_section(section)
+        fresh[section][key] = value
+    _config = fresh
 
 
 def initialize_config(config_dir="config"):
@@ -14,27 +70,37 @@ def initialize_config(config_dir="config"):
     Reads all INI configuration files in a directory and caches the result.
     Also reads user config from `VFS_BOT_CONFIG_PATH` env var (if set)
 
+    Idempotent: once loaded, later calls change nothing, so a run keeps the
+    values it started with. To pick up an edited file use reload_config().
+
     Args:
         config_dir: The directory containing configuration files (default: "config").
     """
-    global _config, _config_dir
+    global _config_dir
     _config_dir = config_dir
-    if not _config:
-        _config = ConfigParser()
-        names = [
-            e.name for e in os.scandir(config_dir)
-            if e.is_file() and e.name.endswith(".ini")
-        ]
-        # Read base configs first, then *.local.ini overrides LAST so their values
-        # win (real secrets live in config.local.ini; config.ini holds blanks).
-        names.sort(key=lambda n: (n.endswith(".local.ini"), n))
-        for name in names:
-            _config.read(os.path.join(config_dir, name))
+    if _config is None:
+        _load(config_dir)
 
-    # Read user defined config file
-    user_config_path = os.environ.get("VFS_BOT_CONFIG_PATH")
-    if user_config_path:
-        _config.read(user_config_path)
+
+def reload_config() -> None:
+    """Re-read every config file from disk, replacing the cached values.
+
+    For long-lived processes (the API) after a file changed. Values set with
+    set_config_value() survive. Raises if a file does not parse; the previous
+    config stays in use.
+    """
+    _load(_config_dir)
+
+
+def reload_if_changed() -> bool:
+    """reload_config() when a config file was edited, added or removed since
+    the last load. Returns True when it reloaded."""
+    if _config is None:
+        return False
+    if _signature(_config_files(_config_dir)) == _loaded_signature:
+        return False
+    reload_config()
+    return True
 
 
 def get_config_section(section: str, default: Dict = None) -> Dict:
@@ -121,6 +187,7 @@ def set_config_value(section: str, key: str, value: str) -> None:
     e.g. set_config_value("browser", "cdp_url", "http://127.0.0.1:9222") — so the
     bot attaches to the supervisor-owned browser without editing any files.
     """
+    _runtime_overrides[(section, key)] = value
     if not _config.has_section(section):
         _config.add_section(section)
     _config[section][key] = value

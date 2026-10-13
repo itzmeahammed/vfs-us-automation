@@ -255,6 +255,17 @@ async def security_headers(request: Request, call_next: Any) -> Any:
     request.state.request_id = req_context.request_id_for(request)
     request.state.actor = req_context.actor_for(request)
 
+    # config.local.ini is also edited by hand and by config_editor.py. This
+    # process lives for days, so without this it would go on reporting the
+    # values it booted with while every slot-check run used the new ones.
+    try:
+        from src.settings import refresh_if_config_changed
+        if refresh_if_config_changed():
+            log.info("Config files changed on disk; settings reloaded.")
+    except Exception:                              # noqa: BLE001
+        log.exception("Config files changed but could not be re-read; "
+                      "still serving the previous values.")
+
     is_upload = request.method == "POST" and request.url.path.endswith("/documents")
     max_bytes = (documents_max_upload_bytes() if is_upload else 64 * 1024)
     content_length = request.headers.get("content-length")

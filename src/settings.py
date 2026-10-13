@@ -457,3 +457,29 @@ def reload_settings() -> Settings:
     global _cached
     _cached = None
     return settings()
+
+
+def reload_from_disk() -> Settings:
+    """Re-read the INI files, then rebuild settings from them.
+
+    reload_settings() alone rebuilds from the config already in memory, so it
+    cannot see a file that changed after the process started.
+    """
+    from src.utils.config_reader import reload_config
+
+    reload_config()
+    return reload_settings()
+
+
+def refresh_if_config_changed() -> bool:
+    """reload_from_disk() when an INI file changed since it was last read.
+
+    For long-lived processes only (the API). A slot-check run deliberately
+    does NOT call this: it keeps the values it started with.
+    """
+    from src.utils.config_reader import reload_if_changed
+
+    if not reload_if_changed():
+        return False
+    reload_settings()
+    return True

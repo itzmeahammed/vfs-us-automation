@@ -317,15 +317,19 @@ def _write_ini_switches(updates: Dict[str, Any]) -> None:
         rendered = str(value).lower() if isinstance(value, bool) else str(value)
         text = set_ini_value(text, target[0], target[1], rendered)
 
-    with open(ini_path, "w", encoding="utf-8") as fh:
+    # Written beside the file and swapped in, so a slot-check run starting at
+    # this instant reads the old file or the new one, never half of it.
+    tmp_path = ini_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
         fh.write(text)
+    os.replace(tmp_path, ini_path)
 
 
 def update_switches(payload: SwitchesUpdateRequest) -> SwitchesUpdateResponse:
     """Toggle operational switches (register_enabled, dry_run, etc.).
 
-    Writes to config/config.local.ini and reloads settings so the change
-    takes effect immediately. Only the fields you send are changed.
+    Writes to config/config.local.ini, re-reads it, and answers with what is
+    now in effect. Only the fields you send are changed.
     """
     sent = payload.model_fields_set or set()
     updates = {k: v for k, v in payload.model_dump().items()
@@ -339,19 +343,37 @@ def update_switches(payload: SwitchesUpdateRequest) -> SwitchesUpdateResponse:
 
     _write_ini_switches(updates)
 
-    # Reload so the in-memory settings reflect the new values.
-    from src.utils.config_reader import initialize_config
-    initialize_config()
+    # Re-read the file just written. initialize_config() is idempotent and
+    # would keep the values this process started with, so the API went on
+    # answering "off" for a switch it had just turned on.
+    from src.settings import reload_from_disk
     try:
-        from src.settings import reload_settings
-        reload_settings()
-    except Exception:                              # noqa: BLE001
-        pass
+        reload_from_disk()
+    except Exception as exc:                       # noqa: BLE001
+        log.exception("Switches were written but could not be re-read.")
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=("The switches were written to config/config.local.ini but "
+                    f"the config could not be re-read: {exc}"),
+        ) from exc
 
     log.info("Switches updated via API: %s", ", ".join(
         f"{k}={v}" for k, v in updates.items()))
 
     new_switches = _switches()
+    # The file is not the last word: a VFSCFG_ environment variable outranks
+    # it. Saying "updated" while the value in effect has not moved is how a
+    # paying flow ends up on with the panel showing off.
+    overridden = sorted(k for k, v in updates.items()
+                        if getattr(new_switches, k, None) != v)
+    if overridden:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=("Written to config/config.local.ini, but the API still "
+                    "reads a different value for: " + ", ".join(overridden)
+                    + ". A VFSCFG_ environment variable on this machine "
+                    "overrides the file; change or remove it."),
+        )
     return SwitchesUpdateResponse(
         updated=sorted(updates.keys()),
         switches=new_switches,
