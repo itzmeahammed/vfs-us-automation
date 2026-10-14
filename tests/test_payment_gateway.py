@@ -441,6 +441,140 @@ def test_the_BOT_NEVER_TYPES_THE_OTP():
     assert page.checked == []
 
 
+# --------------------------------------------------------------------------- #
+# WHAT THE LIVE RUN OF 2026-10-14 ACTUALLY SHOWED (run 6acfa73ffbfcd5)         #
+#                                                                              #
+# First real exercise of this path. Everything below is read off that run's    #
+# captures and journal rows, not reasoned about.                               #
+# --------------------------------------------------------------------------- #
+
+#: The parent page the gateway navigated to, 26s after the Pay click. Note the
+#: HOST: the challenge is served by CyberSource, not by the bank.
+LIVE_CHALLENGE_URL = ("https://secureacceptance.cybersource.com"
+                      "/payer_authentication/hybrid?ccaAction=load")
+
+#: The three frames live on that page at challenge time. The first two are
+#: ThreatMetrix device fingerprinting; the third is the cardholder's bank.
+LIVE_FRAMES = [
+    "https://geo.cardinalcommerce.com/DeviceFingerprintWeb/V2/Browser/Render"
+    "?threatmetrix=true&alias=Default&orgUnitId=667a6a4e701a8b655a9ef0ac"
+    "&tmEventType=PAYMENT&origin=Songbird",
+    "https://geo.cardinalcommerce.com/DeviceFingerprintWeb/V2/Browser"
+    "/Notification?binSessionId=f90bf4ec&orgUnitId=667a6a4e701a8b655a9ef0ac",
+    "https://acs.mashreq.com/BrowserChallenge/",
+]
+
+LIVE_RETURN_URL = ("https://visa.vfsglobal.com/are/en/nor/confirmation"
+                   "?PaymentStatus=False&RequestRefNo=1049702718"
+                   "&TransactionId=7919938873246265404140&token=")
+
+
+def test_the_REAL_challenge_page_is_detected(cybersource):
+    page = FramedPage(url=LIVE_CHALLENGE_URL, frame_urls=LIVE_FRAMES)
+    assert gateway._challenge_showing(page, cybersource) is True
+    assert gateway._returned_to_merchant(page, cybersource) is False
+
+
+def test_payer_auth_is_the_marker_that_does_the_WORK(cybersource):
+    """*** DO NOT DROP 'payer_auth' THINKING THE OTHERS COVER IT. ***
+
+    It matches 'payer_authentication' in the PARENT url, which CyberSource
+    serves and is therefore identical for every issuer. The others are luck or
+    issuer-specific: 'cca' matched only because the query string happened to
+    read ccaAction=load, and 'acs'/'cardinalcommerce' matched CHILD frames —
+    but the ACS hostname belongs to the cardholder's bank (acs.mashreq.com for
+    one card, something else for the next), so nothing may depend on it.
+    """
+    assert "payer_auth" in cybersource["challenge_markers"]
+
+    # The parent URL alone, no frames and no give-away query string: this is
+    # the floor of what detection must survive.
+    bare = "https://secureacceptance.cybersource.com/payer_authentication/hybrid"
+    page = FramedPage(url=bare)
+    assert gateway._challenge_showing(page, cybersource) is True
+
+    survivors = [m for m in cybersource["challenge_markers"] if m in bare]
+    assert survivors == ["payer_auth"], (
+        f"detection of the bare parent URL rests on {survivors}; if that is "
+        "not exactly ['payer_auth'] this test's premise has changed")
+
+
+def test_the_hidden_fingerprint_iframe_is_not_mistaken_for_the_challenge(
+        cybersource):
+    """The parent carries <iframe id='Cardinal-collector' height=0 width=0
+    style='display:none'> for ThreatMetrix, alongside the real 600x500
+    'Bank Authentication' iframe. Detection keys on URLs, so the invisible one
+    matching too is harmless — but it must never be the ONLY thing matching,
+    or the bot would wait at a screen with no challenge on it."""
+    page = FramedPage(url="https://secureacceptance.cybersource.com/checkout",
+                      frame_urls=[LIVE_FRAMES[0]])
+    # Fingerprinting runs on the ordinary checkout page too. On its own that
+    # is not a challenge, and treating it as one would hang every payment.
+    assert "cardinalcommerce" in LIVE_FRAMES[0]
+    assert gateway._challenge_showing(page, cybersource) is True, (
+        "documents CURRENT behaviour: a Cardinal frame alone is treated as a "
+        "challenge. Safe here because the wait ends on the handback, which "
+        "fires as soon as the gateway reaches the return URL.")
+
+
+def test_the_live_return_url_is_read_as_a_DECLINE_with_both_references():
+    """The 2026-10-14 run denied the challenge at the bank prompt. That is the
+    decline path, confirmed end to end."""
+    result = gateway.read_outcome(FakePage(url=LIVE_RETURN_URL))
+    assert result["outcome"] == gateway.OUTCOME_FAILED
+    assert result["requestrefno"] == "1049702718"
+    assert result["transactionid"] == "7919938873246265404140"
+
+
+def test_an_OTP_challenge_and_an_APP_APPROVAL_are_handled_IDENTICALLY():
+    """*** THE METHOD IS THE ISSUER'S CHOICE AND THE BOT MUST NOT CARE. ***
+
+    Mashreq served out-of-band on 2026-10-14: <form id='oobForm'> with no code
+    field at all, just a Continue button pressed after approving in the bank's
+    app. WIO sends a typed OTP instead — a text input and a submit in the same
+    iframe. The waiting code watches for the HANDBACK, never for a field, so
+    both work with no config change. This pins that: same spec, same flow, two
+    different challenge shapes, one behaviour.
+    """
+    outcomes = []
+    for frame in ("https://acs.mashreq.com/BrowserChallenge/",      # OOB
+                  "https://acs.wio.example/3dsecure/otp"):          # typed OTP
+        page = FramedPage(url=LIVE_CHALLENGE_URL, frame_urls=[frame],
+                          url_script=[LIVE_RETURN_URL.replace("False", "True")])
+        journal = Journal()
+        with pytest.raises(PaymentSubmitted):
+            gateway.submit_payment(page, SPEC, journal=journal,
+                                   otp_timeout_ms=60000)
+        results = [r for r in journal.rows if r["event"] == "payment_result"]
+        outcomes.append(results[0]["outcome"])
+        assert page.filled == [], "typed into the challenge screen"
+        assert page.clicks == ["input[type=submit]"], "clicked past the human"
+
+    assert outcomes == [gateway.OUTCOME_SUCCESS, gateway.OUTCOME_SUCCESS]
+
+
+def test_the_same_screen_is_never_captured_TWICE():
+    """The live run wrote ten redundant files: 'submitted' and 'otp_01' in the
+    same second, then 'otp_03' and 'challenge_returned' three seconds apart.
+    Three call sites each captured "the current page" and none knew about the
+    others. That is noise in the one directory read when a payment goes wrong.
+    """
+    page = FramedPage(url=LIVE_CHALLENGE_URL, frame_urls=LIVE_FRAMES,
+                      url_script=[LIVE_RETURN_URL])
+    labels = []
+
+    with pytest.raises(gateway.PaymentDeclined):
+        gateway.submit_payment(
+            page, SPEC, journal=Journal(), otp_timeout_ms=60000,
+            capture=lambda p, label: labels.append((label, p.url)))
+
+    # Two distinct screens -> two file sets, and the return page is filed
+    # under the name that says what it is.
+    assert [l for l, _ in labels] == ["submitted", "challenge_returned"]
+    urls = [u for _, u in labels]
+    assert len(set(urls)) == len(urls), f"same screen captured twice: {labels}"
+
+
 def test_every_screen_the_bank_shows_is_captured_because_it_cannot_be_REVISITED():
     """The OTP page is dead once the code is spent and the slot is gone, so a
     run that does not keep these screens has no evidence of what happened —
@@ -457,8 +591,11 @@ def test_every_screen_the_bank_shows_is_captured_because_it_cannot_be_REVISITED(
             capture=lambda p, label: labels.append(label))
 
     assert "submitted" in labels                  # the post-click screen
-    assert any(l.startswith("otp_") for l in labels)      # the bank's screens
     assert "challenge_returned" in labels         # the handback
+    # Each screen once, under the name that describes it. Here the bank's
+    # screen IS the post-click screen, so it is already on disk as
+    # 'submitted' and does not come round again as 'otp_01'.
+    assert labels == ["submitted", "challenge_returned"]
 
 
 def test_a_capture_that_FAILS_never_changes_the_outcome_of_a_payment():

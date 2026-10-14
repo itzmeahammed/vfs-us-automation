@@ -408,44 +408,76 @@ def _human_wait(ms: int) -> str:
     return f"{max(0, ms // 1000)}s"
 
 
-def _await_challenge(page, spec: Dict[str, Any], journal, capture,
-                     journal_path: str, timeout_ms: int) -> None:
-    """Hold the open browser while a HUMAN completes the 3-D Secure OTP.
+#: Ceiling on how many screens one challenge may capture. A bank that bounces
+#: between screens, or a page that rewrites its own frame URLs in a loop, must
+#: not be able to fill a disk while an operator is looking for their phone.
+MAX_CHALLENGE_SHOTS = 25
 
-    The bot never types the OTP — it arrives on the cardholder's phone. What it
-    does is wait, keep every screen the bank shows (they cannot be revisited
-    once the code is spent), and notice when the gateway hands back to VFS so
-    the outcome can be read and journalled rather than left "unknown".
+
+def _await_challenge(page, spec: Dict[str, Any], journal, capture,
+                     journal_path: str, timeout_ms: int,
+                     seen: Optional[set] = None) -> None:
+    """Hold the open browser while a HUMAN completes the 3-D Secure challenge.
+
+    *** THE BOT NEVER COMPLETES THE CHALLENGE. *** Whatever the issuer asks
+    for — a code texted to the cardholder's phone, an approval in a banking
+    app — it is not something this process has or should have. All it does is
+    wait, keep every screen the bank shows (they cannot be revisited once a
+    code is spent), and notice the handback so the outcome can be read and
+    journalled rather than left "unknown".
+
+    `seen` carries signatures already captured by the caller, so the screen
+    photographed immediately after the click is not photographed again one
+    millisecond later under a second name.
 
     Returns when the browser is back on VFS. Raises PaymentSubmitted when the
     human never finishes inside the window.
     """
     _journal_quietly(journal, {
         "event": "payment_challenge",
-        "detail": "3-D Secure challenge raised; waiting for the OTP",
+        "detail": "3-D Secure challenge raised; waiting for the cardholder",
         "url": getattr(page, "url", ""),
         "frames": _frame_urls(page),
     })
+    # NOT NECESSARILY AN OTP, and saying "enter the OTP" to someone looking at
+    # a bank-app prompt is a confusing instruction at the worst moment.
+    # Observed live on AE/NOR 2026-10-14: Mashreq's ACS served an OUT-OF-BAND
+    # challenge — approve in the bank's app, then press Continue. There was no
+    # code to type and no field to type it into. Which method an issuer picks
+    # is the issuer's choice and can differ per card and per transaction, so
+    # the instruction names the screen rather than the method.
     log.warning("=" * 70)
-    log.warning("  3-D SECURE: ENTER THE OTP IN THE OPEN BROWSER.")
+    log.warning("  3-D SECURE: FINISH THE BANK'S CHECK IN THE OPEN BROWSER.")
+    log.warning("  (an OTP to type, or an approval in your banking app — "
+                "whichever your bank shows)")
     log.warning(f"  Waiting up to {_human_wait(timeout_ms)}. Do not close it.")
     log.warning("=" * 70)
 
-    seen = set()
+    # MUTATED IN PLACE when the caller supplies one, deliberately: the caller
+    # captures the screen before this is entered and again after it returns,
+    # and all three have to agree on what has already been photographed.
+    if seen is None:
+        seen = set()
     shots = 0
     deadline = time.monotonic() + timeout_ms / 1000.0
     while True:
+        # THE HANDBACK IS CHECKED FIRST, and that ordering is the difference
+        # between the return page being filed as 'otp_03' and as
+        # 'challenge_returned'. This loop photographs CHALLENGE screens; the
+        # page VFS comes back on is the caller's to label, and a name that
+        # says what a file is worth more than one more numbered screenshot.
+        if _returned_to_merchant(page, spec):
+            log.info(f"  gateway handed back to VFS: {page.url}")
+            return
         signature = _screen_signature(page)
-        if signature not in seen and capture is not None and shots < 25:
+        if (signature not in seen and capture is not None
+                and shots < MAX_CHALLENGE_SHOTS):
             seen.add(signature)
             shots += 1
             try:
                 capture(page, f"otp_{shots:02d}")
             except Exception as e:                          # noqa: BLE001
-                log.warning(f"  could not capture the OTP screen: {e}")
-        if _returned_to_merchant(page, spec):
-            log.info(f"  gateway handed back to VFS: {page.url}")
-            return
+                log.warning(f"  could not capture the challenge screen: {e}")
         if time.monotonic() >= deadline:
             raise PaymentSubmitted(
                 "The payment was submitted and the 3-D Secure challenge was "
@@ -713,14 +745,36 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
                  "3-D Secure challenge is on screen — that is the challenge "
                  "polling, not a lost response.")
 
-    # THE FIRST SCREEN AFTER THE IRREVERSIBLE CLICK. Kept unconditionally and
-    # before anything is decided about it: whatever the gateway did with the
-    # payment, this is the page that says so, and it is not reachable again.
-    if capture is not None:
+    # ONE FILE SET PER DISTINCT SCREEN, no matter how many times the code
+    # looks. The live run of 2026-10-14 wrote the same screen twice at BOTH
+    # ends — 'submitted' and 'otp_01' in the same second, then 'otp_03' and
+    # 'challenge_returned' three seconds apart — because three separate places
+    # each capture "the current page" and none of them knew about the others.
+    # Ten redundant files in the one directory somebody reads when a payment
+    # has gone wrong. The set is shared with _await_challenge, which mutates
+    # it, so all three agree.
+    captured: set = set()
+
+    def capture_once(label: str) -> None:
+        """Capture `label` unless this exact screen is already on disk."""
+        if capture is None:
+            return
+        signature = _screen_signature(page)
+        if signature in captured:
+            log.debug(f"  '{label}' is the screen already captured — skipped")
+            return
+        captured.add(signature)
         try:
-            capture(page, "submitted")
+            capture(page, label)
         except Exception as e:                              # noqa: BLE001
-            log.warning(f"  could not capture the post-submit screen: {e}")
+            # Evidence is worth a lot. It is not worth abandoning a payment
+            # that has already been submitted.
+            log.warning(f"  could not capture '{label}': {e}")
+
+    # THE FIRST SCREEN AFTER THE IRREVERSIBLE CLICK. Taken before anything is
+    # decided about it: whatever the gateway did with the payment, this is the
+    # page that says so, and it is not reachable again.
+    capture_once("submitted")
 
     if _challenge_showing(page, spec):
         # HAND OVER, DO NOT GIVE UP. The old code journalled "unknown" and
@@ -730,18 +784,14 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
         # bot still never types the OTP — it waits for the human and then
         # READS.
         _await_challenge(page, spec, journal, capture, journal_path,
-                         otp_timeout_ms)
+                         otp_timeout_ms, seen=captured)
         try:
             page.wait_for_load_state("load", timeout=timeout_ms)
         except Exception as e:                              # noqa: BLE001
             # Back on VFS and readable already — the outcome is in the URL,
             # which does not need the page to have finished loading.
             log.debug(f"Return page load state not confirmed: {e}")
-        if capture is not None:
-            try:
-                capture(page, "challenge_returned")
-            except Exception as e:                          # noqa: BLE001
-                log.warning(f"  could not capture the return screen: {e}")
+        capture_once("challenge_returned")
 
     # ── CLOSE THE JOURNAL ROW. ──────────────────────────────────────────────
     # Without this every payment ever made stays in `unanswered()` forever:
