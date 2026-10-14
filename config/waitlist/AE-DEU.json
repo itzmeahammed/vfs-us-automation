@@ -1,10 +1,10 @@
 {
-  "description": "UAE -> Germany waitlist registration. Same four pages as Switzerland/Netherlands: tick the waitlist checkbox on Appointment Details and Continue; fill 'Your Details' (/your-details) and Save; Continue past the summary; accept both consents on /review-pay and Confirm. The Confirm click is the point of no return.",
+  "description": "UAE -> Germany waitlist registration. CONFIRMED 2026-10-14. Three stepper pages (Appointment Details -> Your Details -> Review). Tick waitlist checkbox, Continue; fill 7 fields on Your Details (26s countdown before Save); Continue past summary; accept both consents on /review-pay and Confirm. Fee: AED 146.74. No OTP. Reference format: DEU + digits.",
 
   "extends": "_default",
 
-  "enabled": false,
-  "_comment_enabled": "OFF until the slot-check layer is trustworthy. config/routes/AE-DEU.json has a KNOWN centre bug — both 'Dubai' rows carry centre = 'Germany Visa Application Centre- Abu Dhabi' — so a client asking for Dubai would be waitlisted at ABU DHABI instead. That was harmless while AE-DEU was commented out; it is now live in config/vfs_urls.ini. Confirm the real Dubai centre string, fix that file, then flip this to true. The page mapping below is done and came from real portal HTML.",
+  "enabled": true,
+  "_comment_enabled": "Enabled for Abu Dhabi combos. Dubai combos still disabled in config/routes/AE-DEU.json until the real Dubai centre string is confirmed.",
 
   "_comment_checkbox": "PINNED, unlike AE-CHE/AE-NLD. This portal binds formcontrolname=\"agreeToWaitlist\" (same as AE-ITA), which is a stable anchor that survives the page gaining controls — so it is worth pinning rather than relying on detect.locate()'s fallback scan.",
   "checkbox": "mat-checkbox[formcontrolname='agreeToWaitlist']",
@@ -13,8 +13,8 @@
     {
       "name": "your_details",
 
-      "_comment_countdown": "NO COUNTDOWN on this portal. The captured HTML has an EMPTY <div id=\"mintime\"></div> — that is the element Switzerland/Netherlands fill with 'Please wait N seconds before saving your details and continuing'. Empty means no timer gates Save here, so \"dwell_seconds\" is deliberately omitted and the inherited _await_enabled poll is what governs the click.",
-      "_comment_if_wrong": "If a run reports Save clicked but the page did not advance, a timer IS present and this needs \"dwell_seconds\" set to just over it — that is exactly the failure mode the AE-CHE comments describe (the button enables BEFORE the timer expires, so an early click silently does nothing).",
+      "_comment_countdown": "CONFIRMED: portal shows 'Please wait 26 seconds before saving'. Observed 2026-10-14.",
+      "dwell_seconds": 32,
 
       "_comment_selectors": "<app-dynamic-form>/<app-dynamic-control> with no formcontrolname and only volatile positional ids (mat-input-3..8, allocated in DOM order). Every field is addressed by its visible LABEL — the only stable anchor. Field list is IDENTICAL to AE-NLD, confirmed from the captured HTML.",
 
@@ -83,11 +83,10 @@
     {
       "name": "review_pay",
 
-      "_comment_url": "NOTE the reported URL for the consents and Confirm is /your-details, NOT /review-pay. The inherited \"url_contains\": \"review-pay\" is therefore overridden to \"your-details\" so the page gate cannot fail. \"wait_for_text\" is what actually distinguishes this step — same situation as details_summary, where the URL stays put and only the content swaps.",
-      "url_contains": "your-details",
+      "_comment_url": "Portal navigates to /review-pay (confirmed 2026-10-14). Using the default url_contains from _default.",
       "wait_for_text": "I accept the",
 
-      "_comment_checkboxes": "Reported as the SAME two consents as AE-CHE/AE-NLD. Matched by their own wording rather than position — ids on these pages are positional and shift as VFS adds consents.",
+      "_comment_checkboxes": "CONFIRMED 2026-10-14: same two consents as AE-CHE/AE-NLD. Both matched by wording; both ticked via native input.",
 
       "fields": [
         {
@@ -105,14 +104,14 @@
           "widget": "checkbox",
           "value": true,
           "required": true,
-          "_comment": "UNVERIFIED WORDING — inherited from AE-CHE/AE-NLD on the strength of 'same checkboxes' rather than captured HTML. Note the Appointment Details checkbox on THIS portal reads 'I accept the Waitlist.', which is different wording, so do not assume. `doctor --route AE-DEU --walk` will report it if this label matches nothing."
+          "_comment": "CONFIRMED 2026-10-14: wording matched and checkbox ticked successfully via native input."
         }
       ]
     }
   ],
 
   "confirmation": {
-    "_comment_unverified": "INHERITED, NOT OBSERVED. No confirmation page has been captured for this portal — 'waitlisted' comes from _default. AE-CHE's real headline was 'Your Appointment is Waitlisted'; if DEU matches, tighten this to that exact phrase. A bare 'waitlisted' is looser than ideal because the word also appears in disclaimers.",
+    "_comment": "CONFIRMED 2026-10-14: after Confirm click the portal shows a receipt page with Reference # (e.g. DEU73214173427), fees (AED 146.74), applicant name, and a Home button. The success_text 'waitlisted' matched and the journal recorded success.",
     "success_text": ["waitlisted"]
   }
 }

@@ -1,0 +1,118 @@
+{
+  "description": "UAE -> Malta waitlist registration. SCAFFOLD built from AE-DEU's confirmed shape (Appointment Details -> Your Details -> Summary -> Review & Pay -> confirmation); NOTHING here has been checked against this portal yet.",
+  "_comment_route": "The route is commented out in config/vfs_urls.ini, so nothing can run for it until that line is uncommented. Centre strings in config/routes/AE-MT.json are bare 'Abu Dhabi' / 'Dubai' and unchecked.",
+  "extends": "_default",
+  "enabled": false,
+  "_comment_enabled": "OFF until `python -m src.waitlist doctor --route AE-MT --walk` resolves every field below and one dry run reaches review-pay. Each field is copied from AE-DEU/AE-CZE and marked UNVERIFIED until then.",
+  "steps": [
+    {
+      "name": "your_details",
+      "_comment_dwell": "UNVERIFIED. 30s countdown + 2s margin as on AE-CHE/AE-NLD; the countdown varies by session, so treat this as a floor.",
+      "dwell_seconds": 32,
+      "_comment_fields": "UNVERIFIED — the field list AE-DEU/AE-NLD/AE-CZE share. Gender and Passport Expiry appear on AE-CZE but not AE-DEU, so they are if_present. Remove any field the walk reports missing; add any it reports unfilled.",
+      "fields": [
+        {
+          "name": "first_name",
+          "label": "First Name",
+          "widget": "text",
+          "value": "{{first_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "last_name",
+          "label": "Last Name",
+          "widget": "text",
+          "value": "{{last_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "gender",
+          "label": "Gender",
+          "widget": "mat-select",
+          "value": "{{gender}}",
+          "required": true,
+          "if_present": true,
+          "exact": true
+        },
+        {
+          "name": "nationality",
+          "label": "Current Nationality",
+          "widget": "mat-select",
+          "value": "{{nationality}}",
+          "required": true
+        },
+        {
+          "name": "passport_number",
+          "label": "Passport Number",
+          "widget": "text",
+          "value": "{{passport_number|upper}}",
+          "required": true
+        },
+        {
+          "name": "passport_expiry",
+          "selector": "input#passportExpirtyDate",
+          "widget": "date",
+          "value": "{{passport_expiry|date:%d/%m/%Y}}",
+          "required": true,
+          "if_present": true
+        },
+        {
+          "name": "phone_country_code",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 0,
+          "value": "{{phone_country_code|digits}}",
+          "required": true
+        },
+        {
+          "name": "phone_number",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 1,
+          "value": "{{phone_number|digits}}",
+          "required": true
+        },
+        {
+          "name": "email",
+          "label": "Email",
+          "widget": "text",
+          "value": "{{email}}",
+          "required": true
+        }
+      ],
+      "submit": {
+        "role": "button",
+        "name": "Save"
+      }
+    },
+    {
+      "name": "review_pay",
+      "wait_for_text": "I accept the",
+      "_comment_checkboxes": "UNVERIFIED — the two consents AE-CHE/AE-NLD/AE-DEU share, matched by wording.",
+      "fields": [
+        {
+          "name": "accept_terms",
+          "label": "I accept the",
+          "widget": "checkbox",
+          "index": 0,
+          "value": true,
+          "required": true
+        },
+        {
+          "name": "agree_waitlist",
+          "label": "Yes, I agree for waitlist confirmation",
+          "widget": "checkbox",
+          "value": true,
+          "required": true
+        }
+      ]
+    }
+  ],
+  "confirmation": {
+    "_comment": "UNVERIFIED — tighten success_text once the real confirmation headline is seen. The reference pattern takes 3 or 4 letters (GRC127086415238, DEU73214173427, SWDB79923880977); if it matches nothing the run still succeeds.",
+    "success_text": [
+      "waitlisted"
+    ],
+    "reference_pattern": "\\b([A-Z]{3,4}\\d{9,})\\b"
+  }
+}

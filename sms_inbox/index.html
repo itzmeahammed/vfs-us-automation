@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMS Console</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c2230; --muted:#6b7385; --border:#e2e5eb; --accent:#2f6fed; --ok:#1e8e4f; --warn:#b7791f; --err:#c0392b; --out:#e8effd; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#10141c; --card:#181e2a; --text:#e6e9ef; --muted:#8c94a6; --border:#2a3242; --accent:#5b8dff; --ok:#3ecf7e; --warn:#e8b04b; --err:#ff6b5b; --out:#1f2c48; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:20px; margin:0 0 12px; }
+  nav { display:flex; gap:4px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:16px; }
+  nav button { background:none; color:var(--muted); border:0; border-bottom:2px solid transparent; border-radius:0; padding:8px 12px; }
+  nav button.on { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+  section { display:none; } section.on { display:block; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+  input, select, textarea { padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text); font:inherit; }
+  input[type=text], textarea { flex:1 1 200px; }
+  textarea { width:100%; min-height:90px; resize:vertical; }
+  button { padding:8px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.ghost { background:none; color:var(--accent); border:1px solid var(--border); }
+  button:disabled { opacity:.5; cursor:default; }
+  label { color:var(--muted); font-size:14px; display:flex; gap:6px; align-items:center; }
+  .status { color:var(--muted); font-size:13px; min-height:20px; margin-bottom:8px; }
+  .status.err { color:var(--err); }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px 14px; margin-bottom:10px; }
+  .card.new { border-color:var(--accent); }
+  .meta { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:13px; margin-bottom:4px; }
+  .who { font-weight:600; color:var(--text); }
+  .body { white-space:pre-wrap; word-break:break-word; }
+  .otp { font-family:ui-monospace, monospace; font-weight:700; background:color-mix(in srgb, var(--accent) 15%, transparent); padding:0 4px; border-radius:4px; cursor:pointer; }
+  .badge { font-size:12px; font-weight:600; padding:1px 7px; border-radius:99px; border:1px solid currentColor; }
+  .s-DELIVERED, .s-ONLINE, .s-RECEIVED { color:var(--ok); }
+  .s-SENT, .s-DISPATCHED, .s-QUEUED { color:var(--warn); }
+  .s-FAILED, .s-OFFLINE { color:var(--err); }
+  .id { font-family:ui-monospace, monospace; font-size:12px; color:var(--muted); cursor:pointer; }
+  .thread { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; }
+  .bubble { max-width:80%; padding:8px 12px; border-radius:12px; border:1px solid var(--border); background:var(--card); }
+  .bubble.out { align-self:flex-end; background:var(--out); }
+  .bubble .meta { margin:4px 0 0; font-size:12px; }
+  pre { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px; overflow-x:auto; font-size:13px; }
+  .empty { color:var(--muted); text-align:center; padding:32px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SMS Console</h1>
+  <nav id="tabs">
+    <button data-tab="inbox" class="on">Inbox</button>
+    <button data-tab="convo">Conversation</button>
+    <button data-tab="send">Send SMS</button>
+    <button data-tab="outbox">Outbox</button>
+    <button data-tab="devices">Devices</button>
+  </nav>
+
+  <!-- GET /api/v1/inbound, GET /api/v1/inbound/:id -->
+  <section id="inbox" class="on">
+    <form class="row" id="inboxForm">
+      <input id="inSender" type="text" placeholder="Sender number, e.g. +971501234567 (blank = all)">
+      <button>Check</button>
+      <label><input id="inAuto" type="checkbox" checked> Auto-refresh 10s</label>
+    </form>
+    <div class="row">
+      <label>From <input id="inFrom" type="datetime-local"></label>
+      <label>To <input id="inTo" type="datetime-local"></label>
+    </div>
+    <div class="status" id="inStatus"></div>
+    <div id="inList"></div>
+  </section>
+
+  <!-- GET /api/v1/conversations/:phoneNumber, POST /api/v1/outbound -->
+  <section id="convo">
+    <form class="row" id="convoForm">
+      <input id="cvPhone" type="text" placeholder="Phone number, e.g. +971501234567">
+      <select id="cvDir"><option value="">All</option><option value="inbound">Inbound</option><option value="outbound">Outbound</option></select>
+      <select id="cvLimit"><option>20</option><option selected>50</option><option>100</option></select>
+      <button>Load</button>
+    </form>
+    <div class="status" id="cvStatus"></div>
+    <div class="thread" id="cvList"></div>
+    <form class="row" id="replyForm" hidden>
+      <input id="cvReply" type="text" placeholder="Reply…">
+      <button>Send</button>
+    </form>
+  </section>
+
+  <!-- POST /api/v1/outbound -->
+  <section id="send">
+    <form id="sendForm">
+      <div class="row"><input id="sdTo" type="text" placeholder="Recipient, E.164 e.g. +971501234567" required></div>
+      <div class="row"><textarea id="sdBody" placeholder="Message text" required></textarea></div>
+      <div class="row">
+        <label>Device <select id="sdDevice"><option value="">Default (key scope)</option></select></label>
+        <label>SIM <select id="sdSim"><option value="">Default</option></select></label>
+        <button>Send SMS</button>
+      </div>
+    </form>
+    <div class="status" id="sdStatus"></div>
+    <div id="sdResult"></div>
+  </section>
+
+  <!-- GET /api/v1/outbound, GET /api/v1/outbound/:id -->
+  <section id="outbox">
+    <form class="row" id="outboxForm">
+      <input id="obTo" type="text" placeholder="Recipient number (blank = all)">
+      <select id="obStatus">
+        <option value="">Any status</option>
+        <option>QUEUED</option><option>DISPATCHED</option><option>SENT</option><option>DELIVERED</option><option>FAILED</option>
+      </select>
+      <button>Check</button>
+    </form>
+    <div class="status" id="obStatusLine"></div>
+    <div id="obList"></div>
+  </section>
+
+  <!-- GET /api/v1/devices -->
+  <section id="devices">
+    <div class="row"><button id="dvReload">Reload</button></div>
+    <div class="status" id="dvStatus"></div>
+    <div id="dvList"></div>
+  </section>
+
+  <form class="row" id="lookupForm" style="margin-top:24px">
+    <input id="lkId" type="text" placeholder="Look up a message by ID">
+    <select id="lkKind"><option value="inbound">Inbound</option><option value="outbound">Outbound</option></select>
+    <button class="ghost">Look up</button>
+  </form>
+  <div id="lkResult"></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Highlight 4-8 digit codes (OTPs); click to copy.
+const fmtBody = s => esc(s).replace(/\b(\d{4,8})\b/g, '<span class="otp" title="Click to copy">$1</span>');
+const fmtTime = t => t ? new Date(t).toLocaleString() : '';
+const badge = s => s ? `<span class="badge s-${esc(s)}">${esc(s)}</span>` : '';
+const idTag = id => `<span class="id" data-id="${esc(id)}" title="Click to copy ID">${esc(id)}</span>`;
+const isoOf = v => v ? new Date(v).toISOString() : '';
+const store = {
+  get: k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+};
+
+// All calls go through the local proxy (server.py), which adds the API key.
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.success) throw new Error(json.error?.message ? `${json.error.message}${json.error.code ? ' (' + json.error.code + ')' : ''}` : `HTTP ${res.status}`);
+  return json.data;
+}
+async function run(statusEl, fn) {
+  statusEl.className = 'status';
+  statusEl.textContent = 'Loading…';
+  try { statusEl.textContent = (await fn()) || ''; }
+  catch (e) { statusEl.className = 'status err'; statusEl.textContent = 'Error: ' + e.message; }
+}
+function sendSms(payload) {
+  if (!confirm(`Send this SMS to ${payload.recipientNumber}?\n\n${payload.body}`)) return Promise.reject(new Error('Cancelled'));
+  return api('/api/v1/outbound', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+}
+
+// ---- Tabs
+const loaders = {};
+let loadedDevices = false;
+$('tabs').addEventListener('click', e => {
+  const tab = e.target.dataset.tab;
+  if (!tab) return;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b === e.target));
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('on', s.id === tab));
+  store.set('sms_tab', tab);
+  if ((tab === 'devices' || tab === 'send') && !loadedDevices) loaders.devices();
+  if (tab === 'outbox') loaders.outbox();
+});
+
+// ---- Inbox
+const seen = new Set();
+let firstInbox = true, inboxTimer = null;
+loaders.inbox = () => run($('inStatus'), async () => {
+  const p = new URLSearchParams({ sortBy: 'receivedAt', sortOrder: 'desc' });
+  const sender = $('inSender').value.trim();
+  if (sender) p.set('senderNumber', sender);
+  if ($('inFrom').value) p.set('from', isoOf($('inFrom').value));
+  if ($('inTo').value) p.set('to', isoOf($('inTo').value));
+  const msgs = await api('/api/v1/inbound?' + p);
+  $('inList').innerHTML = msgs.length ? msgs.map(m => {
+    const isNew = !firstInbox && !seen.has(m.id);
+    seen.add(m.id);
+    return `<div class="card${isNew ? ' new' : ''}">
+      <div class="meta"><span class="who">${esc(m.senderNumber)}</span><span>${fmtTime(m.receivedAt || m.createdAt)}</span></div>
+      <div class="body">${fmtBody(m.body)}</div>
+      <div class="meta" style="margin:6px 0 0">${idTag(m.id)}<span>SIM ${esc(m.simSlotIndex)}</span></div></div>`;
+  }).join('') : '<div class="empty">No messages</div>';
+  firstInbox = false;
+  return `${msgs.length} message(s) · updated ${new Date().toLocaleTimeString()}`;
+});
+function scheduleInbox() {
+  clearInterval(inboxTimer);
+  if ($('inAuto').checked) inboxTimer = setInterval(() => { if ($('inbox').classList.contains('on')) loaders.inbox(); }, 10000);
+}
+$('inboxForm').addEventListener('submit', e => {
+  e.preventDefault();
+  store.set('sms_sender', $('inSender').value.trim());
+  seen.clear(); firstInbox = true;
+  loaders.inbox(); scheduleInbox();
+});
+$('inAuto').addEventListener('change', scheduleInbox);
+
+// ---- Conversation
+loaders.convo = () => run($('cvStatus'), async () => {
+  const phone = $('cvPhone').value.trim();
+  if (!phone) throw new Error('Enter a phone number');
+  const p = new URLSearchParams({ sortOrder: 'desc', limit: $('cvLimit').value });
+  if ($('cvDir').value) p.set('direction', $('cvDir').value);
+  const data = await api(`/api/v1/conversations/${encodeURIComponent(phone)}?` + p);
+  // Fetched newest-first so the limit keeps the latest; shown oldest-first like a chat.
+  const msgs = [...data.messages].reverse();
+  $('cvList').innerHTML = msgs.length ? msgs.map(m => `
+    <div class="bubble ${m.direction === 'outbound' ? 'out' : ''}">
+      <div class="body">${fmtBody(m.body)}</div>
+      <div class="meta"><span>${fmtTime(m.timestamp || m.createdAt)}</span>${badge(m.status)}</div>
+    </div>`).join('') : '<div class="empty">No messages with this number</div>';
+  $('replyForm').hidden = false;
+  return `${msgs.length} of ${data.total} message(s) with ${data.phoneNumber}`;
+});
+$('convoForm').addEventListener('submit', e => {
+  e.preventDefault();
+  store.set('sms_convo', $('cvPhone').value.trim());
+  loaders.convo();
+});
+$('replyForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const body = $('cvReply').value.trim();
+  if (!body) return;
+  run($('cvStatus'), async () => {
+    await sendSms({ recipientNumber: $('cvPhone').value.trim(), body });
+    $('cvReply').value = '';
+    await loaders.convo();
+    return 'Sent.';
+  });
+});
+
+// ---- Send
+let devices = [];
+$('sdDevice').addEventListener('change', () => {
+  const d = devices.find(d => d.id === $('sdDevice').value);
+  $('sdSim').innerHTML = '<option value="">Default</option>' + (d?.sims || []).map(s =>
+    `<option value="${s.slotIndex}">Slot ${s.slotIndex} · ${esc(s.phoneNumber || '')} ${esc(s.label || '')}</option>`).join('');
+});
+function renderOutbound(m) {
+  return `<div class="card">
+    <div class="meta"><span class="who">To ${esc(m.recipientNumber)}</span>${badge(m.status)}</div>
+    <div class="body">${fmtBody(m.body)}</div>
+    <div class="meta" style="margin:6px 0 0">${idTag(m.id)}<span>${fmtTime(m.deliveredAt || m.sentAt || m.dispatchedAt || m.createdAt)}</span></div>
+    ${m.failureReason ? `<div class="status err">${esc(m.failureReason)}</div>` : ''}
+  </div>`;
+}
+$('sendForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const payload = { recipientNumber: $('sdTo').value.trim(), body: $('sdBody').value };
+  if ($('sdDevice').value) payload.deviceId = $('sdDevice').value;
+  if ($('sdSim').value !== '') payload.simSlotIndex = Number($('sdSim').value);
+  run($('sdStatus'), async () => {
+    const m = await sendSms(payload);
+    $('sdBody').value = '';
+    $('sdResult').innerHTML = renderOutbound(m) + `<button class="ghost" id="sdRecheck">Refresh status</button>`;
+    $('sdRecheck').onclick = () => run($('sdStatus'), async () => {
+      const fresh = await api('/api/v1/outbound/' + encodeURIComponent(m.id));
+      $('sdResult').firstElementChild.outerHTML = renderOutbound(fresh);
+      return `Status: ${fresh.status}`;
+    });
+    return `Accepted: ${m.status}`;
+  });
+});
+
+// ---- Outbox
+loaders.outbox = () => run($('obStatusLine'), async () => {
+  const p = new URLSearchParams({ sortBy: 'createdAt', sortOrder: 'desc' });
+  if ($('obTo').value.trim()) p.set('recipientNumber', $('obTo').value.trim());
+  if ($('obStatus').value) p.set('status', $('obStatus').value);
+  const msgs = await api('/api/v1/outbound?' + p);
+  $('obList').innerHTML = msgs.length ? msgs.map(renderOutbound).join('') : '<div class="empty">No messages</div>';
+  return `${msgs.length} message(s) · updated ${new Date().toLocaleTimeString()}`;
+});
+$('outboxForm').addEventListener('submit', e => { e.preventDefault(); loaders.outbox(); });
+
+// ---- Devices
+loaders.devices = () => run($('dvStatus'), async () => {
+  devices = await api('/api/v1/devices');
+  loadedDevices = true;
+  $('dvList').innerHTML = devices.length ? devices.map(d => `
+    <div class="card">
+      <div class="meta"><span class="who">${esc(d.name)}</span>${badge(d.status)}</div>
+      <div class="meta"><span>Last seen ${fmtTime(d.lastSeenAt) || 'never'}</span><span>${d.isPaired ? 'Paired' : 'Not paired'}</span></div>
+      ${(d.sims || []).map(s => `<div>SIM slot ${s.slotIndex}: <b>${esc(s.phoneNumber || 'unknown')}</b> ${esc(s.label || '')}${s.isDefault ? ' · default' : ''}</div>`).join('')}
+      <div class="meta" style="margin:6px 0 0">${idTag(d.id)}</div>
+    </div>`).join('') : '<div class="empty">No devices</div>';
+  const keep = $('sdDevice').value;
+  $('sdDevice').innerHTML = '<option value="">Default (key scope)</option>' +
+    devices.map(d => `<option value="${esc(d.id)}">${esc(d.name)} (${esc(d.status)})</option>`).join('');
+  $('sdDevice').value = keep;
+  return `${devices.length} device(s)`;
+});
+$('dvReload').addEventListener('click', loaders.devices);
+
+// ---- Lookup by ID
+$('lookupForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const id = $('lkId').value.trim();
+  if (!id) return;
+  try {
+    const m = await api(`/api/v1/${$('lkKind').value}/${encodeURIComponent(id)}`);
+    $('lkResult').innerHTML = `<pre>${esc(JSON.stringify(m, null, 2))}</pre>`;
+  } catch (err) {
+    $('lkResult').innerHTML = `<div class="status err">Error: ${esc(err.message)}</div>`;
+  }
+});
+
+// ---- Copy OTPs and IDs on click
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (t.classList.contains('otp')) navigator.clipboard?.writeText(t.textContent);
+  if (t.classList.contains('id')) navigator.clipboard?.writeText(t.dataset.id);
+});
+
+// ---- Start
+$('inSender').value = store.get('sms_sender');
+$('cvPhone').value = store.get('sms_convo');
+loaders.inbox(); scheduleInbox();
+const lastTab = store.get('sms_tab');
+if (lastTab && lastTab !== 'inbox') document.querySelector(`#tabs button[data-tab="${lastTab}"]`)?.click();
+</script>
+</body>
+</html>

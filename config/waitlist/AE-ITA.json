@@ -1,11 +1,11 @@
 {
   "_comment": "UAE -> Italy waitlist registration. Inherits the shared flow from _default.json and overrides what this portal does differently.",
 
-  "_comment_vs_switzerland": "Three real differences from AE-CHE, all of them structural rather than cosmetic: (1) the waitlist checkbox HAS a formcontrolname here, so it can be pinned properly; (2) 'Your Details' takes NO typed fields — you upload the passport bio page and VFS OCRs the details out of it; (3) there is an extra OTP step before review-pay, and that OTP goes to the registered MOBILE, not the email used at login.",
+  "_comment_vs_switzerland": "CONFIRMED 2026-10-14: (1) checkbox HAS formcontrolname, pinned; (2) WAITLIST uses TYPED FIELDS (same as DEU/NLD), NOT passport upload — the upload is only for the booking flow; (3) NO mobile OTP step in the waitlist flow — it goes straight from summary to review-pay. Phone/email fields are disabled on the page but JS value-set fallback fills them.",
 
   "extends": "_default",
-  "enabled": false,
-  "_comment_enabled": "OFF until the OTP step is implemented — see \"otp\" below. Everything up to it is configured and can be exercised with `doctor --route AE-ITA --walk`.",
+  "enabled": true,
+  "_comment_enabled": "CONFIRMED working 2026-10-14. Ref ITD128931344738, fee AED 38.30. Login OTP via email image (OpenAI), no mobile OTP for waitlist.",
 
   "checkbox": "mat-checkbox[formcontrolname='agreeToWaitlist']",
   "_comment_checkbox": "Pinned, unlike Switzerland: this portal DOES bind the control, and a named control beats inferring one from position or wording. The label reads 'Currently No slots are available for selected category, please confirm waitlist'.",
@@ -16,33 +16,17 @@
       "url_contains": "your-details",
       "wait_for_text": "Your Details",
 
-      "_comment_no_typed_fields": "This portal does NOT ask for name/passport/phone as typed inputs. It asks for the passport BIO PAGE, then extracts the data from it — the page even says 'the data extracted from it can't be edited'. So the whole applicant form is one upload field.",
-
-      "no_screenshots": true,
-      "_comment_no_screenshots": "This page RENDERS the uploaded passport, so a debug screenshot would write the photo, MRZ and signature to disk as pixels — which log redaction cannot reach. The evidence value of a screenshot does not justify keeping a copy of someone's passport on every run. Other steps still screenshot normally.",
-
-      "_comment_countdown": "The page renders 'Please wait 8 seconds...' but it COUNTS DOWN — a capture partway through shows a smaller number than the real total, which is 30s, the same as Switzerland. Save enables before the timer expires yet does nothing until it does, so the wait is mandatory; 32s gives margin. Measured AFTER the upload and extraction, which are themselves several seconds in.",
       "dwell_seconds": 32,
-
       "timeout_ms": 120000,
 
       "fields": [
-        {
-          "name": "passport_scan",
-          "selector": "app-file-upload input[type='file']",
-          "widget": "file",
-          "value": "{{passport_scan}}",
-          "required": true,
-
-          "_comment": "The <input type=file> is hidden=\"\" behind a styled 'Browse Files' button; set_input_files() targets the input directly, so the button is never clicked. Scoped to <app-file-upload> so it can never pick up some other file input on the page.",
-          "_comment_value": "Path to the passport bio-page image or a ONE-PAGE PDF, from the client file. PNG/JPG/PDF only, max 2MB — VFS rejects anything else. An absolute path is safest; a relative one resolves against the working directory.",
-
-          "after_upload": { "role": "button", "name": "Continue" },
-          "_comment_after_upload": "The upload renders a preview with Continue / Replace. Continue commits the file and starts the extraction. NOTE this is a plain <button class='file-browse'>, NOT a mat-button — matched by its accessible name, which works for both.",
-
-          "wait_after_ms": 15000,
-          "_comment_wait_after": "VFS OCRs the document server-side and fills the form from it. Nothing useful can be asserted until that finishes, and Save would be rejected with an empty form. 15s is a starting figure — raise it if a dry run shows Save still disabled."
-        }
+        { "name": "first_name", "label": "First Name", "widget": "text", "value": "{{first_name|upper}}", "required": true },
+        { "name": "last_name", "label": "Last Name", "widget": "text", "value": "{{last_name|upper}}", "required": true },
+        { "name": "nationality", "label": "Current Nationality", "widget": "mat-select", "value": "{{nationality}}", "required": true },
+        { "name": "passport_number", "label": "Passport Number", "widget": "text", "value": "{{passport_number|upper}}", "required": true },
+        { "name": "phone_country_code", "label": "Contact number", "widget": "text", "index": 0, "value": "{{phone_country_code|digits}}", "required": true },
+        { "name": "phone_number", "label": "Contact number", "widget": "text", "index": 1, "value": "{{phone_number|digits}}", "required": true },
+        { "name": "email", "label": "Email", "widget": "text", "value": "{{email}}", "required": true }
       ],
 
       "submit": { "role": "button", "name": "Save" }
@@ -81,6 +65,8 @@
       "url_contains": "review-pay",
       "commits": true,
       "scroll_to_bottom": true,
+      "timeout_ms": 300000,
+      "_comment_timeout": "5 minutes: the OTP step before this is disabled, so the user handles it manually in the browser (Generate OTP -> type code -> Verify -> Continue). The bot polls for /review-pay and picks up automatically.",
 
       "_comment": "Identical in shape to Switzerland's, including the duplicate-id problem: several boxes share 'mat-mdc-checkbox-1'. Matched by wording, not position.",
 
@@ -109,7 +95,7 @@
   ],
 
   "confirmation": {
-    "_comment": "UNVERIFIED for this portal — inherited from _default and not yet seen on a real Italy run. Switzerland showed 'Your Appointment is Waitlisted' at /confirmation; this one is left as the looser 'waitlisted' until a live run confirms the exact headline. Tighten it then.",
+    "_comment": "CONFIRMED 2026-10-14: headline 'Your Appointment is Waitlisted', receipt page with ref ITD128931344738, fee AED 38.30, Home button.",
     "url_contains": "confirmation",
     "success_text": ["waitlisted"]
   }

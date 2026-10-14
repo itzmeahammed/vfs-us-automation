@@ -112,7 +112,7 @@
   ],
 
   "confirmation": {
-    "_comment_unverified": "INHERITED, NOT OBSERVED. No confirmation page has been captured for this portal — 'waitlisted' comes from _default. AE-CHE's real headline was 'Your Appointment is Waitlisted'; if NLD matches, tighten this to that exact phrase. A bare 'waitlisted' is looser than ideal because the word also appears in disclaimers, so confirm this on the first live run.",
+    "_comment": "CONFIRMED 2026-10-14: receipt page with Reference # NEU128929309594, fee AED 100.42 (VFS Service Charge), applicant name, and Home button. success_text 'waitlisted' matched.",
     "success_text": ["waitlisted"]
   }
 }
