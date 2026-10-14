@@ -461,6 +461,19 @@ def cmd_probe(args) -> int:
         print()
         print("The references above are what you quote to VFS or the bank.")
         print(f"They are also in {payment_journal.JOURNAL_FILE}.")
+    elif getattr(result.walk, "payment_submitted", False):
+        # NOT a decline and NOT a failure — the click landed and the gateway
+        # either said yes or never said anything. Both read as "stopped at
+        # payment" in the generic line below, which is the one phrasing that
+        # invites the dangerous reflex: run it again.
+        print()
+        print("!" * 68)
+        print("PAYMENT SUBMITTED — DO NOT RE-RUN UNTIL YOU HAVE CHECKED")
+        print("!" * 68)
+        print(result.walk.reason)
+        print()
+        print("The card may have been charged. Confirm the outcome at VFS or")
+        print(f"the bank first: {payment_journal.JOURNAL_FILE}")
     elif getattr(result.walk, "blocked", False):
         # Loud, and phrased as an instruction. This is not a bug to
         # debug: VFS has said the account already has a booking in

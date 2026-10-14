@@ -492,7 +492,33 @@ def _step_payment(ctx: "_StepContext") -> None:
         row["booking_ref"] = ctx.run.reference or ctx.run.slot
         return payment_journal.append(row)
 
-    gateway.submit_payment(gateway_page, spec, journal=_journal_row)
+    # ── 5b. THE ONE PLACE THE GATEWAY'S DOM IS KEPT ─────────────────────────
+    #
+    # _capture_page above is a SCREENSHOT ONLY, deliberately: page.content() on
+    # a filled card form writes the PAN and CVN into captured/ in plaintext.
+    # The 3-D Secure screens are the exception that has to be made, and the
+    # reason is narrow: the bank's OTP form is an IFRAME, a PNG of it shows a
+    # grey box, and the next country's OTP step has to be built from selectors
+    # somebody can actually read. So the markup is kept — through redact_html,
+    # which blanks every <input value> (the OTP box included) and scrubs the
+    # card values by hand.
+    #
+    # Belt and braces, not one or the other: blanking input values already
+    # removes the typed PAN, and the explicit scrub catches the PAN wherever
+    # the gateway echoes it OUTSIDE an input — a data- attribute, an inline
+    # script, a hidden JSON blob. Neither alone is enough.
+    import os
+
+    from src.booking.walk import capture_dir
+
+    otp_dir = os.path.join(capture_dir(ctx.route), "payment")
+    secrets = [card.number, card.cvn]
+
+    def _capture(page, label):
+        return gateway.capture_screen(page, otp_dir, label, scrub=secrets)
+
+    gateway.submit_payment(gateway_page, spec, journal=_journal_row,
+                           capture=_capture)
 
 
 def _capture_page(page, ctx: "_StepContext", label: str) -> str:

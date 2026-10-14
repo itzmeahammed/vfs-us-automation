@@ -104,7 +104,13 @@
     "challenge",
     "cca",
     "step-up",
-    "stepup"
+    "stepup",
+    "payer_auth",
+    "cardinalcommerce",
+    "centinel"
   ],
-  "_comment_challenge": "3-D SECURE. If the issuer challenges the payment, the gateway redirects to the BANK for an OTP sent to the cardholder's phone. A bot cannot complete that and must not try — it raises and leaves the browser open for a human, the same handover the booking walk uses at its commit boundary. Matched against the URL. Still a guess as to which marker appears, but the captured page shows this gateway expects challenges: it carries <input id='ccaRetryAction'> whose value is rewritten to the checkout path on load, which is the return address for a Cardinal Commerce (CCA) step-up. 'cca' and 'step-up' are in the list for that reason."
+  "_comment_challenge": "3-D SECURE. If the issuer challenges the payment, the BANK asks for an OTP sent to the cardholder's phone. The bot NEVER types it — before the click it refuses outright, and after the click it waits for a human and then reads the outcome (gateway._await_challenge). Matched against the page URL AND EVERY IFRAME URL, which is the case that matters here: CyberSource's payer authentication usually leaves the address bar on secureacceptance and renders the bank's page in a Cardinal step-up IFRAME, so a URL-only check sees nothing at all. Still unconfirmed as to which marker actually appears, but the captured page shows this gateway expects challenges: it carries <input id='ccaRetryAction'> whose value is rewritten to the checkout path on load, which is the return address for a Cardinal Commerce (CCA) step-up. 'cca' and 'step-up' are in the list for that reason; 'cardinalcommerce' and 'centinel' are the hosts Cardinal's step-up iframe is served from, and 'payer_auth' is CyberSource's own name for the field group.",
+  "_comment_challenge_markers_must_not_match_the_gateway": "*** EVERY MARKER IS CHECKED AGAINST THE GATEWAY'S OWN URL AND MUST NOT MATCH IT. *** 'secureacceptance' is the trap: a marker that is a substring of it would make the CHECKOUT page itself look like a challenge, and submit_payment would then refuse the payment before the card was ever submitted — a run that spends a slot and never pays. Verified in tests/test_payment_gateway.py, not by eye.",
+  "otp_timeout_seconds": 600,
+  "_comment_otp_timeout": "How long a HUMAN gets at the bank's OTP screen before the run gives up and reports the outcome as unknown. Ten minutes: the bank's own page usually expires the code in 3-5, so this leaves room for one resend. Giving up does NOT cancel the payment — it is already submitted — it only ends the wait, which is why the number is generous rather than tight."
 }

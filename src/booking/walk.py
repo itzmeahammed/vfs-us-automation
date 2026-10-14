@@ -345,6 +345,13 @@ class WalkResult:
     this is never safe to retry blind: VFS's failure page says funds may still
     have been deducted and the appointment may still confirm."""
 
+    payment_submitted: bool = False
+    """THE CLICK HAPPENED AND THE ANSWER IS NOT A DECLINE — success, an
+    unanswered gateway, or a 3-D Secure OTP the human never typed. Set on the
+    same walks as `payment_declined` is NOT, and for the same reason: nothing
+    downstream may retry a payment that may have taken money. The outcome, if
+    there is one, is the journal row — not this flag."""
+
     blocked: bool = False
     """VFS refused on ACCOUNT STATE — a booking already in flight — not on a
     selector or a page. Distinct from an ordinary stop because the remedy is to
@@ -910,7 +917,7 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
     case is not simply dropped.
     """
     from src.booking import config as booking_config
-    from src.payment.gateway import PaymentDeclined
+    from src.payment.gateway import PaymentDeclined, PaymentSubmitted
     from src.vfs_bot.turnstile import BlockingDialogError
     from src.waitlist.register import _await_page, _click
 
@@ -1064,6 +1071,36 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             result.stopped_at = name
             result.reason = str(e)
             result.payment_declined = True
+            return result
+
+        except PaymentSubmitted as e:
+            # *** ORDER IS LOAD-BEARING: THIS MUST STAY BELOW PaymentDeclined,
+            # which subclasses it. *** Above it, every decline would land here
+            # instead and the run would lose payment_declined entirely.
+            #
+            # This is the PAID-OR-UNKNOWN path: success, an unanswered gateway,
+            # or an OTP the human never typed. The click happened either way,
+            # so it is not a step failure and must never be retried — the
+            # journal row under state/ is the record, not this report.
+            #
+            # It is caught at all because the generic handler below is actively
+            # dangerous here: with --capture full it calls _capture_html on the
+            # GATEWAY page, writing the unredacted DOM of a filled card form —
+            # PAN and CVN in plaintext inside <input value="..."> — to
+            # captured/. The payment path keeps a screenshot, and only
+            # gateway.capture_screen (which redacts) ever writes its markup.
+            log.warning(f"PAYMENT SUBMITTED at '{name}': {e}")
+            report.ok = False
+            report.detail = str(e)
+            report.url = page.url
+            report.page_text = _page_text(page)
+            if capture != CAPTURE_OFF:
+                report.image_path = _capture_shot(page, f"{name}_SUBMITTED",
+                                                  route)
+            result.steps.append(report)
+            result.stopped_at = name
+            result.reason = str(e)
+            result.payment_submitted = True
             return result
 
         except BlockingDialogError as e:
