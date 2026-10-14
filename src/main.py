@@ -107,7 +107,10 @@ def initialize_logger():
     except (AttributeError, ValueError):
         pass  # older Python / non-reconfigurable stream — best effort
     stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(detailed_fmt)
+    # The console is what an API job's log shows, so a failure the code
+    # understands prints as its one line there; the files keep the traceback.
+    from src.utils.log_setup import ConsoleFormatter
+    stream_handler.setFormatter(ConsoleFormatter(detailed_fmt._fmt))
 
     logging.basicConfig(
         level=level,

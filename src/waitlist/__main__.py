@@ -40,6 +40,7 @@ registration only ever happens because you typed a command.
 import argparse
 import logging
 import sys
+from typing import Optional
 
 from src.main import initialize_logger
 from src.settings import settings
@@ -272,7 +273,7 @@ RESULT_JSON_END = "---VFS-RESULT-JSON-END---"
 
 
 def _emit_result_json(outcome: str, results, combo: str = "",
-                      banner: str = "") -> None:
+                      banner: str = "", error: Optional[dict] = None) -> None:
     """Print the run's outcome as JSON between markers, for the webhook API.
 
     `outcome` is the RUN-level verdict; per-client detail lives in `results`:
@@ -281,6 +282,8 @@ def _emit_result_json(outcome: str, results, combo: str = "",
                          be failed/skipped — check them, not just this)
         slots_available  a bookable slot appeared, so the run stopped and
                          nothing was registered. A better outcome, not an error.
+        failed           the run stopped before the plan finished; `error`
+                         says why as {code, message}.
 
     Scrubbed through redaction before printing: results carry client ids and
     reasons, and this block is written to a job log the API reads back.
@@ -297,11 +300,52 @@ def _emit_result_json(outcome: str, results, combo: str = "",
         payload["combo"] = combo
     if banner:
         payload["banner"] = banner
+    if error:
+        payload["error"] = error
 
     text = json.dumps(payload, ensure_ascii=False, default=str)
     print(RESULT_JSON_BEGIN)
     print(redaction.scrub(text))
     print(RESULT_JSON_END)
+
+
+def _explain_failure(exc: Exception) -> "tuple[str, str, bool]":
+    """(code, message, understood) for a run that stopped on `exc`.
+
+    Understood means the message is the whole diagnosis: a failure the portal
+    stated, one of our own refusals, or another run holding the lock.
+    """
+    from src.utils.runlock import LockBusy
+    from src.vfs_bot import errors as bot_errors
+    from src.waitlist.errors import WaitlistCommittedError, WaitlistError
+
+    if isinstance(exc, (WaitlistError, WaitlistCommittedError)):
+        return bot_errors.error_code(type(exc)), str(exc), True
+    if isinstance(exc, LockBusy):
+        return "run_in_progress", str(exc), True
+    return bot_errors.describe(exc)
+
+
+def _report_failure(args, exc: Exception) -> int:
+    """Say why the command stopped: one line, and the result block for --json.
+
+    Without this a login the portal refused ("email id is not registered")
+    reached the job log as a bare traceback, and the API could only answer
+    "Process exited with code 1".
+    """
+    from src.utils.log_setup import QUIET_TRACEBACK
+
+    code, message, understood = _explain_failure(exc)
+    if isinstance(exc, WaitlistConfigError):
+        logging.error(message)
+    else:
+        # An understood failure keeps its traceback in the log files only.
+        logging.error(f"Run failed: {message}", exc_info=exc,
+                      extra={QUIET_TRACEBACK: understood})
+    if getattr(args, "json_output", False):
+        _emit_result_json(outcome="failed", results=[],
+                          error={"code": code, "message": message})
+    return 1
 
 
 def cmd_run(args) -> int:
@@ -775,12 +819,11 @@ def main() -> None:
 
     try:
         sys.exit(args.func(args))
-    except WaitlistConfigError as e:
-        logging.error(str(e))
-        sys.exit(1)
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(130)
+    except Exception as e:                                  # noqa: BLE001
+        sys.exit(_report_failure(args, e))
 
 
 if __name__ == "__main__":

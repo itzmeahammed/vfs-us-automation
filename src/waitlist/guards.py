@@ -101,6 +101,12 @@ def check(route: str, combo: str, registrant,
             f"(expected config/waitlist/{route}.json)",
         )
 
+    # 2b — nobody has paused this country's waitlist (PATCH /v1/routes/...).
+    from src.utils import route_pause
+    paused = route_pause.problem(route, route_pause.WAITLIST)
+    if paused:
+        return GuardVerdict(False, paused)
+
     # 3 — the client is not parked.
     if not registrant.enabled:
         return GuardVerdict(

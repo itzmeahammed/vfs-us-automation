@@ -115,3 +115,30 @@ def test_switch_update_says_so_when_an_env_var_overrides_the_file(config_dir, mo
         update_switches(SwitchesUpdateRequest(live_booking=True))
     assert caught.value.status_code == 409
     assert "live_booking" in caught.value.detail
+
+
+def test_a_json_route_config_edit_is_seen_without_a_restart(config_dir):
+    """Flipping "enabled" in config/waitlist/<ROUTE>.json by hand: the API went
+    on answering "enabled": false until it was restarted."""
+    import src.settings as settings_mod
+    from src.waitlist import config as waitlist_config
+
+    waitlist_dir = config_dir / "waitlist"
+    waitlist_dir.mkdir()
+    route_file = waitlist_dir / "AE-DEU.json"
+    route_file.write_text('{"enabled": false, "steps": []}', encoding="utf-8")
+    settings_mod._json_signature = None
+    waitlist_config.clear_cache()
+    try:
+        assert settings_mod.refresh_if_config_changed() is False   # first look
+        assert waitlist_config._load_file("AE-DEU")["enabled"] is False
+
+        route_file.write_text('{"enabled": true, "steps": []}', encoding="utf-8")
+        assert waitlist_config._load_file("AE-DEU")["enabled"] is False  # cached
+
+        assert settings_mod.refresh_if_config_changed() is True
+        assert waitlist_config._load_file("AE-DEU")["enabled"] is True
+        assert settings_mod.refresh_if_config_changed() is False
+    finally:
+        settings_mod._json_signature = None
+        waitlist_config.clear_cache()

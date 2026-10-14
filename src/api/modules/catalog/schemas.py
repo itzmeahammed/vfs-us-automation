@@ -77,16 +77,35 @@ _AVAILABLE_DESCRIPTION = (
 _READY_DESCRIPTION = "True when at least one flow is ready, i.e. `flow` is set."
 
 
+class FlowPause(BaseModel):
+    """An operator pause in force (PATCH /routes/{route}/flows/{flow})."""
+
+    reason: str = ""
+    by: str = Field(default="", description="X-Actor of whoever paused it.")
+    at: str = Field(default="", description="When, ISO 8601 UTC.")
+
+
 class FlowReadiness(BaseModel):
     """One flow on one route: usable or not, and why not."""
 
     ready: bool
+    paused: Optional[FlowPause] = Field(
+        default=None,
+        description="Set when someone paused this flow for this country.")
     problems: List[ProblemModel] = Field(
         default_factory=list,
         description=(
             "severity 'error' is why this flow is not ready. 'warning' leaves "
             "it ready: a master switch is off, so clients are accepted but "
             "nothing runs for them yet."
+        ),
+    )
+    fields: List[RouteFieldModel] = Field(
+        default_factory=list,
+        description=(
+            "What a client of THIS flow must send in POST /clients, whether "
+            "or not the flow is the one picked. Empty when the route has no "
+            "form for this flow."
         ),
     )
 
@@ -118,8 +137,13 @@ class RouteReadinessResponse(BaseModel):
             "needs address lines, another needs a passport scan), and a "
             "hardcoded form silently creates clients that can never register. "
             "Send them as top-level keys in the POST /clients body. These are "
-            "the WAITLIST form's fields; a live client's fields are checked by "
-            "POST /clients itself."
+            "the fields of the picked `flow` (the waitlist's when none is "
+            "picked); `flows.<flow>.fields` has each flow's own list. A live "
+            "client's list opens with date_from and date_to and ends with the "
+            "payment page's billing fields. Not listed, because they are not "
+            "form data: client_id, flow, route, the combination (`combos`, a "
+            "list, for waitlist; `combo`, one label, for live) and the "
+            "optional account / account_password."
         ),
     )
     problems: List[ProblemModel] = Field(
@@ -131,6 +155,7 @@ class RouteReadinessResponse(BaseModel):
     )
 class RouteFlowSummary(BaseModel):
     ready: bool
+    paused: Optional[FlowPause] = None
     problems: List[str] = Field(default_factory=list)
 class RouteFlowsSummary(BaseModel):
     waitlist: RouteFlowSummary
@@ -155,3 +180,30 @@ class RoutesListResponse(BaseModel):
 
     count: int
     routes: List[RouteSummary] = Field(default_factory=list)
+class RouteFlowPatch(BaseModel):
+    """Turn one flow off, or back on, for one country."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(
+        description="false pauses the flow for this country. true lifts the "
+                    "pause; it cannot enable a flow the route's config does "
+                    "not have ready.")
+    reason: str = Field(
+        default="", max_length=300,
+        description="Why. Required when pausing: it is shown to everyone who "
+                    "reads this route's readiness.")
+
+    @model_validator(mode="after")
+    def _reason_when_pausing(self) -> "RouteFlowPatch":
+        if not self.enabled and not self.reason.strip():
+            raise ValueError("\"reason\" is required when enabled is false.")
+        return self
+class RouteFlowPatchResponse(BaseModel):
+    route: str
+    flow_changed: str = Field(description="The flow this call acted on.")
+    changed: bool = Field(
+        description="False when the call was a no-op: resuming a flow that "
+                    "was not paused.")
+    message: str
+    readiness: RouteSummary = Field(
+        description="This route as GET /routes now reports it.")

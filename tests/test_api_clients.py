@@ -555,3 +555,165 @@ def test_update_can_arm_explicitly(api):
     updated = api.put("/v1/clients/test-client-che",
                       json=_client_payload(enabled=True), headers=HEADERS)
     assert updated.json()["enabled"] is True
+
+
+# --------------------------------------------------------------------------
+# Pausing one flow for one country
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def pauses(tmp_path, monkeypatch):
+    """Keep pauses out of the real state/ directory."""
+    from src.utils import route_pause
+    monkeypatch.setattr(route_pause, "STATE_FILE", str(tmp_path / "route_pauses.json"))
+    return route_pause
+
+
+def _patch_flow(api, route, flow, **body):
+    return api.patch(f"/v1/routes/{route}/flows/{flow}", json=body,
+                     headers={**HEADERS, "X-Actor": "ops@example.com"})
+
+
+def test_pausing_a_flow_takes_the_route_off_it(api, pauses):
+    r = _patch_flow(api, READY_ROUTE, "waitlist", enabled=False,
+                    reason="portal layout changed")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["changed"] is True
+    assert body["readiness"]["flow"] is None
+    flow = body["readiness"]["flows"]["waitlist"]
+    assert flow["ready"] is False
+    assert flow["paused"]["reason"] == "portal layout changed"
+    assert flow["paused"]["by"] == "ops@example.com"
+
+    # ...and both read endpoints agree, with the reason in the problems.
+    detail = api.get(f"/v1/routes/{READY_ROUTE}/readiness", headers=HEADERS).json()
+    assert detail["ready"] is False
+    assert any("portal layout changed" in p["message"] for p in detail["problems"])
+
+
+def test_a_pause_stops_the_bot_not_just_the_report(api, pauses):
+    """The run gates read the same pause the API wrote."""
+    from src.booking import autobook
+    from src.booking import requests as booking_requests
+    from src.settings import settings
+    from src.waitlist import guards
+
+    _patch_flow(api, READY_ROUTE, "waitlist", enabled=False, reason="stop")
+    _patch_flow(api, "AE-NOR", "live", enabled=False, reason="stop")
+
+    class _Client:
+        id, enabled = "c1", True
+
+        def wants(self, combo):
+            return True
+
+    cfg = settings()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cfg.switches, "waitlist", True)
+        mp.setattr(cfg.switches, "live_booking", True)
+        mp.setattr(cfg.waitlist, "register_enabled", True)
+        verdict = guards.check(READY_ROUTE, READY_COMBO, _Client())
+        assert not verdict.allowed and "paused" in verdict.reason
+        assert "paused" in autobook.gate_problem("AE-NOR")
+    assert any("paused" in p.message for p in booking_requests.route_problems("AE-NOR"))
+
+
+def test_pausing_one_flow_leaves_the_other_and_other_countries(api, pauses):
+    _patch_flow(api, "AE-NOR", "waitlist", enabled=False, reason="n/a")
+    by_id = {r["route"]: r for r in api.get("/v1/routes", headers=HEADERS).json()["routes"]}
+    assert by_id["AE-NOR"]["flow"] == "live"
+    assert by_id[READY_ROUTE]["flow"] == "waitlist"
+
+
+def test_resuming_restores_the_route(api, pauses):
+    _patch_flow(api, READY_ROUTE, "waitlist", enabled=False, reason="stop")
+    body = _patch_flow(api, READY_ROUTE, "waitlist", enabled=True).json()
+    assert body["changed"] is True
+    assert body["readiness"]["flow"] == "waitlist"
+    assert body["readiness"]["flows"]["waitlist"]["paused"] is None
+    assert pauses.snapshot() == {}
+
+
+def test_resume_cannot_enable_what_the_config_has_off(api, pauses):
+    """AE-DEU's waitlist is disabled in config; the API must not turn it on."""
+    body = _patch_flow(api, "AE-DEU", "waitlist", enabled=True).json()
+    assert body["changed"] is False
+    assert body["readiness"]["flows"]["waitlist"]["ready"] is False
+
+
+@pytest.mark.parametrize("route,flow,body,status", [
+    (READY_ROUTE, "waitlist", {"enabled": False}, 422),          # no reason
+    (READY_ROUTE, "invite", {"enabled": False, "reason": "x"}, 422),
+    ("ZZ-ZZZ", "live", {"enabled": False, "reason": "x"}, 404),
+    (READY_ROUTE, "live", {"reason": "x"}, 422),                 # no enabled
+])
+def test_bad_pause_requests_are_refused(api, pauses, route, flow, body, status):
+    assert _patch_flow(api, route, flow, **body).status_code == status
+    assert pauses.snapshot() == {}
+
+
+def test_pausing_requires_the_token(api, pauses):
+    r = api.patch(f"/v1/routes/{READY_ROUTE}/flows/waitlist",
+                  json={"enabled": False, "reason": "x"})
+    assert r.status_code == 401
+    assert pauses.snapshot() == {}
+
+
+def test_an_unreadable_pause_file_stops_everything(pauses):
+    """A stop control that fails open is not a stop control."""
+    with open(pauses.STATE_FILE, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    assert pauses.paused(READY_ROUTE, "waitlist")
+    assert "unreadable" in pauses.problem("AE-NOR", "live")
+
+
+# --------------------------------------------------------------------------
+# Fields follow the flow
+# --------------------------------------------------------------------------
+
+
+def test_live_route_advertises_the_live_form(api):
+    """AE-NOR has no waitlist form; its fields must be the booking one."""
+    body = api.get("/v1/routes/AE-NOR/readiness", headers=HEADERS).json()
+    names = [f["name"] for f in body["fields"]]
+    assert names[:2] == ["date_from", "date_to"]
+    for expected in ("first_name", "passport_number", "phone_number", "email",
+                     "city", "postcode"):
+        assert expected in names
+    # The combo supplies these; a client never does.
+    assert not {"centre", "category", "sub_category"} & set(names)
+    assert len(names) == len(set(names))
+    assert body["fields"] == body["flows"]["live"]["fields"]
+
+
+def test_waitlist_route_still_advertises_the_waitlist_form(api):
+    body = api.get(f"/v1/routes/{READY_ROUTE}/readiness", headers=HEADERS).json()
+    assert body["fields"] == body["flows"]["waitlist"]["fields"]
+    assert "date_from" not in [f["name"] for f in body["fields"]]
+    assert body["flows"]["live"]["fields"] == []
+
+
+def test_a_form_built_from_the_live_fields_is_accepted(api):
+    """The contract: send every advertised required field and nothing is
+    reported missing. Anything precheck demands that is not advertised is a
+    form the web app cannot build."""
+    from datetime import date, timedelta
+    from src.booking import requests as booking_requests
+
+    body = api.get("/v1/routes/AE-NOR/readiness", headers=HEADERS).json()
+    start = date.today() + timedelta(days=7)
+    sample = {"date_from": start.isoformat(),
+              "date_to": (start + timedelta(days=7)).isoformat(),
+              "email": "client@example.com", "phone_country_code": "971",
+              "phone_number": "501234567"}
+    payload = {"route": "AE-NOR", "combo": body["combos"][0],
+               "account": "acc@example.com", "account_password": "pw"}
+    for f in body["fields"]:
+        if f["required"]:
+            payload[f["name"]] = sample.get(f["name"], "TEST")
+
+    problems = booking_requests.precheck(
+        "contract-test", booking_requests.normalise(payload))
+    assert [p.message for p in problems] == []

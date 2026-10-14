@@ -34,6 +34,8 @@ class RouteFlows:
     ready: Dict[str, bool]
     problems: Dict[str, List[Any]]            # validate.Problem, per flow
     combos: List[str] = field(default_factory=list)
+    #: Operator pauses in force, per flow: {reason, by, at} or None.
+    paused: Dict[str, Optional[Dict[str, Any]]] = field(default_factory=dict)
 
     @property
     def available(self) -> List[str]:
@@ -71,6 +73,7 @@ def _switch_warning(flow: str) -> List[Any]:
 def route_flows(route: str) -> RouteFlows:
     """Decide the flow for one country. Never raises."""
     from src.booking import requests as booking_requests
+    from src.utils import route_pause
     from src.waitlist import validate
 
     waitlist = validate.route_readiness(route)
@@ -111,4 +114,39 @@ def route_flows(route: str) -> RouteFlows:
         ready=ready,
         problems=problems,
         combos=waitlist.combos,
+        paused={f: route_pause.paused(route, f) for f in (WAITLIST, LIVE)},
     )
+
+
+def flow_views(flows: RouteFlows, as_text: bool = False,
+               fields: Optional[Dict[str, List[Any]]] = None
+               ) -> Dict[str, Dict[str, Any]]:
+    """`flows` for a response body. as_text: problems as plain sentences."""
+    return {name: {
+        "ready": flows.ready[name],
+        "paused": flows.paused.get(name),
+        "problems": [p.message if as_text else p.to_dict()
+                     for p in flows.problems[name]],
+        **({"fields": fields[name]} if fields else {}),
+    } for name in (WAITLIST, LIVE)}
+
+
+def flow_fields(route: str) -> Dict[str, List[Dict[str, Any]]]:
+    """The form each flow needs from a client, per flow. Described even for a
+    flow that is not ready, so a form can be built while a route is being
+    brought online."""
+    from src.waitlist import validate
+
+    return {WAITLIST: validate.required_fields(route),
+            LIVE: validate.required_fields_live(route)}
+
+
+def set_flow(route: str, flow: str, enabled: bool, reason: str, by: str) -> bool:
+    """Pause or resume one flow on one country. Returns whether anything
+    changed (resuming a flow that was not paused changes nothing)."""
+    from src.utils import route_pause
+
+    if enabled:
+        return route_pause.resume(route, flow)
+    route_pause.pause(route, flow, reason, by)
+    return True

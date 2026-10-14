@@ -256,6 +256,13 @@ def route_problems(route: str) -> List[Any]:
         return [_problem(
             "route", f"Booking is switched off for {route} "
                      f"(config/booking/{route}.json \"enabled\": false).")]
+    from src.utils import route_pause
+    paused = route_pause.problem(route, route_pause.LIVE)
+    if paused:
+        return [_problem(
+            "route", paused[0].upper() + paused[1:] + ".",
+            hint=f"Lift it with PATCH /v1/routes/{route}/flows/live "
+                 "{\"enabled\": true}.")]
     return []
 
 

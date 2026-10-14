@@ -41,8 +41,16 @@ class JobResponse(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
     outcome: Optional[str] = Field(
         default=None,
-        description="Run-level verdict parsed from the job: 'completed' or "
-                    "'slots_available'. Null if the job produced no block.",
+        description="Run-level verdict parsed from the job: 'completed', "
+                    "'slots_available' or 'failed'. Null if the job produced "
+                    "no block.",
+    )
+    error: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Why a failed run stopped, as {code, message} — e.g. "
+                    "code 'email_not_registered', message 'The entered email "
+                    "id is not registered with us.'. The same message is in "
+                    "`detail`. Null when the run did not say.",
     )
     results: List[Dict[str, Any]] = Field(
         default_factory=list,

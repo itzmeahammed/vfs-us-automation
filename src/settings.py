@@ -471,15 +471,56 @@ def reload_from_disk() -> Settings:
     return reload_settings()
 
 
+#: The per-route JSON configs, each parsed once and cached by its own loader.
+_JSON_CONFIG_DIRS = ("routes", "waitlist", "booking", "inbox")
+# (path, mtime, size) per JSON file at the last look; None = not looked yet.
+_json_signature: Optional[tuple] = None
+
+
+def _drop_json_caches_if_changed() -> bool:
+    """Empty the per-route JSON caches when one of those files was edited,
+    added or removed. Returns True when it did.
+
+    The loaders cache for the life of the process, which is right for a run
+    and wrong for the API: flipping "enabled" in config/waitlist/AE-DEU.json
+    went unseen until a restart.
+    """
+    global _json_signature
+    import glob
+    import os
+
+    from src.utils import config_reader
+
+    paths = sorted(
+        path for name in _JSON_CONFIG_DIRS
+        for path in glob.glob(os.path.join(config_reader._config_dir, name, "*.json")))
+    signature = config_reader._signature(paths)
+    if signature == _json_signature:
+        return False
+    first_look, _json_signature = _json_signature is None, signature
+
+    from src.booking import config as booking_config
+    from src.inbox import config as inbox_config
+    from src.utils import route_schema
+    from src.waitlist import config as waitlist_config
+
+    for module in (route_schema, waitlist_config, booking_config, inbox_config):
+        module.clear_cache()
+    # The first look has nothing to compare against: the caches are dropped in
+    # case something was read at startup, but that is not a change to report.
+    return not first_look
+
+
 def refresh_if_config_changed() -> bool:
-    """reload_from_disk() when an INI file changed since it was last read.
+    """Pick up a config file that changed since it was last read: the INI
+    files (reload_from_disk()) and the per-route JSON ones.
 
     For long-lived processes only (the API). A slot-check run deliberately
     does NOT call this: it keeps the values it started with.
     """
     from src.utils.config_reader import reload_if_changed
 
-    if not reload_if_changed():
-        return False
-    reload_settings()
-    return True
+    changed = reload_if_changed()
+    if changed:
+        reload_settings()
+    return _drop_json_caches_if_changed() or changed

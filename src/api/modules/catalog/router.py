@@ -2,6 +2,7 @@
 
     GET /v1/routes                       every route and the flow it runs on
     GET /v1/routes/{route}/readiness     flow, combos, required fields, blockers
+    PATCH /v1/routes/{route}/flows/{flow}  pause or resume one flow for one country
 
 Both answer `flow`: "live" or "waitlist", decided per country by the bot.
 
@@ -20,3 +21,5 @@ router = APIRouter(prefix="/routes", tags=["catalog"],
 
 router.get("", summary="List routes")(handlers.list_routes)
 router.get("/{route}/readiness", summary="Route readiness and combos")(handlers.route_readiness)
+router.patch("/{route}/flows/{flow}", summary="Pause or resume a flow for a country")(
+    handlers.set_route_flow)

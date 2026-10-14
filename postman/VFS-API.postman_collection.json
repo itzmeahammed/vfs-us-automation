@@ -1459,7 +1459,7 @@
                 "readiness"
               ]
             },
-            "description": "Which flow does this route run on, and what are its combos?\n\n`flow` is the bot's decision for this country — \"live\" or \"waitlist\" — and\nis what to send as `flow` in POST /clients; `flows` reports each of the two\nseparately. The web app should call this before showing a signup form: it\nreturns the valid combination labels to populate the dropdown, and says\nplainly when a route is not accepting clients (and why)."
+            "description": "Which flow does this route run on, and what are its combos?\n\n`flow` is the bot's decision for this country — \"live\" or \"waitlist\" — and\nis what to send as `flow` in POST /clients; `flows` reports each of the two\nseparately. The web app should call this before showing a signup form: it\nreturns the valid combination labels to populate the dropdown, and says\nplainly when a route is not accepting clients (and why).\n\n`fields` is the form for that flow: for a live country, the date window,\nthe booking pages' fields and the payment page's billing fields."
           },
           "response": [
             {
@@ -1489,7 +1489,88 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"route\": \"string\",\n  \"flow\": \"live\",\n  \"available_flows\": [\n    \"string\"\n  ],\n  \"flows\": {\n    \"waitlist\": {\n      \"ready\": false,\n      \"problems\": []\n    },\n    \"live\": {\n      \"ready\": false,\n      \"problems\": []\n    }\n  },\n  \"ready\": false,\n  \"combos\": [\n    \"string\"\n  ],\n  \"fields\": [\n    {\n      \"name\": \"string\",\n      \"label\": \"string\",\n      \"kind\": \"string\",\n      \"required\": false,\n      \"step\": \"string\",\n      \"notes\": \"\",\n      \"options\": [\n        \"string\"\n      ],\n      \"options_status\": \"not_a_choice\",\n      \"options_captured_at\": \"\"\n    }\n  ],\n  \"problems\": [\n    {\n      \"field\": \"string\",\n      \"message\": \"string\",\n      \"severity\": \"error\",\n      \"hint\": \"\"\n    }\n  ]\n}"
+              "body": "{\n  \"route\": \"string\",\n  \"flow\": \"live\",\n  \"available_flows\": [\n    \"string\"\n  ],\n  \"flows\": {\n    \"waitlist\": {\n      \"ready\": false,\n      \"paused\": null,\n      \"problems\": [],\n      \"fields\": []\n    },\n    \"live\": {\n      \"ready\": false,\n      \"paused\": null,\n      \"problems\": [],\n      \"fields\": []\n    }\n  },\n  \"ready\": false,\n  \"combos\": [\n    \"string\"\n  ],\n  \"fields\": [\n    {\n      \"name\": \"string\",\n      \"label\": \"string\",\n      \"kind\": \"string\",\n      \"required\": false,\n      \"step\": \"string\",\n      \"notes\": \"\",\n      \"options\": [\n        \"string\"\n      ],\n      \"options_status\": \"not_a_choice\",\n      \"options_captured_at\": \"\"\n    }\n  ],\n  \"problems\": [\n    {\n      \"field\": \"string\",\n      \"message\": \"string\",\n      \"severity\": \"error\",\n      \"hint\": \"\"\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "Pause or resume a flow for a country",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/routes/{{route}}/flows/{flow}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "routes",
+                "{{route}}",
+                "flows",
+                "{flow}"
+              ]
+            },
+            "description": "Turn ONE flow off for ONE country, or back on.\n\nFor when something is off with a country today — the portal changed, a\nrun is misbehaving — and that flow should stop there without touching the\nother countries or the other flow.\n\n`{\"enabled\": false, \"reason\": \"...\"}` pauses it: the route stops reporting\nthat flow as ready, new clients for it are refused, and the bot's own run\ngates stop acting on it from their next check. A run already inside the\nbrowser is not interrupted; cancel it with POST /jobs/{job_id}/cancel.\n\n`{\"enabled\": true}` lifts the pause. It restores what the route's config\nsays and nothing more: it cannot switch on a flow whose config is missing\nor disabled, so read `readiness` in the answer to see where the route\nstands.\n\nPausing `waitlist` stops new registrations. It does not stop booking a\nclient VFS has already invited; that is [switches] invite_booking.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "200 example (shape only)",
+              "originalRequest": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/routes/{{route}}/flows/{flow}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "routes",
+                    "{{route}}",
+                    "flows",
+                    "{flow}"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"enabled\": false,\n  \"reason\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"route\": \"string\",\n  \"flow_changed\": \"string\",\n  \"changed\": false,\n  \"message\": \"string\",\n  \"readiness\": {\n    \"route\": \"string\",\n    \"flow\": \"live\",\n    \"available_flows\": [\n      \"string\"\n    ],\n    \"flows\": {\n      \"waitlist\": null,\n      \"live\": null\n    },\n    \"ready\": false,\n    \"combos\": [\n      \"string\"\n    ],\n    \"clients\": 0,\n    \"problems\": [\n      \"string\"\n    ]\n  }\n}"
             }
           ]
         }

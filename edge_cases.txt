@@ -1,0 +1,332 @@
+Summary
+#	Module	What it delivers	Code	Weight	Hours
+1	Background job engine	Runs the bot from an API call, safely, one at a time	1,604 lines	Very large	
+2	Client management	One client record covering both booking flows	1,822 lines	Very large	
+3	Booking, invitations and payments	Manual booking runs that can spend real money	784 lines	Large	
+4	Waitlist operations	Registration runs, stuck-submit repair, on/off switches	761 lines	Large	
+5	Security and API foundation	Auth, rate limiting, error format, audit trail	1,187 lines	Large	
+6	System health and control	Readiness checks, master switches, overview	454 lines	Medium	
+7	Accounts, routes, notifications	Account health, country catalogue, webhook/Telegram tests	479 lines	Small	
+8	Admin console and automated tests	Browser UI and 209 tests covering the API	1,188 + 4,882 lines	Large	
+In total: 46 endpoints under /v1, about 7,100 lines of API code, built between 20 Aug and 5 Oct 2026 across 11 commits. I counted the tests but did not run them.
+
+1. Background job engine — src/api/modules/jobs/
+A bot run takes minutes, so the API starts it in the background and answers immediately. The web app then follows the run's status, log and live stream.
+
+Hard parts and edge cases handled:
+
+No double runs: two runs at once could register or book the same client twice. Each lane (waitlist, booking) allows one run at a time, and the check also covers runs started outside the API by hand or by the scheduler.
+Safe retries: if the web app retries after a network timeout, it gets the original job back instead of starting a second live run (idempotency key, remembered for 24 hours).
+Survives a restart: every job state is written to disk. A job that was running when the server died is marked "unknown, needs a human" rather than guessed as success or failure, because either guess could cause a duplicate booking.
+Cancel and timeout: a hung run is killed after a time limit, along with its Chrome browser. A race that made cancelled jobs show as "failed" was fixed.
+Meaningful results: the engine reads per-client outcomes from the run, and treats "a bookable slot exists" as its own good outcome, not as an error.
+Live log streaming: the web app can watch a run line by line, with keep-alive signals so the tunnel does not drop the connection.
+Housekeeping: old log files are pruned by age and total size so the disk does not fill.
+2. Client management — src/api/modules/clients/
+The sales agent adds a client and picks a flow: join the waitlist, or book a live slot in a date window. The two flows store data in different places; the API presents them as one client with one status vocabulary (waiting, registered, invited, booking, booked, needs attention, expired).
+
+Hard parts and edge cases handled:
+
+Full validation up front: every write is checked against what that country's form actually needs, and all problems are returned at once. Nobody is watching when the bot books later, so errors must surface while the agent is at the form.
+Created is not armed: a new waitlist client is parked by default, so a web-app bug cannot arm a batch of clients for live registration. Arming a broken client is refused.
+Errors versus warnings: only real errors block a save; warnings (for example, form email differs from the VFS account email) are passed back for the agent to see.
+No edits mid-submit: changing a client while the bot is typing their data into VFS is refused.
+Secrets never leave: passwords are never returned or logged; passport number, date of birth, email and phone are masked.
+Passport uploads: for countries that need a scan (Italy). File type is checked by content, not just name; size is enforced on real bytes; scans are deleted with the client.
+Timeline: one view of everything that happened to a client across registrations, invitations and jobs.
+Unique ids across both flows, and a flow cannot be changed after creation.
+3. Booking, invitations and payments — src/api/modules/booking/
+Starts a manual booking run in three levels: probe (read only), walk (go through the pages, stop before paying), commit (book and pay with the company card).
+
+Hard parts and edge cases handled:
+
+Guard on paying: commit needs an explicit confirmation that matches the route, checked before any browser opens.
+Refused early: a client that is already booked, or mid-booking, is rejected before a process starts.
+Evidence trail: a paying request is logged, with the agent's name, before it runs.
+Invitations: lists VFS invitation emails, their deadline and outcome, and lets a human settle one.
+Unanswered payments: shows payments submitted with no recorded result, which may be real charges. If the payment record cannot be read, the API reports "needs attention" rather than "nothing found".
+4. Waitlist operations — src/api/modules/waitlist/
+Hard parts and edge cases handled:
+
+Registration runs: dry run by default; a live run must be asked for explicitly.
+Posture in one sentence: tells the operator whether an opening waitlist would register real clients right now. An earlier version could report "dry run" while the bot was live; that was corrected.
+Stuck submits: lists registrations whose outcome is unknown (these block the client), and lets a human settle them after checking VFS.
+Reconcile from email: reads VFS confirmation emails to settle stuck submits, with a preview mode before anything is written.
+Honest status: if a data source cannot be read, the status says "degraded" instead of looking healthy.
+Switches from the web app: toggles are written to the config file without erasing the operator's comments, written atomically, and the API warns when an environment variable overrides the change.
+5. Security and API foundation — src/api/core/, src/api/main.py
+Access control: a shared secret on every endpoint except the health check, compared in a way that leaks no timing. The server refuses to start with a weak or missing secret.
+Not exposed to the network: binds to the local machine only; the tunnel is the only way in.
+Rate limiting: per caller plus a global ceiling, because the per-caller limit alone can be bypassed.
+Closed by default: API docs and the admin console are off unless switched on.
+Size limits: small request cap everywhere, with a wider one only for passport uploads.
+One error format: every error has the same shape with field-level problems and a request id, so the web app needs one parser.
+Audit trail: every change records who (the agent), when and what, never the request body.
+Live config reload: the long-running server picks up config file edits without a restart (this part is in the working tree, not yet committed).
+Pagination shared across all list endpoints.
+6. System health and control — src/api/modules/system/
+Readiness check: company card, VFS account, invitation mailbox, Telegram, and whether the slot checker has actually run recently. A check only fails when the flow that needs it is switched on.
+Master switches: four switches (waitlist, invite booking, live booking, test booking), readable and changeable.
+Config view with secrets removed, a one-call overview of every client's pipeline stage, and the audit query.
+7. Accounts, routes, notifications — accounts/, catalog/, notifications/
+Accounts: see which VFS accounts are blocked or cooling down, bench one, or clear it.
+Routes: which countries are ready, their centre/category options and required form fields, so the web form can only offer what the bot can select.
+Notifications: test the webhook and Telegram, and count undelivered webhook events.
+8. Admin console and tests — src/api/console.html, tests/
+Console: a single-page browser UI served by the API, locked down so it can only call this API.
+Tests: 209 test functions in 13 files covering clients, documents, jobs durability, booking triggers, payments, streaming, status and switches.
+If you want this as a shareable page or a spreadsheet with the hours column, say which and I'll produce it.
+
+
+
+
+1. Background job engine
+Starting a run
+
+Two requests arrive at the same instant: only one run starts.
+A run is already going in that lane: refused with "busy" and the id of the running job.
+A run was started outside the API (by hand or by the scheduler): detected and refused at once, instead of a second run waiting 15 minutes and dying.
+Waitlist and booking runs do not block each other.
+The bot cannot start at all (broken install, missing folder): reported as "broken", clearly different from "busy", and nothing is left stuck.
+The command is passed as a list, never through a shell, so nothing typed into a field can run as a command.
+The API's secret token is removed before the bot process starts.
+Retries
+
+Same retry key sent again: the original job is returned, nothing new starts.
+Two retries at the same instant: cannot both start a run.
+Retry keys survive a server restart, expire after 24 hours, and are capped at 1,000 so memory cannot grow.
+The key is never written to the log in readable form.
+Crashes and restarts
+
+Server dies mid-run: the job is marked "unknown, needs a human", never guessed.
+A half-written or corrupt history line: skipped, the rest loads.
+An oversized history line: skipped, so a damaged file cannot exhaust memory.
+Old records from before a format change still load.
+History cannot be written (disk problem): the run itself is not failed.
+History file is compacted safely; a crash during compaction leaves the original intact.
+A job too old for memory is still answered from disk; a running job is never dropped from memory.
+Stopping
+
+A hung run is killed after the time limit (1 hour by default), together with its Chrome windows.
+Polite stop first, forced kill if it does not exit.
+A cancelled job reads "cancelled", not "failed", and stays that way after a restart.
+Cancel when the supervisor is stuck: the job is still closed out.
+Cancel a job that is not running: refused. Unknown job id: not found.
+Server shutdown: running jobs are stopped and recorded.
+Results
+
+"A bookable slot exists" is its own outcome, not a failure.
+Result block missing, cut off, or malformed, or the log file is gone: the job keeps its status and reports no per-client detail, never crashes.
+Several result blocks in one log: the last one wins.
+Only the end of the log is read, because a run's log can be tens of MB.
+Any client result of "pending" or "unknown": the job is flagged for a human and never retried automatically.
+Bot output goes to a file, not a pipe, because a full pipe would freeze a chatty run.
+One id links the job, its log lines and its journal records.
+Logs and live stream
+
+Log reads are capped (2,000 lines, 1 MB); a cut-off first line is dropped.
+Log already cleaned up: the job still answers, marked "log not available".
+Stream follows from the end, or replays from the start on request.
+Stream ends by itself when the job finishes, after one last read so the final lines are not lost.
+Stream of an already finished job: replays and ends.
+A keep-alive every 10 seconds so the tunnel does not drop a quiet connection.
+A log line containing a line break does not corrupt the stream.
+Log shrinks or is replaced mid-stream: starts over cleanly. Log unreadable: stream ends with a reason.
+A sudden burst of output is read in capped chunks; one connection lasts at most 1 hour.
+Old logs are removed by age (30 days) and by total size (2 GB); a cleanup failure never blocks startup.
+The server runs as a single worker with no auto-reload, because a second copy would lose track of what is running.
+2. Client management
+Creating and identifying
+
+The id becomes a filename, so only a safe lowercase slug is accepted; an id like ../escape is rejected with a named field error.
+Id and route are tidied (case, spaces) before use.
+Duplicate id: refused. Ids are unique across both flows.
+Missing or unknown flow: refused with an explanation of the two choices. A flow cannot be changed later.
+Unknown centre/category: refused, with the valid list returned. Extra spaces in the label are collapsed.
+Country not ready or switched off: refused, with the reason.
+All problems are returned in one response, not one at a time.
+Account given without its password: refused.
+Page-automation syntax inside a form field: refused.
+Extra form fields are allowed, because each country asks for different things; they are checked against that country's real form.
+Armed versus parked
+
+Waitlist clients are created parked unless armed explicitly. Live clients are armed on creation unless parked explicitly.
+Arming re-checks everything: a client parked for weeks may have passed dates or a closed route.
+Arming a client with errors: refused.
+Timestamps: created date never changes, caller-supplied dates are ignored, the "armed at" date is set on arming and cleared on parking.
+Editing
+
+Full replace removes fields that were left out, and says which ones.
+Partial edit changes only what was sent, and can never silently disarm a client.
+Empty edit: refused. "Sent as empty" is told apart from "not sent".
+Replacing a live client without resending the password keeps the stored one, since the password is never sent back.
+Waitlist client mid-submit: edits refused. Live client while booking or once booked: edits and delete refused.
+Warnings never block a save and are returned with it.
+Privacy
+
+Passwords appear in no response; only "has a password: yes/no".
+Passport, date of birth, email and phone are masked; very short values are fully hidden.
+Logs record field names only, never values.
+Listing and status
+
+Default list is cheap; the "which clients are broken" check is opt-in.
+Filtering on "can run now" turns that check on automatically.
+Unknown list option: refused.
+One unreadable client file is skipped; the rest are listed.
+History is read once for the whole list, not once per client.
+Status takes the most advanced state across invitations; an uncertain submit shows as "needs attention".
+Results are paged (max 200 per page).
+Wrong endpoint for the flow
+
+Documents and registration history on a live client: refused with an explanation.
+"Resolve" on a waitlist client: refused, pointing to the right endpoint.
+Resolving a live client accepts only "booked" or "not booked"; "not booked" re-arms it.
+Passport uploads
+
+Client must exist first, so no scan is stored for a mistyped id.
+Unknown document type, empty file, or unaccepted extension: refused.
+A PDF renamed to .png: caught by checking the content.
+Over 2 MB: refused, measured on the real bytes, not the claimed size.
+A normal scan is not blocked by the small limit that applies to other requests.
+A rejected upload leaves nothing on disk; the temporary copy is always removed.
+The uploaded filename is never used as a path, and the stored location is never returned.
+Deleting a client deletes their scans; deleting a client with none still succeeds; a cleanup failure does not fail the delete.
+Timeline
+
+Combines registrations, invitations and jobs, newest first.
+Two events in the same second keep their real order.
+If job history is unavailable, the rest of the timeline still loads.
+3. Booking, invitations and payments
+Paying safely
+
+Default mode is read-only; no default can spend money.
+An old "dry run: false" field is now rejected outright. Previously it was silently ignored, so a request to pay did a dry run.
+Pay mode without the confirmation, or with a wrong one: refused.
+Confirmation sent without pay mode: refused rather than ignored.
+Pay mode with full page capture: refused, because it would save the card number to disk.
+Pay mode with "stop early": refused, because it would leave a half-made booking.
+A pay request is logged with the agent's name before it starts, even if the start then fails.
+Retry with the same key cannot book twice.
+Request shape
+
+Client id sent together with route or applicant details: refused. Neither sent: refused.
+Unknown client: not found.
+Live client already booked or currently booking: refused before anything starts.
+New booking without a centre/category: refused.
+Malformed route: refused. Unknown fields: refused.
+Applicant field name containing =, or a value with a line break: refused. Values with spaces pass intact. Max 40 fields, 200 characters each.
+The command sent to the bot is tested against the bot's real parser. An earlier mismatch made every booking request fail before the browser opened.
+The agent who started the run is recorded in the client's history.
+Invitations
+
+Unknown invitation: not found.
+The account email is masked.
+Settling one that cannot be settled: refused with the reason.
+Only three outcomes accepted: booked, not booked, dismissed.
+Booking status
+
+One country with a broken config shows an error on its own row; the rest still list.
+If client history cannot be read, the country list is still returned.
+Payments
+
+No payment record yet: reported as nothing outstanding.
+A payment with a recorded result is not listed; only the unanswered ones are.
+Payment record unreadable: reported as "needs attention", never as empty.
+Only an approved set of fields is returned, so card data can never appear.
+4. Waitlist operations
+Runs
+
+Dry run unless "live" is sent explicitly.
+Unknown fields, malformed route, client id or label: refused.
+Retry key, busy and broken-start cases behave as in module 1.
+Status and posture
+
+Five distinct states are reported in plain words: off, parked, manual, automatic dry run, automatic live.
+Fixed: a case where status said "dry run, nothing committed" while live registrations were being submitted.
+History unreadable: reported as "unknown, needs attention", not "none stuck".
+Webhook state unreadable: the zero is labelled as a placeholder.
+One country failing its check does not break the report.
+No countries readable: reported as unknown, not as an empty list.
+Stuck submits
+
+Only "success" or "failed" accepted when settling; a vague answer is refused.
+Unknown fields refused; a settle that fails gives a clear error.
+Reconcile from email
+
+Preview by default; applies only when asked.
+Mailboxes that failed are listed by name.
+Mail connection failure: clear error.
+Items that cannot be settled say why.
+Switches
+
+Only the switches sent are changed. Empty or unknown switch: refused.
+The operator's comments in the config file are kept; commented-out lines are left alone; a missing section is created.
+The file is replaced in one step, so a run starting at that moment never reads half a file.
+The API re-reads the file and answers with the value actually in effect.
+If a machine-level setting overrides the file, the API says so instead of claiming success.
+If the file was written but cannot be re-read, that is reported.
+5. Security and API foundation
+Access
+
+Missing, short or placeholder secret: the server refuses to start and prints how to fix it.
+Configured to listen beyond the local machine: refused.
+Missing and wrong secret get the identical answer; comparison leaks no timing; the supplied value is never logged; odd characters cannot crash it.
+Only the basic health check is public. A test walks every endpoint to prove the rest need the secret.
+Secrets never appear in the published API description.
+Flood protection
+
+Limit applied before the secret is checked.
+Per-caller limit plus a global ceiling, because a caller can fake its address.
+Memory stays bounded during a flood.
+The caller is told when to retry, but not which limit it hit.
+Limit sized so a normal dashboard does not lock itself out (the first setting did).
+Exposure
+
+API docs off by default.
+Admin console off by default; when off it looks the same as "does not exist".
+The console page holds no secret, cannot be embedded in another site, is not cached, and can only talk to this API.
+A console setting that was ignored when set in the settings file was fixed.
+Responses carry strict browser-safety headers, with one narrow exception for the docs page.
+No cross-site access is enabled, by design.
+Request limits
+
+64 KB cap on normal requests, checked before the body is read; larger cap only for document uploads, tied to the document limit so the two cannot drift.
+Errors
+
+Every error has one shape, including "no such address" and "wrong method".
+Field errors name the field.
+Unexpected failures reveal nothing internal and give a reference id.
+Older error names are folded into one.
+Tracing and audit
+
+A caller's reference id is echoed back if it is safe; a hostile one is replaced.
+Every change is recorded with agent, time and address; never the content.
+The agent name is restricted so it cannot inject lines into the log.
+A failed audit write does not fail the request.
+The audit file is kept outside log cleanup.
+Startup and config
+
+A broken bot config does not stop the API starting; the affected endpoints report it.
+Unreadable job history: starts empty and says so; past jobs remain on disk.
+Config edited on disk is picked up without a restart.
+A config file that does not parse: the previous values stay in force.
+Values set at runtime are kept across a reload.
+6. System health and control
+A check only fails when the flow that needs it is switched on; otherwise it warns.
+Company card missing: fails only if a paying flow is on.
+No shared VFS account: warning that every client must carry its own.
+Invitation mailbox not configured: fails only if invite booking is on.
+Telegram not configured: warning that alerts go nowhere.
+Slot checker: "stale" only counts inside the scheduled hours; no database yet, no finished run, or an unreadable time are each reported separately.
+Overall answer is "not ready" only when a switched-on flow cannot work.
+Switch changes note that they apply from the next slot check, not the one in progress.
+Config view removes secrets and mail server details.
+7. Accounts, routes, notifications
+Clear one country's block or the whole account; nothing to clear: not found.
+Bench an account for a set number of hours with a reason.
+Unknown country: reported as not ready.
+One failing country does not break the list.
+Required fields are returned even for a country that is not ready, so the form can still be built.
+Webhook not configured: reported as skipped, not failed.
+Telegram not configured, or Telegram rejecting the message: two different clear errors.
+Some tests in the client test file cover pausing a flow per country and choosing a flow per route; I did not find matching endpoints in src/api/ today, so I left those out rather than claim them.

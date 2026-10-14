@@ -210,3 +210,22 @@ def test_slots_available_status_exists():
     """Exit code 2 maps to a dedicated status, not to 'failed'."""
     assert JobStatus.SLOTS_AVAILABLE.value == "slots_available"
     assert JobStatus.SLOTS_AVAILABLE is not JobStatus.FAILED
+
+
+def test_a_failed_run_reports_why(tmp_path):
+    """A login VFS refused used to surface as "Process exited with code 1"."""
+    record = _record(tmp_path, _block({
+        "outcome": "failed", "results": [],
+        "error": {"code": "email_not_registered",
+                  "message": "The entered email id is not registered with us."},
+    }))
+    record.status = JobStatus.FAILED
+    record.detail = "Process exited with code 1."
+
+    JobManager._attach_results(record)
+
+    assert record.outcome == "failed"
+    assert record.error["code"] == "email_not_registered"
+    assert record.detail == "The entered email id is not registered with us."
+    assert record.to_dict()["error"] == record.error
+    assert JobRecord.from_record(record.to_record()).error == record.error

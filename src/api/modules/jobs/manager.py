@@ -175,8 +175,11 @@ class JobRecord:
     # Per-client outcomes parsed from the run's JSON block. Empty when the job
     # produced none (placeholder job, crash before the block, older CLI).
     results: List[Dict[str, Any]] = field(default_factory=list)
-    # Run-level verdict from the same block: "completed" | "slots_available".
+    # Run-level verdict from the same block: "completed" | "slots_available"
+    # | "failed".
     outcome: Optional[str] = None
+    # Why a failed run stopped, {code, message}, from the same block.
+    error: Optional[Dict[str, str]] = None
     needs_attention: bool = False
     # Set by cancel() BEFORE the child is signalled. The supervisor reads it
     # when the process exits and reports CANCELLED rather than FAILED — see
@@ -202,6 +205,7 @@ class JobRecord:
             "detail": self.detail,
             "payload": self.payload,
             "outcome": self.outcome,
+            "error": self.error,
             "results": self.results,
             "needs_attention": self.needs_attention,
         }
@@ -247,6 +251,7 @@ class JobRecord:
                 payload=dict(data.get("payload") or {}),
                 results=list(data.get("results") or []),
                 outcome=data.get("outcome"),
+                error=data.get("error") if isinstance(data.get("error"), dict) else None,
                 needs_attention=bool(data.get("needs_attention")),
                 idempotency_key=data.get("idempotency_key"),
             )
@@ -741,6 +746,15 @@ class JobManager:
         record.outcome = data.get("outcome")
         results = data.get("results") or []
         record.results = results if isinstance(results, list) else []
+
+        # The run said why it stopped: that sentence is the detail, not
+        # "Process exited with code 1".
+        error = data.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            record.error = {"code": str(error.get("code") or "run_failed"),
+                            "message": str(error["message"])}
+            if record.status == JobStatus.FAILED:
+                record.detail = record.error["message"]
 
         # 'pending' and 'unknown' mean a submit is outstanding or its outcome is
         # ambiguous. Those need a HUMAN (`python -m src.waitlist resolve`) —

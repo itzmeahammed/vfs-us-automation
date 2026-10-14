@@ -200,3 +200,45 @@ class AccountBlockedError(Exception):
     selection) and alerts, until someone fixes it and flags it healthy
     (python -m src.utils.account_health clear <email>).
     """
+
+
+# --------------------------------------------------------------------------- #
+# Saying what went wrong                                                       #
+# --------------------------------------------------------------------------- #
+
+#: A failure the portal states in its own words: (code, what it said). These
+#: are fixed sentences, so a caller shows the sentence and not the log line a
+#: raise site wrote around it ("... — skipping this URL for this account").
+_STATED = {
+    EmailNotRegisteredError: (
+        "email_not_registered",
+        "The entered email id is not registered with us."),
+    InvalidCredentialsError: (
+        "invalid_credentials",
+        "The email or password is incorrect."),
+}
+
+
+def error_code(exc_type: type) -> str:
+    """'AccountLockedError' -> 'account_locked'."""
+    name = exc_type.__name__
+    if name.endswith("Error"):
+        name = name[:-len("Error")]
+    return "".join("_" + c.lower() if c.isupper() and i else c.lower()
+                   for i, c in enumerate(name))
+
+
+def describe(exc: BaseException) -> "tuple[str, str, bool]":
+    """(code, message, understood) for a failed run's report.
+
+    `understood` is True for every failure this module names: the message is
+    then the whole diagnosis and a traceback only buries it. Anything else is
+    a bug or an unknown page, where the traceback IS the diagnosis.
+    """
+    for exc_type, (code, message) in _STATED.items():
+        if isinstance(exc, exc_type):
+            return code, message, True
+    understood = type(exc).__module__ == __name__
+    message = str(exc).strip() or type(exc).__name__
+    return (error_code(type(exc)) if understood else "unexpected_error",
+            message, understood)

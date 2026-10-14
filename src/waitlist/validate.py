@@ -174,6 +174,17 @@ def route_readiness(route: str) -> Readiness:
             message=f"Could not read config/waitlist/{route}.json: {exc}",
         ))
 
+    # An operator pause sits on top of all of the above: the config may be
+    # fine and the route still be stopped for today.
+    from src.utils import route_pause
+    paused = route_pause.problem(route, route_pause.WAITLIST)
+    if paused:
+        problems.append(Problem(
+            field="route", message=paused[0].upper() + paused[1:] + ".",
+            hint=f"Lift it with PATCH /v1/routes/{route}/flows/waitlist "
+                 "{\"enabled\": true}.",
+        ))
+
     return Readiness(
         route=route,
         ready=not any(p.severity == ERROR for p in problems),
@@ -429,8 +440,6 @@ def required_fields(route: str) -> List[Dict[str, Any]]:
     Account credentials are NOT included: they are metadata about which VFS
     login to use, not form data, and the caller supplies them separately.
     """
-    out: List[Dict[str, Any]] = []
-    seen: set = set()
     try:
         from src.waitlist import config as waitlist_config
 
@@ -438,9 +447,23 @@ def required_fields(route: str) -> List[Dict[str, Any]]:
     except Exception:                                  # noqa: BLE001
         # A route with no usable config has no fields to describe. The caller
         # already reports WHY via route_readiness().problems.
-        return out
+        return []
+    return _fields_from_steps(cfg.get("steps"), set())
 
-    for step in cfg.get("steps") or []:
+
+#: Placeholders the bot fills from the route and the chosen combo
+#: (context.build), so they are never something a client supplies.
+_CONTEXT_KEYS = frozenset({
+    "route", "source", "dest", "combo", "centre", "category", "sub_category",
+    "index", "index1",
+})
+
+
+def _fields_from_steps(steps: Any, seen: set) -> List[Dict[str, Any]]:
+    """One entry per client placeholder in `steps`, in form order. `seen` is
+    shared by the caller so a field asked for twice is described once."""
+    out: List[Dict[str, Any]] = []
+    for step in steps or []:
         if step.get("disabled"):
             continue
         for spec in step.get("fields") or []:
@@ -448,7 +471,7 @@ def required_fields(route: str) -> List[Dict[str, Any]]:
             if not isinstance(value, str):
                 continue          # a literal (e.g. a checkbox `true`) — not client data
             for name, filt in _placeholders(value):
-                if name in seen:
+                if name in seen or name in _CONTEXT_KEYS:
                     continue
                 seen.add(name)
                 notes = []
@@ -480,6 +503,73 @@ def required_fields(route: str) -> List[Dict[str, Any]]:
                     "options_status": options_status,
                     "options_captured_at": spec.get("options_captured_at") or "",
                 })
+    return out
+
+
+def _field(name: str, label: str, kind: str, step: str, notes: str,
+           required: bool = True) -> Dict[str, Any]:
+    return {"name": name, "label": label, "kind": kind, "required": required,
+            "step": step, "notes": notes, "options": [],
+            "options_status": OPTIONS_NOT_A_CHOICE, "options_captured_at": ""}
+
+
+def required_fields_live(route: str) -> List[Dict[str, Any]]:
+    """What a LIVE-booking client must send for this route, as required_fields()
+    is for the waitlist. Three sources, in the order a form should ask:
+
+      the date window     date_from / date_to — nothing else chooses a date
+      the booking pages   config/booking/<ROUTE>.json, the pages the bot fills
+      the payment page    the gateway's billing fields (config/payment/)
+
+    It is the mirror of booking.requests.precheck(): everything that would
+    answer "Required for booking/payment" is advertised here, so a form built
+    from this list is one POST /clients accepts.
+    """
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    try:
+        from src.booking import config as booking_config
+
+        # The live entry first, so its labels win; then any other entry the
+        # route has, because check_booking_templates() demands those too.
+        modes = sorted(booking_config.entry_modes(route),
+                       key=lambda m: m != booking_config.ENTRY_NEW)
+        if booking_config.ENTRY_NEW not in modes:
+            return out               # no live flow here: nothing to describe
+        step_fields: List[Dict[str, Any]] = []
+        for mode in modes:
+            step_fields.extend(
+                _fields_from_steps(booking_config.steps_for(route, mode), seen))
+    except Exception:                                  # noqa: BLE001
+        return out
+
+    window = ("Inclusive, YYYY-MM-DD. The bot books the earliest slot inside "
+              "date_from..date_to and nothing outside it.")
+    out.append(_field("date_from", "Earliest date", "date", "booking_window", window))
+    out.append(_field("date_to", "Latest date", "date", "booking_window",
+                      window + " Send the same date twice for a single day."))
+    out.extend(step_fields)
+
+    try:
+        from src.booking.requests import DEFAULT_COUNTRY_CODE
+        from src.payment import config as payment_config
+
+        billing = payment_config.load().get("billing_fields") or []
+    except Exception:                                  # noqa: BLE001
+        billing = []
+    for spec in billing:
+        name = spec.get("value_key") or spec.get("name")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        entry = _field(name, name.replace("_", " ").title(), "text", "payment",
+                       "Billing detail for the card payment page.",
+                       required=bool(spec.get("required")))
+        if name == "country_code":
+            # normalise() fills it: the gateway offers one country per route.
+            entry["required"] = False
+            entry["notes"] += f" Defaults to {DEFAULT_COUNTRY_CODE} when omitted."
+        out.append(entry)
     return out
 
 

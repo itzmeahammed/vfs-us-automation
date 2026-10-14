@@ -32,6 +32,11 @@ def _load_file(key: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def clear_cache() -> None:
+    """Drops the file cache so edited schemas are re-read."""
+    _cache.clear()
+
+
 def get_route_schema(source_code: str, dest_code: str) -> Dict[str, Any]:
     """
     Returns the flow schema for a route (e.g. AE-LU), falling back to the shared

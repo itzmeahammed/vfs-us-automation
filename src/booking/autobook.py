@@ -283,6 +283,10 @@ def gate_problem(route: str, test: bool = False) -> str:
         return "live booking is switched off ([switches] live_booking = false)"
     if not booking_config.is_enabled(route):
         return f"booking is disabled in config/booking/{route}.json"
+    from src.utils import route_pause
+    paused = route_pause.problem(route, route_pause.LIVE)
+    if paused:
+        return paused
     return "" if test else card_problem()
 
 
