@@ -972,8 +972,20 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                 # picker sees no window and refuses — after a login and three
                 # pages of form, on a record whose dates the pre-flight check
                 # had already read and approved (2026-10-02, u10432-nor-2).
-                _do_slot_pick(page, step, report, timeout_ms,
-                              values=values or {})
+                try:
+                    _do_slot_pick(page, step, report, timeout_ms,
+                                  values=values or {})
+                except Exception as slot_err:
+                    # If the step has pre_submit_js, force past the empty
+                    # calendar — used to walk remaining pages for DOM capture
+                    # when no slots are available.
+                    if step.get("pre_submit_js"):
+                        log.warning(f"  slot pick failed ({slot_err}); "
+                                    "using pre_submit_js to force past it.")
+                        page.evaluate(step["pre_submit_js"])
+                        page.wait_for_timeout(500)
+                    else:
+                        raise
             elif step.get("type") == "form" and step.get("fields"):
                 _fill_form(page, step, report, values or {}, timeout_ms)
             elif step.get("scroll_to_bottom"):
@@ -1046,6 +1058,15 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
 
             submit = step.get("submit")
             if submit:
+                # Force-enable: if the step declares pre_submit_js, run it
+                # before checking the button. This exists for portals that
+                # disable Continue when no slots are available — the walk
+                # still needs to reach the later pages to capture their DOM.
+                pre_js = step.get("pre_submit_js")
+                if pre_js:
+                    log.info(f"  running pre_submit_js on '{name}'...")
+                    page.evaluate(pre_js)
+                    page.wait_for_timeout(500)
                 _await_enabled_safe(page, submit)
                 _click(page, submit, f"step '{name}' submit", timeout_ms)
                 page.wait_for_timeout(1500)
