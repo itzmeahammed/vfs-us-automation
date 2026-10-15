@@ -19,13 +19,27 @@ A **real payment was submitted and has no recorded outcome.**
 | 3-D Secure ref | `CGJ` |
 | Journal | last row is `payment_otp_fill_failed`; **no `payment_result`** |
 
-**The card may or may not have been charged, and the appointment may or may not
-exist.** The browser has since closed, so the challenge can no longer be
-completed.
+**The card may or may not have been charged.** The browser has since closed
+(the run held it to 14:16:52, then exited cleanly), so the challenge can no
+longer be completed.
+
+**The appointment itself was most likely created.** On Norway the appointment
+is made BEFORE the card page — the walk completed `select_slot` and
+`review_pay` and reached the gateway, so assume a real 16 Oct 10:15 booking
+exists and is unpaid until VFS says otherwise.
 
 ```powershell
 python -m src.payment status        # will list this as UNANSWERED
 ```
+
+Evidence on disk — `runs/AE-NOR/6ad09e180783e1/`:
+
+| File | What it shows |
+|---|---|
+| `20261015_133629_payment_filled.png` | the gateway form as submitted |
+| `20261015_134651_payment_SUBMITTED.png` | state at the timeout |
+| `20261015_134652_handover.png` | the challenge screen left for a human |
+| `payment/` | the `submitted` capture + 3 challenge frames (DOM, input values blanked) |
 
 **Do this, in order, and do NOT re-run the booking first:**
 
@@ -36,14 +50,18 @@ python -m src.payment status        # will list this as UNANSWERED
    check double-charges** — VFS's own failure page says to wait 30 minutes and
    check before paying again.
 
-The booking request is currently stuck mid-flight:
+The booking request flagged itself correctly on exit — **no manual reset is
+needed**:
 
 ```
-trav-nook-ae-nor-8c18ed  AE-NOR  booking  on  2026-10-15..2026-10-31  attempts=2
+trav-nook-ae-nor-8c18ed  AE-NOR  needs_attention  on  2026-10-15..2026-10-31  attempts=2
+  last: needs_attention MANUAL (claude-live): payment submitted but the
+        gateway's answer was never read
 ```
 
-Status `booking` with `attempts=2`. It will need resetting to `waiting` (or
-parking) once the payment above is resolved.
+`needs_attention` is the correct resting state and it is doing its job: the
+request will not be picked up again automatically while it holds that status.
+Clear it only after the charge and the appointment have both been confirmed.
 
 ---
 
