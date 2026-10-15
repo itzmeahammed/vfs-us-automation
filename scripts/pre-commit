@@ -58,6 +58,104 @@ if [ -n "$doc_hits" ]; then
   exit 1
 fi
 
+# --------------------------------------------------------------------------- #
+# The payment card file                                                         #
+# --------------------------------------------------------------------------- #
+# config/card.local.txt holds a live PAN, expiry and CVN. It is gitignored, and
+# src/payment/card.py refuses to read a card file that is NOT ignored — but
+# .gitignore only governs UNTRACKED files. Someone who ran `git add -f` once,
+# or who copied the file to a name the rules miss, gets past both. This catches
+# it by name, whatever the content.
+card_file_regex='(^|/)(card\.local\.txt|card\.txt|.*\.card\.txt)$'
+card_hits=$(echo "$staged" | grep -Ei "$card_file_regex" || true)
+if [ -n "$card_hits" ]; then
+  echo "------------------------------------------------------------------"
+  echo "COMMIT BLOCKED: a payment card file is staged."
+  echo "------------------------------------------------------------------"
+  echo "$card_hits" | sed 's/^/  /'
+  echo
+  echo "A card number in git history cannot be recalled — it survives in the"
+  echo "object store and on every clone, and the only remedy is cancelling"
+  echo "the card. Unstage it:"
+  echo
+  echo "  git rm --cached <file>      # if it was added with -f"
+  echo "  git restore --staged <file>"
+  echo
+  echo "Only config/card.local.txt.example belongs in the repo, and only with"
+  echo "placeholder values."
+  echo "------------------------------------------------------------------"
+  exit 1
+fi
+
+# A PAN pasted into some OTHER file — a note, a test fixture, a README.
+#
+# Three filters in series, because a bare "16 digits in a row" rule fires on
+# reference numbers and concatenated dates often enough that people learn to
+# --no-verify past it, which is worse than not having the check:
+#
+#   1. ISSUER SHAPE. Only what VFS's gateway accepts (visa / mastercard /
+#      amex), matched against the WHOLE digit run so a 20-digit reference
+#      number does not match on a 16-digit substring of itself.
+#   2. LUHN. A real card passes it; an arbitrary digit run has a 90% chance of
+#      failing. This is what makes the check quiet enough to leave switched on
+#      — it is also why tests/ can keep using deliberately-invalid numbers
+#      like ...1112 to exercise the Luhn refusal without tripping the hook.
+#   3. ALLOWLIST. The published processor test numbers, which tests/ uses on
+#      purpose and which are not anyone's card.
+pan_shape='^(4[0-9]{12}([0-9]{3})?|5[1-5][0-9]{14}|2[2-7][0-9]{14}|3[47][0-9]{13})$'
+test_pans='^(4111111111111111|4242424242424242|5555555555554444|5105105105105100|371449635398431|378282246310005)$'
+
+luhn_ok() {
+  local n="$1" sum=0 alt=0 i d
+  for (( i=${#n}-1; i>=0; i-- )); do
+    d=${n:$i:1}
+    if (( alt )); then
+      d=$(( d * 2 ))
+      (( d > 9 )) && d=$(( d - 9 ))
+    fi
+    sum=$(( sum + d ))
+    alt=$(( 1 - alt ))
+  done
+  (( sum % 10 == 0 ))
+}
+
+# Spaces and dashes come out first: a card is written "4111 1111 1111 1111"
+# as often as not, and that is still a card.
+pan_runs=$(git diff --cached -U0 -- $staged 2>/dev/null \
+  | grep -E '^\+' \
+  | tr -d ' -' \
+  | grep -oE '[0-9]{12,19}' \
+  | sort -u || true)
+
+pan_count=0
+while IFS= read -r run; do
+  [ -z "$run" ] && continue
+  [[ "$run" =~ $pan_shape ]] || continue
+  [[ "$run" =~ $test_pans ]] && continue
+  luhn_ok "$run" && pan_count=$(( pan_count + 1 ))
+done <<< "$pan_runs"
+
+if [ "$pan_count" -gt 0 ]; then
+  echo "------------------------------------------------------------------"
+  echo "COMMIT BLOCKED: a staged line contains a valid payment card number."
+  echo "------------------------------------------------------------------"
+  echo "  ${pan_count} number(s), of a shape this gateway accepts, passing"
+  echo "  the Luhn check. The values are NOT printed here — printing them"
+  echo "  would copy the card into your terminal scrollback and into any"
+  echo "  log of this session."
+  echo
+  echo "  Staged files to search:"
+  echo "$staged" | sed 's/^/    /'
+  echo
+  echo "The card belongs in config/card.local.txt (gitignored) or in the"
+  echo "VFS_CARD_* environment variables — never in a tracked file."
+  echo
+  echo "If this is a NEW published test number, add it to test_pans in this"
+  echo "hook rather than bypassing the check."
+  echo "------------------------------------------------------------------"
+  exit 1
+fi
+
 # Scan CONFIG files only. The key_regex matches `key = value`, which is INI
 # syntax but also ordinary Python assignment — so scanning source produced false
 # positives on lines like `password = data.get("account_password")` and

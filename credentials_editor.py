@@ -523,7 +523,6 @@ def health_action(data: dict):
 # --------------------------------------------------------------------------- #
 
 LOG_DIR = os.path.join(HERE, "logs")
-BUDGET_FILE = os.path.join(HERE, "bandwidth_budget.json")
 
 _LOG_NAME_RE = re.compile(r"^app-(\d{4}-\d{2}-\d{2})\.log$")
 _TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})")
@@ -773,10 +772,14 @@ def _summary(d):
 
 
 def _budget():
+    """Today's ledger, via the bot's own module so the path (state/) and the
+    midnight rollover can never drift from what the supervisor writes."""
+    if health_module() is None:
+        return {}
     try:
-        with open(BUDGET_FILE, "r", encoding="utf-8") as fh:
-            return json.load(fh) or {}
-    except (OSError, ValueError):
+        from src.utils import bandwidth_budget
+        return bandwidth_budget.snapshot()
+    except Exception:
         return {}
 
 
@@ -853,11 +856,87 @@ def stats_payload(day=None):
     return {
         "days": days, "day": day, "detail": detail, "summary": _summary(detail),
         "today": _summary(today), "trend": trend, "pool": pool,
+        "today_hourly": today["hourly"],
         "accounts_total": len(accounts), "accounts_available": n_avail,
         "cap": cap, "budget": budget,
         "alerts": _alerts(today, trend, cap, budget),
         "names": COUNTRY_NAMES,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Proxy-Seller residential traffic (banner on /stats)                         #
+#                                                                             #
+# GET https://proxy-seller.com/personal/api/v2/{key}/resident/package returns #
+# {status, data, errors}; data carries traffic_limit / traffic_usage /        #
+# traffic_left in BYTES and expired_at as "dd.MM.yyyy HH:mm:ss". The key      #
+# sits in the URL path, so the URL is never logged or echoed in an error.     #
+# Key: [proxy_seller] api_key in config/config.local.ini (gitignored).        #
+# --------------------------------------------------------------------------- #
+
+PROXY_SELLER_URL = "https://proxy-seller.com/personal/api/v2/{key}/resident/package"
+_PS_TTL_OK, _PS_TTL_ERR = 300, 60     # the balance moves slowly; don't hammer it
+_ps_cache = {"at": 0.0, "ttl": 0, "data": None}
+
+
+def _proxy_seller_key() -> str:
+    if health_module() is None:
+        return ""
+    try:
+        from src.utils import config_reader
+        config_reader.reload_if_changed()     # pick up a newly added key
+        return (config_reader.get_config_value("proxy_seller", "api_key", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _fetch_proxy_package(key: str) -> dict:
+    import urllib.request
+    from datetime import datetime
+    url = PROXY_SELLER_URL.format(key=urllib.parse.quote(key, safe=""))
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json",
+                                                   "User-Agent": "vfs-editor"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        # str(e) can carry the URL (and so the key) - report the type only.
+        code = getattr(e, "code", None)
+        return {"ok": False, "error": f"Proxy-Seller unreachable ({code or type(e).__name__})"}
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(body, dict) or body.get("status") != "success" or not isinstance(data, dict):
+        errs = (body.get("errors") if isinstance(body, dict) else None) or []
+        msg = "; ".join(str(x.get("message", x) if isinstance(x, dict) else x)
+                        for x in errs) or "unexpected response"
+        return {"ok": False, "error": ("Proxy-Seller: " + msg.replace(key, "***"))[:200]}
+
+    def num(k):
+        try:
+            return float(data.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    expires = None
+    try:
+        expires = datetime.strptime(str(data.get("expired_at")), "%d.%m.%Y %H:%M:%S").isoformat()
+    except (TypeError, ValueError):
+        pass
+    mb = 1024 * 1024
+    return {"ok": True, "limit_mb": num("traffic_limit") / mb,
+            "used_mb": num("traffic_usage") / mb, "left_mb": num("traffic_left") / mb,
+            "expires": expires, "active": bool(data.get("is_active", True))}
+
+
+def proxy_traffic(force=False) -> dict:
+    key = _proxy_seller_key()
+    if not key:
+        return {"configured": False}
+    now = time.time()
+    if not force and _ps_cache["data"] and now - _ps_cache["at"] < _ps_cache["ttl"]:
+        return _ps_cache["data"]
+    data = _fetch_proxy_package(key)
+    data.update(configured=True, fetched=time.strftime("%H:%M", time.localtime(now)))
+    _ps_cache.update(at=now, ttl=_PS_TTL_OK if data["ok"] else _PS_TTL_ERR, data=data)
+    return data
 
 
 _SCHED_ACTIONS = {
@@ -920,6 +999,13 @@ def scheduler_action(action: str):
     verb = _SCHED_ACTIONS.get(action)
     if not verb:
         return False, f"Unknown action: {action}"
+    if action == "start":
+        # The task is set to IgnoreNew, so Start-ScheduledTask on a running task
+        # "succeeds" while doing nothing. Say so instead of reporting OK.
+        st = scheduler_status()
+        if st.get("state") == "Running":
+            return False, (f"A run is already in progress (started {st.get('lastRun') or '?'})"
+                           " — Run now ignored.")
     rc, out, err = _ps(f"{verb} -TaskName '{TASK_NAME}'")
     if rc == 0:
         return True, f"{action.capitalize()} OK."
@@ -1005,6 +1091,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 payload = stats_payload(day)
             except Exception as e:                       # never 500 the page
                 payload = {"days": [], "error": f"{type(e).__name__}: {e}"}
+            self._send(200, json.dumps(payload))
+        elif self.path.startswith("/api/proxy-traffic"):
+            try:
+                payload = proxy_traffic(force="force=1" in self.path)
+            except Exception as e:                       # never 500 the page
+                payload = {"configured": True, "ok": False, "error": type(e).__name__}
             self._send(200, json.dumps(payload))
         elif self.path == "/api/credentials":
             accounts = parse_credentials()
@@ -1227,9 +1319,11 @@ async function loadSched() {
 }
 async function schedAct(action) {
   setStatus('sstatus', action + '…', '');
-  const d = await (await fetch('/api/scheduler',{method:'POST',
-    headers:{'Content-Type':'application/json'}, body:JSON.stringify({action})})).json();
-  setStatus('sstatus', d.message, d.ok?'ok':'err');
+  try {
+    const d = await (await fetch('/api/scheduler',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({action})})).json();
+    setStatus('sstatus', d.message, d.ok?'ok':'err');
+  } catch(e) { setStatus('sstatus', action + ' failed: ' + e.message, 'err'); }
   loadSched();
 }
 
@@ -1746,6 +1840,35 @@ PAGE_STATS = r"""<!doctype html>
   .alert.ok   { background: #dcfce7; color: #14532d; }
   .alert.warn { background: #fef3c7; color: #7c2d12; }
   .alert.crit { background: #fee2e2; color: #7f1d1d; font-weight: 600; }
+  /* proxy traffic banner */
+  .pxy { background: var(--card); border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+         padding: 14px 18px; margin-bottom: 16px; border-left: 4px solid var(--ok); }
+  .pxy.warn { border-left-color: var(--warn); } .pxy.crit { border-left-color: var(--crit); }
+  .pxy.off { border-left-color: var(--line); }
+  .pxy .row { display: flex; gap: 8px 18px; align-items: baseline; flex-wrap: wrap; }
+  .pxy .big { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pxy .meter { height: 8px; border-radius: 4px; background: var(--sunk); margin: 10px 0 6px;
+                overflow: hidden; }
+  .pxy .meter > span { display: block; height: 100%; background: var(--ok); }
+  .pxy.warn .meter > span { background: var(--warn); }
+  .pxy.crit .meter > span { background: var(--crit); }
+  .pxy button { margin-left: auto; }
+  .pxy { display: flex; gap: 22px; align-items: stretch; }
+  #pxyMain { flex: 1 1 360px; min-width: 0; }
+  .spark { flex: 0 1 300px; display: flex; flex-direction: column; min-width: 200px; }
+  .spark .cap { font-size: 12px; color: var(--mut); display: flex; justify-content: space-between;
+                gap: 8px; font-variant-numeric: tabular-nums; }
+  .spark .cap b { color: var(--ink); font-weight: 600; }
+  .spark svg { flex: 1; width: 100%; min-height: 40px; display: block; margin-top: 6px;
+               overflow: visible; }
+  .spark rect.b { fill: var(--acc); opacity: .55; }
+  .spark rect.b.now { opacity: 1; }
+  .spark rect.hit { fill: transparent; cursor: default; }
+  .spark g:hover rect.b { opacity: 1; }
+  .spark line { stroke: var(--line); }
+  .spark .ax { display: flex; justify-content: space-between; font-size: 10px;
+               color: var(--mut); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  @media (max-width: 720px) { .pxy { flex-wrap: wrap; } .spark { flex-basis: 100%; } }
   /* KPI strip */
   .kpis { display: grid; gap: 1px; background: var(--line);
           grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1806,8 +1929,10 @@ PAGE_STATS = r"""<!doctype html>
   <p class="sub" style="margin:-10px 0 16px">Derived from <code>logs/</code>,
     <code>account_health.json</code> and <code>bandwidth_budget.json</code></p>
 
-  <div id="alerts"></div>
-  <div class="kpis" id="kpis"></div>
+  <div class="pxy off" id="pxy">
+    <div id="pxyMain"><span class="sub">Proxy data: loading&hellip;</span></div>
+    <div class="spark" id="spark"></div>
+  </div>
 
   <div class="toolbar">
     <label class="sub">Day</label>
@@ -1816,6 +1941,9 @@ PAGE_STATS = r"""<!doctype html>
     <button onclick="load(document.getElementById('day').value)">&#8635; Refresh</button>
     <span class="sub" id="upd"></span>
   </div>
+
+  <div id="alerts"></div>
+  <div class="kpis" id="kpis"></div>
 
   <div class="card"><h2>Slots found — the reason the bot runs</h2>
     <div class="in"><div id="slots"></div></div></div>
@@ -1874,7 +2002,7 @@ function draw() {
       `<div class="alert crit">${esc((D && D.error) || 'No data')}</div>`;
     return;
   }
-  const d = D.detail, s = D.summary, t = D.today;
+  const d = D.detail, s = D.summary;
 
   document.getElementById('alerts').innerHTML = D.alerts
     .map(([k, m]) => `<div class="alert ${k}">${esc(m)}</div>`).join('');
@@ -1888,23 +2016,28 @@ function draw() {
     `${s.first || '–'} → ${s.last || '–'} · ${s.runs} runs`;
   document.getElementById('upd').textContent = 'updated ' + new Date().toLocaleTimeString();
 
-  /* ---------- KPI strip: today, not the selected day ---------- */
-  const used = (D.budget && D.budget.used_mb) || 0, cap = D.cap || 0;
+  /* ---------- KPI strip: the selected day ---------- */
+  // The budget ledger only holds the current day; any other day falls back to
+  // the proxy MB the logs recorded, and gets no projection.
+  const isToday = D.budget && D.budget.date === D.day;
+  const when = isToday ? 'today' : 'on ' + D.day;
+  const used = isToday ? (D.budget.used_mb || 0) : s.mb, cap = D.cap || 0;
   const capCls = cap && used >= cap ? 'bad' : (cap && used >= .6 * cap ? 'warn' : 'good');
-  const proj = t.runs ? used + (t.mb / Math.max(t.runs, 1)) *
+  const proj = isToday && s.runs ? used + (s.mb / Math.max(s.runs, 1)) *
                  Math.max(0, Math.round((24 - new Date().getHours()) * 2)) : used;
   document.getElementById('kpis').innerHTML = [
-    kpi(t.slots, '', 'Slots found today', topSlotRoutes(), t.slots ? 'good' : ''),
-    kpi(n1(used), 'MB', 'Data used today',
-        cap ? `${pct(used, cap)}% of ${cap} MB cap · ~${n1(proj)} projected` : 'no cap set',
+    kpi(s.slots, '', 'Slots found ' + when, topSlotRoutes(), s.slots ? 'good' : ''),
+    kpi(n1(used), 'MB', 'Data used ' + when,
+        cap ? `${pct(used, cap)}% of ${cap} MB cap` + (isToday ? ` · ~${n1(proj)} projected` : '')
+            : 'no cap set',
         capCls),
-    kpi(t.per_attempt.toFixed(2), 'MB', 'Per route-attempt',
-        `${t.attempts} attempts in ${t.runs} runs`),
-    kpi(t.success == null ? '–' : t.success.toFixed(0) + '%', '', 'Route success today',
-        `${t.ok} ok · ${t.fail} failed`,
-        t.success == null ? '' : (t.success >= 92 ? 'good' : t.success >= 85 ? 'warn' : 'bad')),
+    kpi(s.per_attempt.toFixed(2), 'MB', 'Per route-attempt',
+        `${s.attempts} attempts in ${s.runs} runs`),
+    kpi(s.success == null ? '–' : s.success.toFixed(0) + '%', '', 'Route success ' + when,
+        `${s.ok} ok · ${s.fail} failed`,
+        s.success == null ? '' : (s.success >= 92 ? 'good' : s.success >= 85 ? 'warn' : 'bad')),
     kpi(D.accounts_available, '', 'Accounts available', poolLine(), poolCls()),
-    kpi(t.last || '–', '', 'Last activity', `${t.paused} paused · ${t.restricted} restricted`),
+    kpi(s.last || '–', '', 'Last activity', `${s.paused} paused · ${s.restricted} restricted`),
   ].join('');
 
   drawSlots(d);
@@ -1916,6 +2049,7 @@ function draw() {
   drawTurnstile(d);
   drawOtp(d);
   drawHourly(d);
+  drawSpark();
 }
 
 function kpi(v, unit, k, sub, cls) {
@@ -1927,7 +2061,7 @@ function topSlotRoutes() {
   const r = Object.entries(D.detail.routes).filter(([, v]) => v.slot)
     .sort((a, b) => b[1].slot - a[1].slot).slice(0, 3)
     .map(([k, v]) => k.replace('AE-', '') + ' ' + v.slot);
-  return r.length ? r.join(' · ') : 'none today';
+  return r.length ? r.join(' · ') : 'none';
 }
 function poolLine() {
   const dark = Object.entries(D.pool).filter(([, p]) => p.eligible && !p.healthy).length;
@@ -2142,8 +2276,91 @@ function drawHourly(d) {
        { leftUnit: ' MB' });
 }
 
-load();
+/* ---------- Banner chart: proxy MB per hour of the current day ---------- */
+function drawSpark() {
+  const el = document.getElementById('spark');
+  const today = D.budget && D.budget.date;          // the real calendar day
+  const isToday = D.days[0] === today;
+  const vals = Array(24).fill(0);
+  if (isToday) for (const [k, v] of Object.entries(D.today_hourly || {}))
+    vals[+k.slice(-2)] += v;
+  const total = vals.reduce((a, b) => a + b, 0);
+  const max = Math.max(...vals, 1), nowH = new Date().getHours();
+  const W = 240, H = 48, bw = W / 24;
+  const bars = vals.map((v, h) => {
+    const bh = v ? Math.max(1.5, H * v / max) : 0;
+    const tip = `${String(h).padStart(2, '0')}:00–${String(h + 1).padStart(2, '0')}:00 · ${n1(v)} MB`;
+    return `<g data-tip="${tip}">
+      <rect class="b${h === nowH ? ' now' : ''}" x="${(h * bw + 1).toFixed(1)}" y="${(H - bh).toFixed(1)}"
+        width="${(bw - 2).toFixed(1)}" height="${bh.toFixed(1)}" rx="1"/>
+      <rect class="hit" x="${(h * bw).toFixed(1)}" y="0" width="${bw.toFixed(1)}" height="${H}"/></g>`;
+  }).join('');
+  const ticks = ['00', '06', '12', '18', '24'].map(h => `<span>${h}</span>`).join('');
+  const idle = `Today by hour · <b>${n1(total)} MB</b>`;
+  el.innerHTML = `<div class="cap"><span id="sparkTip">${isToday ? idle : 'No proxy traffic logged today'}</span>
+      <span>peak ${n1(Math.max(...vals))} MB</span></div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
+      aria-label="Proxy MB per hour today">
+      <line x1="0" x2="${W}" y1="${H}" y2="${H}" vector-effect="non-scaling-stroke"/>${bars}</svg>
+    <div class="ax">${ticks}</div>`;
+  const tipEl = document.getElementById('sparkTip');
+  el.querySelectorAll('g[data-tip]').forEach(g => {
+    g.addEventListener('mouseenter', () => { tipEl.innerHTML = `<b>${g.dataset.tip}</b>`; });
+    g.addEventListener('mouseleave', () => { tipEl.innerHTML = idle; });
+  });
+}
+
+/* ---------- Proxy-Seller banner: independent of the day picker ---------- */
+const fmtMB = mb => mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : n1(mb) + ' MB';
+async function loadProxy(force) {
+  const el = document.getElementById('pxy'), main = document.getElementById('pxyMain');
+  let p;
+  try { p = await (await fetch('/api/proxy-traffic' + (force ? '?force=1' : ''))).json(); }
+  catch (e) { p = {configured: true, ok: false, error: 'editor unreachable'}; }
+  const btn = `<button onclick="loadProxy(true)" title="Re-query Proxy-Seller">&#8635;</button>`;
+  if (!p.configured) {
+    el.className = 'pxy off';
+    main.innerHTML = `<div class="row"><b>Proxy data left</b><span class="sub">not set up &mdash; add
+      <code>[proxy_seller]</code> <code>api_key = &hellip;</code> to <code>config/config.local.ini</code>
+      (key from proxy-seller.com/personal/api)</span>${btn}</div>`;
+    return;
+  }
+  if (!p.ok) {
+    el.className = 'pxy warn';
+    main.innerHTML = `<div class="row"><b>Proxy data left</b><span>${esc(p.error)}</span>
+      <span class="sub">${p.fetched ? 'checked ' + esc(p.fetched) : ''}</span>${btn}</div>`;
+    return;
+  }
+  // Runway at the recent pace: mean of the last 7 days with traffic, from the logs.
+  const recent = ((D && D.trend) || []).filter(r => r.mb > 0).slice(-7);
+  const perDay = recent.length ? recent.reduce((a, r) => a + r.mb, 0) / recent.length : 0;
+  const runway = perDay ? p.left_mb / perDay : null;
+  const usedPct = p.limit_mb ? 100 * p.used_mb / p.limit_mb : 0;
+  const leftPct = 100 - usedPct;
+  let days = null, exp = '';
+  if (p.expires) {
+    days = Math.ceil((new Date(p.expires) - new Date()) / 864e5);
+    exp = `expires ${p.expires.slice(0, 10)} (${days < 0 ? 'expired' : days + ' d'})`;
+  }
+  const crit = !p.active || leftPct < 10 || (runway != null && runway < 2) || (days != null && days < 2);
+  const warn = leftPct < 25 || (runway != null && runway < 7) || (days != null && days < 7);
+  el.className = 'pxy ' + (crit ? 'crit' : warn ? 'warn' : '');
+  main.innerHTML = `<div class="row"><b>Proxy data left</b>
+      <span class="big">${fmtMB(p.left_mb)}</span>
+      <span class="sub">of ${fmtMB(p.limit_mb)} &middot; ${fmtMB(p.used_mb)} used (${usedPct.toFixed(0)}%)</span>
+      ${btn}</div>
+    <div class="meter"><span style="width:${Math.max(0, Math.min(100, leftPct)).toFixed(1)}%"></span></div>
+    <div class="row sub">
+      <span>${runway == null ? 'no recent usage to project from'
+        : `~${runway < 10 ? runway.toFixed(1) : Math.round(runway)} days left at ${fmtMB(perDay)}/day (last ${recent.length} d)`}</span>
+      ${exp ? `<span>${exp}</span>` : ''}
+      ${p.active ? '' : '<span><b>package inactive</b></span>'}
+      <span>Proxy-Seller &middot; checked ${esc(p.fetched)}</span></div>`;
+}
+
+load().then(() => loadProxy());
 setInterval(() => { if (document.getElementById('day').value === D.days[0]) load(); }, 60000);
+setInterval(() => loadProxy(), 300000);
 </script>
 </body></html>
 """

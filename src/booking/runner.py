@@ -397,9 +397,11 @@ def _step_payment(ctx: "_StepContext") -> None:
     card = card_mod.load()
     if card is None:
         raise BookingStepError(
-            "Payment is configured for this route but no card is set. Export "
-            "VFS_CARD_NUMBER, VFS_CARD_EXPIRY and VFS_CARD_CVN, or disable "
-            "the payment step.")
+            "Payment is configured for this route but no card is set. Either "
+            "export VFS_CARD_NUMBER, VFS_CARD_EXPIRY and VFS_CARD_CVN, or "
+            "fill in config/card.local.txt (copy the .example beside it), or "
+            "disable the payment step. Check it with: python -m src.payment "
+            "card")
     card_mod.install_redaction(card)
     log.info(f"  paying with {card.masked}")
 
@@ -492,7 +494,80 @@ def _step_payment(ctx: "_StepContext") -> None:
         row["booking_ref"] = ctx.run.reference or ctx.run.slot
         return payment_journal.append(row)
 
-    gateway.submit_payment(gateway_page, spec, journal=_journal_row)
+    # ── 5b. THE ONE PLACE THE GATEWAY'S DOM IS KEPT ─────────────────────────
+    #
+    # _capture_page above is a SCREENSHOT ONLY, deliberately: page.content() on
+    # a filled card form writes the PAN and CVN into captured/ in plaintext.
+    # The 3-D Secure screens are the exception that has to be made, and the
+    # reason is narrow: the bank's OTP form is an IFRAME, a PNG of it shows a
+    # grey box, and the next country's OTP step has to be built from selectors
+    # somebody can actually read. So the markup is kept — through redact_html,
+    # which blanks every <input value> (the OTP box included) and scrubs the
+    # card values by hand.
+    #
+    # Belt and braces, not one or the other: blanking input values already
+    # removes the typed PAN, and the explicit scrub catches the PAN wherever
+    # the gateway echoes it OUTSIDE an input — a data- attribute, an inline
+    # script, a hidden JSON blob. Neither alone is enough.
+    import os
+
+    from src.booking.walk import capture_dir
+
+    otp_dir = os.path.join(capture_dir(ctx.route), "payment")
+    secrets = [card.number, card.cvn]
+
+    def _capture(page, label):
+        return gateway.capture_screen(page, otp_dir, label, scrub=secrets)
+
+    gateway.submit_payment(gateway_page, spec, journal=_journal_row,
+                           capture=_capture, otp=_otp_inbox(spec))
+
+
+def _otp_inbox(spec: dict):
+    """An armed-later SMS inbox for the 3-D Secure code, or None.
+
+    None whenever auto-fill is off, the relay has no key, or the package
+    cannot even be imported — and None is a perfectly good answer: the
+    challenge then waits for a human in the open browser, which is what it did
+    before the relay existed.
+
+    *** NOT ARMED HERE. *** submit_payment arms it immediately before the
+    irreversible click, which is the only moment narrow enough to guarantee
+    the first eligible SMS belongs to this payment.
+    """
+    if not spec.get("otp_auto", True):
+        log.info("  3-D Secure auto-fill is off for this processor "
+                 "(otp_auto=false); a human will have to type the code.")
+        return None
+
+    try:
+        from src.otp_relay import OtpInbox
+        from src.otp_relay import relayion
+
+        if not relayion.is_configured():
+            log.info("  no SMS relay key, so a 3-D Secure code will have to "
+                     "be typed by hand. Set [relayion] relayion_key in "
+                     "config/config.local.ini to automate it.")
+            return None
+
+        inbox = OtpInbox(
+            digits=int(spec.get("otp_digits") or 6),
+            senders=spec.get("otp_senders") or (),
+            poll_s=int(spec.get("otp_poll_seconds") or 5),
+            grace_s=int(spec.get("otp_clock_grace_seconds") or 90),
+            code_words=spec.get("otp_code_words") or (),
+        )
+        who = (f"senders {', '.join(inbox.senders)}" if inbox.senders
+               else "any sender")
+        log.info(f"  SMS relay ready for the 3-D Secure code "
+                 f"({inbox.digits} digits, {who})")
+        return inbox
+    except Exception as e:                                  # noqa: BLE001
+        # A broken relay must never be the reason a booking that is otherwise
+        # ready does not get paid for.
+        log.warning(f"  SMS relay unavailable ({e}); the 3-D Secure code "
+                    "will have to be typed by hand.")
+        return None
 
 
 def _capture_page(page, ctx: "_StepContext", label: str) -> str:

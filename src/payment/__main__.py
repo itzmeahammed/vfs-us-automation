@@ -19,6 +19,7 @@ and check if your appointment is confirmed."
 """
 
 import argparse
+import os
 import sys
 from typing import List
 
@@ -101,10 +102,67 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_card(args) -> int:
+    """Prove the configured card loads, offline, before a run needs it.
+
+    Every check this runs is one that otherwise fires on a live payment page
+    with a client's booking sitting on it: a mistyped digit, an expiry that
+    passed last month, a CVN from a different card, a card file the gateway
+    will never see because it is not where the bot looks.
+
+    It prints the masked card and nothing else. There is no --show.
+    """
+    from src.payment import card as card_mod
+
+    path = card_mod.resolve_card_file(os.environ, explicit_env=False)
+    env_set = [k for k in (card_mod.ENV_NUMBER, card_mod.ENV_EXPIRY,
+                           card_mod.ENV_CVN, card_mod.ENV_TYPE,
+                           card_mod.ENV_NAME)
+               if str(os.environ.get(k, "")).strip()]
+
+    print()
+    print("=" * 68)
+    print("PAYMENT CARD")
+    print("=" * 68)
+    print(f"environment: {', '.join(env_set) if env_set else 'nothing set'}")
+    print(f"card file:   {path}"
+          f"{'' if path and os.path.isfile(path) else '  (not present)'}")
+    print()
+
+    try:
+        card = card_mod.load()
+    except card_mod.CardError as exc:
+        print("UNUSABLE")
+        print()
+        for line in str(exc).splitlines():
+            print(f"  {line}")
+        print()
+        print("Nothing can be paid for until this is fixed. A route with a")
+        print("payment step will refuse at the start of the run, which is")
+        print("the intended behaviour — it refuses before booking a slot.")
+        return 1
+
+    if card is None:
+        print("NOT CONFIGURED — no card number in either source.")
+        print()
+        print("This is fine unless a route has a payment step. To set one up:")
+        print("  cp config/card.local.txt.example config/card.local.txt")
+        print("  # then edit it, and on POSIX: chmod 600 config/card.local.txt")
+        return 1
+
+    print(f"OK: {card.masked}, expires {card.expiry_mm_yy}"
+          f"{', ' + card.name if card.name else ''}")
+    print()
+    print("Valid shape, passes Luhn, not expired. That is everything that")
+    print("can be checked without charging it — only the issuer knows")
+    print("whether it has funds or is blocked for online use.")
+    return 0
+
+
 def main(argv: List[str] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m src.payment",
-        description="Inspect the payment journal.")
+        description="Inspect the payment journal and the configured card.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     status = sub.add_parser(
@@ -114,9 +172,15 @@ def main(argv: List[str] = None) -> int:
                         help="print every row, not just the ones needing "
                              "attention")
 
+    sub.add_parser(
+        "card", help="check the configured card loads and is not expired "
+                     "(offline; prints only the masked number)")
+
     args = parser.parse_args(argv)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "card":
+        return cmd_card(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

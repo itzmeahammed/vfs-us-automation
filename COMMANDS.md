@@ -78,6 +78,73 @@ jq "select(.run_id==\"$RUN\")" state/payments.jsonl
 ls runs/*/$RUN/
 ```
 
+## Setting up the company card
+
+Two sources, environment first, then a local file — merged per field, so you
+can override one value for one run without editing the file.
+
+```powershell
+# Option A — environment. Best for a scheduled task: per-process, and it
+# never survives a `git add .`
+$env:VFS_CARD_NUMBER="..."; $env:VFS_CARD_EXPIRY="MM/YY"; $env:VFS_CARD_CVN="..."
+
+# Option B — a card file. Gitignored, and refused if it ever stops being so.
+cp config/card.local.txt.example config/card.local.txt   # then edit it
+chmod 600 config/card.local.txt                          # POSIX only
+
+# Keep it off the repo disk entirely (better):
+$env:VFS_CARD_FILE="D:\secure\card.txt"
+
+# Check it loads — offline, charges nothing, prints only the masked number
+python -m src.payment card
+```
+
+`python -m src.payment card` runs every check the live run would: Luhn, expiry,
+CVN length against the card type, file permissions, and whether git would let
+you commit the file. Run it after any card change — the alternative is
+discovering a typo on a live gateway with a booked, unpaid appointment on it.
+
+## The 3-D Secure SMS relay (Relayion)
+
+On the payment provider's page the bank may ask for an OTP. The bot reads it
+from the Relayion SMS relay and types it — **when it can**. Run these before
+any live payment, in this order:
+
+```powershell
+# 1. Is the SIM reachable? Exits non-zero if no device is online.
+python -m src.otp_relay devices
+
+# 2. What is actually arriving? Bodies are hidden, codes masked.
+python -m src.otp_relay watch --minutes 60
+
+# 3. Block for one fresh code, exactly as the payment path waits.
+python -m src.otp_relay wait --timeout 180
+
+# 4. A live run logged "held no 6-digit code"? Test the parser offline.
+python -m src.otp_relay parse "AED 350.00 at VFS. OTP 483920. Ref 778101."
+```
+
+**The bank texts the number registered on the card.** If that SIM is not in a
+Relayion device, nothing here works — `devices` is the check for that, and it
+is the first thing to run.
+
+**Two reasons it may still not fire, neither a fault:**
+
+- **The issuer chose app approval, not a code.** Confirmed live on 2026-10-14:
+  Mashreq served an out-of-band challenge with no code field at all. Only the
+  cardholder can answer that, in the open browser.
+- **No key configured.** Set `[relayion] relayion_key` in
+  `config/config.local.ini` (or `RELAYION_API_KEY`). Without it the challenge
+  waits for a human, which is the behaviour that predates the relay.
+
+So **do not walk away from a live payment** because the relay is on. Every
+failure path falls back to you typing it in the browser.
+
+Tuning lives in `config/payment/<PROCESSOR>.json` (`otp_*` keys): `otp_auto`
+to switch it off, `otp_senders` to trust only the bank's sender once you have
+seen it, `otp_digits`, `otp_max_attempts` (capped at 3 — banks lock a card
+after a few wrong codes).
+
 ## After any crash — check for unanswered payments
 
 ```powershell

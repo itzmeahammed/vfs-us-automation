@@ -29,11 +29,20 @@ it does for a human. Touching the encrypted payload directly would mean
 reimplementing their crypto against an undocumented, changeable contract — and
 getting it subtly wrong produces a failed payment on a live booking.
 
-3-D SECURE. If the issuer challenges the payment, the gateway redirects to the
-bank for an OTP that arrives on the cardholder's phone. A bot cannot complete
-that and must not try. `submit_payment` detects the redirect and raises
-`ChallengeRequired`, leaving the browser open on the bank's page for a human —
-the same handover the booking walk uses at its commit boundary.
+3-D SECURE. If the issuer challenges the payment, the bank asks for an OTP that
+arrives on the cardholder's phone. THE BOT NEVER TYPES IT. What it does depends
+entirely on which side of the click the challenge appears on:
+
+    BEFORE the click  `ChallengeRequired` — nothing was submitted, the browser
+                      is left open for a human, abandoning is still free.
+
+    AFTER the click   it WAITS (`_await_challenge`). The payment is already in
+                      flight, so giving up here would discard the answer: the
+                      human types the OTP, the gateway returns to VFS with
+                      PaymentStatus in the URL, and that is the outcome the
+                      journal row exists to record. Every screen the bank shows
+                      is captured on the way past, because none of them can be
+                      revisited once the code is spent.
 
     ═════════════════════════ ONE COUNTRY, SO FAR ═════════════════════════
 
@@ -49,6 +58,7 @@ example is how you get an abstraction that fits one example.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -286,17 +296,361 @@ def fill_card(page, spec: Dict[str, Any], card) -> None:
     log.info(f"  card details entered ({card.masked})")
 
 
+#: Fallback markers for a processor config that declares none. The config is
+#: the authority — this is what a NEW country gets before anyone has seen its
+#: challenge, so it leans on the names that are not processor-specific: the
+#: protocol ones, and Cardinal Commerce, whose step-up iframe is what most
+#: CyberSource-family gateways actually serve.
+#:
+#: Every entry must be specific enough not to match a GATEWAY's own hostname —
+#: a marker that does makes the checkout page look like a challenge and the
+#: payment is refused before the card is ever submitted. "secure" alone would
+#: match "secureacceptance"; that is why the list reads oddly precise.
+_DEFAULT_CHALLENGE_MARKERS = (
+    "3dsecure", "3ds", "acs", "secure-auth", "verifiedbyvisa", "securecode",
+    "challenge", "cardinalcommerce", "centinel", "step-up", "stepup",
+)
+
+
+def _challenge_markers(spec: Dict[str, Any]) -> List[str]:
+    return spec.get("challenge_markers") or list(_DEFAULT_CHALLENGE_MARKERS)
+
+
 def _looks_like_challenge(page, spec: Dict[str, Any]) -> bool:
     """Has the gateway redirected to a bank's 3-D Secure page?"""
-    markers = spec.get("challenge_markers") or [
-        "3dsecure", "3ds", "acs", "secure-auth", "verifiedbyvisa",
-        "securecode", "challenge",
-    ]
+    markers = _challenge_markers(spec)
     try:
         url = (page.url or "").lower()
     except Exception:                                       # noqa: BLE001
         return False
     return any(marker in url for marker in markers)
+
+
+def _frame_urls(page) -> List[str]:
+    """The URLs of the page's child frames. [] when they cannot be read."""
+    try:
+        frames = list(getattr(page, "frames", None) or [])
+    except Exception:                                       # noqa: BLE001
+        return []
+    main = getattr(page, "main_frame", None)
+    urls = []
+    for frame in frames:
+        if main is not None and frame is main:
+            continue
+        try:
+            url = frame.url or ""
+        except Exception:                                   # noqa: BLE001
+            continue
+        if url and url != "about:blank":
+            urls.append(url)
+    return urls
+
+
+def _challenge_showing(page, spec: Dict[str, Any]) -> bool:
+    """A 3-D Secure screen, as a redirect OR an iframe on the gateway page.
+
+    The redirect is what _looks_like_challenge checks. CyberSource's payer
+    authentication more often does neither: it leaves the address bar on the
+    gateway and renders the bank's OTP page in an iframe (Cardinal step-up), so
+    the frame URLs have to be read too or the challenge is invisible.
+    """
+    if _looks_like_challenge(page, spec):
+        return True
+    markers = _challenge_markers(spec)
+    return any(m in url.lower() for url in _frame_urls(page) for m in markers)
+
+
+def _returned_to_merchant(page, spec: Dict[str, Any]) -> bool:
+    """Has the gateway handed the browser back to VFS with an outcome?"""
+    try:
+        url = (page.url or "").lower()
+    except Exception:                                       # noqa: BLE001
+        return False
+    if PAYMENT_STATUS_PARAM in url:
+        return True
+    gateway_host = (spec.get("url_contains") or "").lower()
+    if not gateway_host or gateway_host in url:
+        return False
+    return not _looks_like_challenge(page, spec)
+
+
+def _screen_signature(page) -> tuple:
+    try:
+        url = page.url or ""
+    except Exception:                                       # noqa: BLE001
+        url = ""
+    return (url, tuple(_frame_urls(page)))
+
+
+def _pause(page, ms: int) -> None:
+    """Sleep without starving Playwright's event loop."""
+    waiter = getattr(page, "wait_for_timeout", None)
+    if callable(waiter):
+        try:
+            waiter(ms)
+            return
+        except Exception:                                   # noqa: BLE001
+            pass
+    time.sleep(ms / 1000.0)
+
+
+#: How long a human gets to type the OTP. The bank's own page usually expires
+#: the code in 3-5 minutes; ten leaves room for a resend.
+OTP_TIMEOUT_MS = 600000
+
+
+def _human_wait(ms: int) -> str:
+    """"10 min" / "45s". Integer-dividing by 60000 printed "0 min" for every
+    timeout under a minute — which is every test, and is the line an operator
+    reads to decide whether they have time to fetch their phone."""
+    if ms >= 60000:
+        return f"{ms // 60000} min"
+    return f"{max(0, ms // 1000)}s"
+
+
+#: Ceiling on how many screens one challenge may capture. A bank that bounces
+#: between screens, or a page that rewrites its own frame URLs in a loop, must
+#: not be able to fill a disk while an operator is looking for their phone.
+MAX_CHALLENGE_SHOTS = 25
+
+
+def _await_challenge(page, spec: Dict[str, Any], journal, capture,
+                     journal_path: str, timeout_ms: int,
+                     seen: Optional[set] = None, otp=None) -> None:
+    """See the 3-D Secure challenge through: auto-fill the code if we can read
+    it, otherwise hold the open browser for a HUMAN.
+
+    *** THE OUTCOME, NOT THE CHALLENGE, IS WHAT THIS GUARANTEES. *** It waits,
+    keeps every screen the bank shows (they cannot be revisited once a code is
+    spent), and notices the handback so the outcome can be read and journalled
+    rather than left "unknown". That contract is unchanged whether a code gets
+    typed automatically or not.
+
+    `otp` is an optional src.otp_relay.OtpInbox. When one is supplied AND the
+    challenge turns out to be a typed code AND a fresh SMS can be read, the
+    code is filled and submitted here. EVERY ONE of those can fail, and each
+    failure falls back to the same place: keep waiting, let a human finish in
+    the browser. Which is what this function did before auto-fill existed, so
+    the fallback path is the well-tested one rather than a new risk.
+
+    It does NOT press Continue on an out-of-band ("approve in your app")
+    challenge — that approval is the cardholder's, and clicking ahead of them
+    fails the authentication. See src/payment/otp.py.
+
+    `seen` carries signatures already captured by the caller, so the screen
+    photographed immediately after the click is not photographed again one
+    millisecond later under a second name.
+
+    Returns when the browser is back on VFS. Raises PaymentSubmitted when
+    nobody — bot or human — finished inside the window.
+    """
+    _journal_quietly(journal, {
+        "event": "payment_challenge",
+        "detail": "3-D Secure challenge raised; waiting for the cardholder",
+        "url": getattr(page, "url", ""),
+        "frames": _frame_urls(page),
+    })
+    # NOT NECESSARILY AN OTP, and saying "enter the OTP" to someone looking at
+    # a bank-app prompt is a confusing instruction at the worst moment.
+    # Observed live on AE/NOR 2026-10-14: Mashreq's ACS served an OUT-OF-BAND
+    # challenge — approve in the bank's app, then press Continue. There was no
+    # code to type and no field to type it into. Which method an issuer picks
+    # is the issuer's choice and can differ per card and per transaction, so
+    # the instruction names the screen rather than the method.
+    log.warning("=" * 70)
+    log.warning("  3-D SECURE: FINISH THE BANK'S CHECK IN THE OPEN BROWSER.")
+    log.warning("  (an OTP to type, or an approval in your banking app — "
+                "whichever your bank shows)")
+    if otp is not None:
+        # Said as an assist, not as a promise: the SIM may be elsewhere, the
+        # relay may be down, and the issuer may not be asking for a code at
+        # all. An operator who reads "the bot will handle it" and walks away
+        # from a challenge that needs their phone loses the booking.
+        log.warning("  An SMS relay is configured and will try to type a "
+                    "texted code automatically —")
+        log.warning("  DO NOT RELY ON IT. Stay with the browser: an app "
+                    "approval still needs you.")
+    log.warning(f"  Waiting up to {_human_wait(timeout_ms)}. Do not close it.")
+    log.warning("=" * 70)
+
+    # MUTATED IN PLACE when the caller supplies one, deliberately: the caller
+    # captures the screen before this is entered and again after it returns,
+    # and all three have to agree on what has already been photographed.
+    if seen is None:
+        seen = set()
+    shots = 0
+    otp_attempts = 0
+    max_otp_attempts = _otp_max_attempts(spec)
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        # THE HANDBACK IS CHECKED FIRST, and that ordering is the difference
+        # between the return page being filed as 'otp_03' and as
+        # 'challenge_returned'. This loop photographs CHALLENGE screens; the
+        # page VFS comes back on is the caller's to label, and a name that
+        # says what a file is worth more than one more numbered screenshot.
+        if _returned_to_merchant(page, spec):
+            log.info(f"  gateway handed back to VFS: {page.url}")
+            return
+        signature = _screen_signature(page)
+        if (signature not in seen and capture is not None
+                and shots < MAX_CHALLENGE_SHOTS):
+            seen.add(signature)
+            shots += 1
+            try:
+                capture(page, f"otp_{shots:02d}")
+            except Exception as e:                          # noqa: BLE001
+                log.warning(f"  could not capture the challenge screen: {e}")
+
+        # ── AUTO-FILL, IF ALL OF IT LINES UP ────────────────────────────────
+        # Deliberately AFTER the handback check and the capture: a code typed
+        # into a screen we never photographed loses the only evidence of what
+        # the bank asked, and the handback must win over everything.
+        #
+        # The attempt cap is the point of this block. Banks lock a card after
+        # a few wrong codes, so a loop that retried for the full ten minutes
+        # would turn a parsing bug into a dead card. Two tries, then the
+        # human — who is the fallback for every other failure here anyway.
+        if otp is not None and otp_attempts < max_otp_attempts:
+            code = otp.poll()
+            if code:
+                otp_attempts += 1
+                from src.payment import otp as payment_otp
+
+                filled = payment_otp.fill_and_submit(page, spec, code)
+                _journal_quietly(journal, {
+                    "event": "payment_otp_filled" if filled
+                             else "payment_otp_fill_failed",
+                    # The code itself is NEVER journalled. state/payments.jsonl
+                    # is a durable file an operator greps; a live OTP in it is
+                    # a secret written down for no reason, and by the time
+                    # anyone reads the row the code is spent anyway.
+                    "detail": (f"attempt {otp_attempts}/{max_otp_attempts}, "
+                               f"{len(code)} digits from the SMS relay"),
+                    "url": getattr(page, "url", ""),
+                })
+                if filled:
+                    log.info("  code typed and submitted; waiting for the "
+                             "bank to answer")
+                else:
+                    log.warning(
+                        "  a code was read from SMS but could not be "
+                        "submitted to the bank's screen. Finish in the open "
+                        "browser.")
+                # Give the ACS a beat to navigate before the next handback
+                # check, so the loop does not photograph a half-submitted form.
+                _pause(page, 2000)
+                continue
+
+        if time.monotonic() >= deadline:
+            raise PaymentSubmitted(
+                "The payment was submitted and the 3-D Secure challenge was "
+                f"not completed within {_human_wait(timeout_ms)}. The browser "
+                "is still open on it. DO NOT RESUBMIT — check the bank and "
+                "the VFS account before doing anything else.", journal_path)
+        _pause(page, 1000)
+
+
+def _journal_quietly(journal, row: Dict[str, Any]) -> None:
+    if journal is None:
+        return
+    try:
+        journal(row)
+    except Exception as e:                                  # noqa: BLE001
+        log.error(f"could not journal {row.get('event')!r}: {e}")
+
+
+_INPUT_TAG = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
+_INPUT_VALUE = re.compile(
+    r"(\svalue=)(\"[^\"]*\"|'[^']*')", re.IGNORECASE)
+
+#: Input types whose `value` is a LABEL, not data — the text printed on the
+#: button. Blanking those costs real information and protects nothing: it is
+#: how a control gets addressed when its selectors are ambiguous, which on
+#: this portal is the normal case (VFS's own Cancel and Continue carry
+#: byte-identical class attributes, so the booking config addresses them by
+#: accessible name). A captured OTP page whose submit button reads value=""
+#: cannot be turned into a selector by whoever reads it next.
+_LABEL_INPUT_TYPES = ("submit", "button", "reset", "image")
+_INPUT_TYPE = re.compile(
+    r"""\stype=["']?([a-z]+)""", re.IGNORECASE)
+
+
+def _redact_input(match: "re.Match") -> str:
+    tag = match.group(0)
+    kind = _INPUT_TYPE.search(tag)
+    if kind and kind.group(1).lower() in _LABEL_INPUT_TYPES:
+        return tag
+    return _INPUT_VALUE.sub(r'\1""', tag)
+
+
+def redact_html(html: str, scrub: List[str] = ()) -> str:
+    """Blank every <input value> and remove any known secret from markup.
+
+    The OTP pages sit on the same tab as the filled card form, and whatever
+    the human types into the OTP box is in the DOM too. Neither belongs in a
+    file under runs/.
+
+    Button LABELS survive — see _LABEL_INPUT_TYPES. Everything else is blanked
+    whether or not it looks sensitive, because the whole point is not having to
+    decide: a hidden field holding an authentication token and a text field
+    holding an OTP are indistinguishable from the markup, and this runs on
+    pages nobody has seen before.
+    """
+    html = _INPUT_TAG.sub(_redact_input, html or "")
+    for secret in scrub or ():
+        if secret and len(secret) >= 3:
+            html = html.replace(secret, "[redacted]")
+    return html
+
+
+def capture_screen(page, directory: str, label: str,
+                   scrub: List[str] = ()) -> List[str]:
+    """Screenshot + redacted DOM of the page AND every frame in it.
+
+    Frames matter here more than anywhere: the bank's OTP form is usually an
+    iframe, and page.content() of the parent shows only an empty <iframe>.
+    Best-effort throughout; returns the paths written.
+    """
+    import io
+    import os
+
+    os.makedirs(directory, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    written: List[str] = []
+
+    shot = os.path.join(directory, f"{stamp}_{label}.png")
+    try:
+        page.screenshot(path=shot, full_page=True, timeout=5000)
+        written.append(shot)
+    except Exception as e:                                  # noqa: BLE001
+        log.warning(f"  could not screenshot '{label}': {e}")
+
+    frames = []
+    try:
+        frames = list(page.frames)
+    except Exception:                                       # noqa: BLE001
+        pass
+    for index, frame in enumerate(frames or [page]):
+        try:
+            url = frame.url or ""
+            if url == "about:blank":
+                continue
+            html = redact_html(frame.content(), scrub)
+        except Exception as e:                              # noqa: BLE001
+            log.debug(f"  frame {index} unreadable: {e}")
+            continue
+        name = f"{stamp}_{label}" + ("" if index == 0 else f"_frame{index}")
+        path = os.path.join(directory, f"{name}.html")
+        try:
+            with io.open(path, "w", encoding="utf-8") as fh:
+                fh.write(f"<!-- captured from: {url} -->\n")
+                fh.write(html)
+            written.append(path)
+        except Exception as e:                              # noqa: BLE001
+            log.warning(f"  could not write {path}: {e}")
+
+    log.info(f"  captured '{label}' ({len(written)} files) -> {directory}")
+    return written
 
 
 #: VFS states the payment outcome IN THE RETURN URL, as a query parameter.
@@ -357,8 +711,38 @@ def read_outcome(page) -> Dict[str, Any]:
     return out
 
 
+def _otp_timeout(spec: Dict[str, Any]) -> int:
+    """How long a human gets to type the OTP, from the processor's config."""
+    seconds = spec.get("otp_timeout_seconds")
+    try:
+        ms = int(float(seconds) * 1000)
+    except (TypeError, ValueError):
+        return OTP_TIMEOUT_MS
+    return ms if ms > 0 else OTP_TIMEOUT_MS
+
+
+#: How many codes may be typed before the bot stops trying and leaves it to a
+#: human. Two, because banks lock a card after a small number of wrong codes
+#: and the cost of stopping early is a fallback that already works.
+MAX_OTP_ATTEMPTS = 2
+
+
+def _otp_max_attempts(spec: Dict[str, Any]) -> int:
+    """From the processor's config, clamped. Zero disables auto-fill for one
+    processor without touching the relay or the route."""
+    value = spec.get("otp_max_attempts", MAX_OTP_ATTEMPTS)
+    try:
+        attempts = int(value)
+    except (TypeError, ValueError):
+        return MAX_OTP_ATTEMPTS
+    # Never unbounded, whatever the file says. A config typo must not be able
+    # to spend a card's retry budget.
+    return max(0, min(attempts, 3))
+
+
 def submit_payment(page, spec: Dict[str, Any], journal=None,
-                   timeout_ms: int = SETTLE_TIMEOUT_MS) -> str:
+                   timeout_ms: int = SETTLE_TIMEOUT_MS, capture=None,
+                   otp_timeout_ms: Optional[int] = None, otp=None) -> str:
     """Submit the payment. THE IRREVERSIBLE CALL.
 
     Raises PaymentSubmitted in every case where the click has happened —
@@ -368,8 +752,25 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
     `journal` is a callable taking one dict and returning a path. It MUST have
     fsync'd before returning: it is the only record that survives the process
     being killed mid-click.
+
+    `capture` is an optional callable (page, label) -> anything, used to keep
+    the screens the gateway and the bank show after the click. It exists
+    because those screens CANNOT BE REVISITED: the OTP page is dead the moment
+    the code is spent, and the slot is gone, so a run that does not keep them
+    has lost the only evidence of what happened. Best-effort — a capture that
+    fails never changes the outcome of a payment.
+
+    `otp_timeout_ms` is how long a HUMAN gets at the 3-D Secure screen,
+    defaulting to the processor's `otp_timeout_seconds`. Pass 0 in tests, or
+    they wait ten real minutes.
+
+    `otp` is an optional src.otp_relay.OtpInbox. It is ARMED HERE, immediately
+    before the click, rather than by the caller — see the comment at the arm()
+    call. Without one, the 3-D Secure path behaves exactly as it always has.
     """
     submit = spec.get("submit") or "input[type=submit]"
+    if otp_timeout_ms is None:
+        otp_timeout_ms = _otp_timeout(spec)
 
     if _looks_like_challenge(page, spec):
         raise ChallengeRequired(
@@ -396,6 +797,24 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
                 f"Refusing to submit a payment that cannot be journalled: {e}"
             ) from e
 
+    # ─────────── ARM THE SMS INBOX. AS LATE AS POSSIBLE. ───────────
+    # Every second between arming and the click is a second in which an SMS
+    # from an EARLIER attempt could land inside the window and be typed. The
+    # bank cannot text a code for a payment that has not been submitted, so
+    # arming here means the first eligible message is necessarily this
+    # payment's. Doing it in the caller — before filling the card, say — would
+    # widen that window to a minute for no benefit whatsoever.
+    #
+    # Best-effort: a relay that cannot be armed must not stop a payment that
+    # is otherwise ready. It only costs the auto-fill.
+    if otp is not None:
+        try:
+            otp.arm()
+        except Exception as e:                              # noqa: BLE001
+            log.warning(f"  could not arm the SMS relay ({e}); the 3-D "
+                        "Secure code will have to be typed by hand.")
+            otp = None
+
     log.warning("SUBMITTING PAYMENT — this cannot be undone.")
     try:
         page.locator(submit).first.click(timeout=30000)
@@ -408,22 +827,75 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
             f"clicked: {e}") from e
 
     # ─────────── EVERYTHING BELOW HERE IS READ-ONLY. ───────────
+    #
+    # NETWORKIDLE IS NOT A RELIABLE SETTLE SIGNAL ON A 3-D SECURE CHALLENGE.
+    # Cardinal's step-up iframe polls the ACS while it waits for the OTP, so the
+    # page may never go idle for as long as the human is typing — a timeout here
+    # means "still busy", which on this path is the NORMAL state, not a lost
+    # response. Raising on it would abandon a payment that is mid-challenge and
+    # report an unknown outcome that the browser is about to show us.
+    #
+    # So the timeout is recorded, the screen is looked at, and only a timeout
+    # with NO challenge on screen is treated as a gateway that never answered.
     try:
         page.wait_for_load_state("networkidle", timeout=timeout_ms)
     except Exception as e:                                  # noqa: BLE001
-        raise PaymentSubmitted(
-            "The payment was submitted but the gateway did not respond in "
-            f"{timeout_ms // 1000}s. DO NOT RESUBMIT. Check the gateway or the "
-            f"bank for the outcome. ({e})", journal_path) from e
+        if not _challenge_showing(page, spec):
+            raise PaymentSubmitted(
+                "The payment was submitted but the gateway did not respond in "
+                f"{timeout_ms // 1000}s. DO NOT RESUBMIT. Check the gateway or "
+                f"the bank for the outcome. ({e})", journal_path) from e
+        log.info(f"  gateway still busy after {timeout_ms // 1000}s, and a "
+                 "3-D Secure challenge is on screen — that is the challenge "
+                 "polling, not a lost response.")
 
-    if _looks_like_challenge(page, spec):
-        _record_outcome(journal, {"outcome": OUTCOME_UNKNOWN,
-                                  "detail": "3-D Secure challenge raised",
-                                  "url": getattr(page, "url", "")})
-        raise PaymentSubmitted(
-            "The payment was submitted and the issuer raised a 3-D Secure "
-            "challenge. A human must complete the OTP in the open browser. "
-            "DO NOT RESUBMIT.", journal_path)
+    # ONE FILE SET PER DISTINCT SCREEN, no matter how many times the code
+    # looks. The live run of 2026-10-14 wrote the same screen twice at BOTH
+    # ends — 'submitted' and 'otp_01' in the same second, then 'otp_03' and
+    # 'challenge_returned' three seconds apart — because three separate places
+    # each capture "the current page" and none of them knew about the others.
+    # Ten redundant files in the one directory somebody reads when a payment
+    # has gone wrong. The set is shared with _await_challenge, which mutates
+    # it, so all three agree.
+    captured: set = set()
+
+    def capture_once(label: str) -> None:
+        """Capture `label` unless this exact screen is already on disk."""
+        if capture is None:
+            return
+        signature = _screen_signature(page)
+        if signature in captured:
+            log.debug(f"  '{label}' is the screen already captured — skipped")
+            return
+        captured.add(signature)
+        try:
+            capture(page, label)
+        except Exception as e:                              # noqa: BLE001
+            # Evidence is worth a lot. It is not worth abandoning a payment
+            # that has already been submitted.
+            log.warning(f"  could not capture '{label}': {e}")
+
+    # THE FIRST SCREEN AFTER THE IRREVERSIBLE CLICK. Taken before anything is
+    # decided about it: whatever the gateway did with the payment, this is the
+    # page that says so, and it is not reachable again.
+    capture_once("submitted")
+
+    if _challenge_showing(page, spec):
+        # HAND OVER, DO NOT GIVE UP. The old code journalled "unknown" and
+        # raised here, which threw away the actual outcome: the OTP is typed
+        # seconds later, the gateway returns to VFS with PaymentStatus in the
+        # URL, and that is the answer this journal row exists to carry. The
+        # bot still never types the OTP — it waits for the human and then
+        # READS.
+        _await_challenge(page, spec, journal, capture, journal_path,
+                         otp_timeout_ms, seen=captured, otp=otp)
+        try:
+            page.wait_for_load_state("load", timeout=timeout_ms)
+        except Exception as e:                              # noqa: BLE001
+            # Back on VFS and readable already — the outcome is in the URL,
+            # which does not need the page to have finished loading.
+            log.debug(f"Return page load state not confirmed: {e}")
+        capture_once("challenge_returned")
 
     # ── CLOSE THE JOURNAL ROW. ──────────────────────────────────────────────
     # Without this every payment ever made stays in `unanswered()` forever:

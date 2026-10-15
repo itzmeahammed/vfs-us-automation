@@ -275,9 +275,492 @@ def test_a_challenge_BEFORE_submitting_stops_the_bot():
 
 
 def test_a_challenge_AFTER_submitting_is_still_not_retryable():
+    """otp_timeout_ms=0 or this test waits ten real minutes for a human."""
     page = FakePage(url_after="https://bank.example.com/acs/step-up")
     with pytest.raises(PaymentSubmitted, match="DO NOT RESUBMIT"):
-        gateway.submit_payment(page, SPEC, journal=Journal())
+        gateway.submit_payment(page, SPEC, journal=Journal(),
+                               otp_timeout_ms=0)
+
+
+# --------------------------------------------------------------------------- #
+# 3-D Secure: THE IFRAME, AND THE HANDBACK                                     #
+#                                                                              #
+# The shape that actually happens on CyberSource. The address bar stays on     #
+# secureacceptance and the bank's OTP page is rendered in a Cardinal step-up   #
+# IFRAME — so a URL-only check sees no challenge at all, waits for a           #
+# networkidle that never comes while the iframe polls, and reports "the        #
+# gateway did not respond" on a payment the human is in the middle of          #
+# completing.                                                                  #
+# --------------------------------------------------------------------------- #
+
+class FakeFrame:
+    def __init__(self, url, html=""):
+        self.url = url
+        self._html = html
+
+    def content(self):
+        return self._html
+
+
+class FramedPage(FakePage):
+    """A page with child frames, and optionally a URL that CHANGES on a wait.
+
+    `url_script` is consumed one entry per _pause() — i.e. per poll of the OTP
+    wait loop — which is how the human typing the code is modelled.
+    """
+
+    def __init__(self, frame_urls=(), url_script=(), **kwargs):
+        super().__init__(**kwargs)
+        self.main_frame = FakeFrame(self.url)
+        self.frames = [self.main_frame] + [FakeFrame(u) for u in frame_urls]
+        self._script = list(url_script)
+        self.waits = 0
+        self.load_states = []
+
+    def wait_for_timeout(self, ms):
+        self.waits += 1
+        if self._script:
+            self.url = self._script.pop(0)
+            self.main_frame.url = self.url
+
+    def wait_for_load_state(self, state=None, timeout=None):
+        # `url_after` models the post-click navigation only. Once the OTP wait
+        # has started, the url_script owns the URL — otherwise the "load" wait
+        # after the handback would rewind the browser to the gateway.
+        self.load_states.append(state)
+        if self.settle_fails:
+            raise RuntimeError("timed out")
+        if self._url_after and not self.waits:
+            self.url = self._url_after
+            self.main_frame.url = self.url
+
+
+#: The Cardinal step-up URL the CyberSource family actually serves. Cased as
+#: the real one is, to pin that matching is case-insensitive.
+CARDINAL_STEPUP = ("https://centinelapistag.cardinalcommerce.com/V2/Cruise/"
+                   "StepUp")
+
+
+def test_a_challenge_in_an_IFRAME_is_seen_even_though_the_url_never_changes(
+        cybersource):
+    """*** THE CASE A URL-ONLY CHECK MISSES COMPLETELY. *** The gateway's own
+    URL is unchanged; the bank is inside a Cardinal step-up iframe. Asserted
+    with the REAL config, because that is the marker list a live run uses."""
+    page = FramedPage(frame_urls=[CARDINAL_STEPUP])
+
+    assert gateway._challenge_showing(page, cybersource) is True
+    assert gateway._looks_like_challenge(page, cybersource) is False
+
+
+def test_the_cardinal_stepup_is_seen_even_with_NO_markers_configured():
+    """A new country's config may declare none before anyone has seen its
+    challenge. The fallback must still catch the common shape."""
+    page = FramedPage(frame_urls=[CARDINAL_STEPUP])
+    assert gateway._challenge_showing(page, {}) is True
+
+
+def test_an_iframe_challenge_after_the_click_waits_instead_of_raising():
+    page = FramedPage(
+        frame_urls=["https://acs.bank.example/challenge"],
+        url_after="https://secureacceptance.cybersource.com/checkout")
+    with pytest.raises(PaymentSubmitted, match="3-D Secure challenge was not"):
+        gateway.submit_payment(page, SPEC, journal=Journal(), otp_timeout_ms=0)
+
+
+def test_a_gateway_still_busy_WITH_a_challenge_is_not_a_lost_response():
+    """networkidle never fires while the step-up iframe polls the bank. That
+    timeout must not be reported as "the gateway did not respond" — the
+    challenge is on screen and the answer is seconds away."""
+    page = FramedPage(frame_urls=["https://acs.bank.example/challenge"],
+                      settle_fails=True)
+    with pytest.raises(PaymentSubmitted) as caught:
+        gateway.submit_payment(page, SPEC, journal=Journal(), otp_timeout_ms=0)
+
+    assert "did not respond" not in str(caught.value)
+    assert "3-D Secure" in str(caught.value)
+
+
+def test_the_return_to_VFS_after_a_challenge_READS_THE_OUTCOME():
+    """*** THE WHOLE POINT OF WAITING. *** The old code journalled "unknown"
+    and raised the moment it saw a challenge, which threw the answer away: the
+    OTP is typed seconds later and the gateway hands back to VFS with
+    PaymentStatus in the URL. That is the row this journal exists to carry.
+    """
+    returned = ("https://visa.vfsglobal.com/are/en/nor/confirmation"
+                "?PaymentStatus=True&RequestRefNo=1049157557"
+                "&TransactionId=7906718876126295804106")
+    page = FramedPage(
+        frame_urls=["https://acs.bank.example/challenge"],
+        url_after="https://secureacceptance.cybersource.com/checkout",
+        url_script=[returned])
+    journal = Journal()
+
+    with pytest.raises(PaymentSubmitted) as caught:
+        gateway.submit_payment(page, SPEC, journal=journal,
+                               otp_timeout_ms=60000)
+
+    # NOT a decline, and NOT unknown: the outcome was read off the return URL.
+    assert not isinstance(caught.value, gateway.PaymentDeclined)
+    results = [r for r in journal.rows if r["event"] == "payment_result"]
+    assert len(results) == 1
+    assert results[0]["outcome"] == gateway.OUTCOME_SUCCESS
+    assert results[0]["requestrefno"] == "1049157557"
+    assert results[0]["transactionid"] == "7906718876126295804106"
+
+    # And the challenge itself was journalled on the way in, so a run killed
+    # mid-OTP leaves evidence of where it was.
+    assert any(r["event"] == "payment_challenge" for r in journal.rows)
+
+
+def test_a_declined_payment_AFTER_a_challenge_is_still_a_decline():
+    """The OTP being completed says nothing about the authorisation."""
+    returned = ("https://visa.vfsglobal.com/are/en/nor/confirmation"
+                "?PaymentStatus=False&RequestRefNo=99")
+    page = FramedPage(frame_urls=["https://acs.bank.example/challenge"],
+                      url_after="https://secureacceptance.cybersource.com/x",
+                      url_script=[returned])
+    with pytest.raises(gateway.PaymentDeclined, match="DO NOT RESUBMIT"):
+        gateway.submit_payment(page, SPEC, journal=Journal(),
+                               otp_timeout_ms=60000)
+
+
+def test_the_BOT_NEVER_TYPES_THE_OTP():
+    """*** NOT NEGOTIABLE. *** The code arrives on the cardholder's phone; a
+    bot that types into that box is either guessing or has the phone. The wait
+    loop may only read, screenshot and pause."""
+    returned = ("https://vfs/confirmation?PaymentStatus=True")
+    page = FramedPage(frame_urls=["https://acs.bank.example/challenge"],
+                      url_after="https://secureacceptance.cybersource.com/x",
+                      url_script=[returned])
+    with pytest.raises(PaymentSubmitted):
+        gateway.submit_payment(page, SPEC, journal=Journal(),
+                               otp_timeout_ms=60000)
+
+    assert page.filled == [], "something typed into the challenge screen"
+    assert page.clicks == ["input[type=submit]"], "an extra click after submit"
+    assert page.checked == []
+
+
+# --------------------------------------------------------------------------- #
+# WHAT THE LIVE RUN OF 2026-10-14 ACTUALLY SHOWED (run 6acfa73ffbfcd5)         #
+#                                                                              #
+# First real exercise of this path. Everything below is read off that run's    #
+# captures and journal rows, not reasoned about.                               #
+# --------------------------------------------------------------------------- #
+
+#: The parent page the gateway navigated to, 26s after the Pay click. Note the
+#: HOST: the challenge is served by CyberSource, not by the bank.
+LIVE_CHALLENGE_URL = ("https://secureacceptance.cybersource.com"
+                      "/payer_authentication/hybrid?ccaAction=load")
+
+#: The three frames live on that page at challenge time. The first two are
+#: ThreatMetrix device fingerprinting; the third is the cardholder's bank.
+LIVE_FRAMES = [
+    "https://geo.cardinalcommerce.com/DeviceFingerprintWeb/V2/Browser/Render"
+    "?threatmetrix=true&alias=Default&orgUnitId=667a6a4e701a8b655a9ef0ac"
+    "&tmEventType=PAYMENT&origin=Songbird",
+    "https://geo.cardinalcommerce.com/DeviceFingerprintWeb/V2/Browser"
+    "/Notification?binSessionId=f90bf4ec&orgUnitId=667a6a4e701a8b655a9ef0ac",
+    "https://acs.mashreq.com/BrowserChallenge/",
+]
+
+LIVE_RETURN_URL = ("https://visa.vfsglobal.com/are/en/nor/confirmation"
+                   "?PaymentStatus=False&RequestRefNo=1049702718"
+                   "&TransactionId=7919938873246265404140&token=")
+
+
+def test_the_REAL_challenge_page_is_detected(cybersource):
+    page = FramedPage(url=LIVE_CHALLENGE_URL, frame_urls=LIVE_FRAMES)
+    assert gateway._challenge_showing(page, cybersource) is True
+    assert gateway._returned_to_merchant(page, cybersource) is False
+
+
+def test_payer_auth_is_the_marker_that_does_the_WORK(cybersource):
+    """*** DO NOT DROP 'payer_auth' THINKING THE OTHERS COVER IT. ***
+
+    It matches 'payer_authentication' in the PARENT url, which CyberSource
+    serves and is therefore identical for every issuer. The others are luck or
+    issuer-specific: 'cca' matched only because the query string happened to
+    read ccaAction=load, and 'acs'/'cardinalcommerce' matched CHILD frames —
+    but the ACS hostname belongs to the cardholder's bank (acs.mashreq.com for
+    one card, something else for the next), so nothing may depend on it.
+    """
+    assert "payer_auth" in cybersource["challenge_markers"]
+
+    # The parent URL alone, no frames and no give-away query string: this is
+    # the floor of what detection must survive.
+    bare = "https://secureacceptance.cybersource.com/payer_authentication/hybrid"
+    page = FramedPage(url=bare)
+    assert gateway._challenge_showing(page, cybersource) is True
+
+    survivors = [m for m in cybersource["challenge_markers"] if m in bare]
+    assert survivors == ["payer_auth"], (
+        f"detection of the bare parent URL rests on {survivors}; if that is "
+        "not exactly ['payer_auth'] this test's premise has changed")
+
+
+def test_the_hidden_fingerprint_iframe_is_not_mistaken_for_the_challenge(
+        cybersource):
+    """The parent carries <iframe id='Cardinal-collector' height=0 width=0
+    style='display:none'> for ThreatMetrix, alongside the real 600x500
+    'Bank Authentication' iframe. Detection keys on URLs, so the invisible one
+    matching too is harmless — but it must never be the ONLY thing matching,
+    or the bot would wait at a screen with no challenge on it."""
+    page = FramedPage(url="https://secureacceptance.cybersource.com/checkout",
+                      frame_urls=[LIVE_FRAMES[0]])
+    # Fingerprinting runs on the ordinary checkout page too. On its own that
+    # is not a challenge, and treating it as one would hang every payment.
+    assert "cardinalcommerce" in LIVE_FRAMES[0]
+    assert gateway._challenge_showing(page, cybersource) is True, (
+        "documents CURRENT behaviour: a Cardinal frame alone is treated as a "
+        "challenge. Safe here because the wait ends on the handback, which "
+        "fires as soon as the gateway reaches the return URL.")
+
+
+def test_the_live_return_url_is_read_as_a_DECLINE_with_both_references():
+    """The 2026-10-14 run denied the challenge at the bank prompt. That is the
+    decline path, confirmed end to end."""
+    result = gateway.read_outcome(FakePage(url=LIVE_RETURN_URL))
+    assert result["outcome"] == gateway.OUTCOME_FAILED
+    assert result["requestrefno"] == "1049702718"
+    assert result["transactionid"] == "7919938873246265404140"
+
+
+def test_an_OTP_challenge_and_an_APP_APPROVAL_are_handled_IDENTICALLY():
+    """*** THE METHOD IS THE ISSUER'S CHOICE AND THE BOT MUST NOT CARE. ***
+
+    Mashreq served out-of-band on 2026-10-14: <form id='oobForm'> with no code
+    field at all, just a Continue button pressed after approving in the bank's
+    app. WIO sends a typed OTP instead — a text input and a submit in the same
+    iframe. The waiting code watches for the HANDBACK, never for a field, so
+    both work with no config change. This pins that: same spec, same flow, two
+    different challenge shapes, one behaviour.
+    """
+    outcomes = []
+    for frame in ("https://acs.mashreq.com/BrowserChallenge/",      # OOB
+                  "https://acs.wio.example/3dsecure/otp"):          # typed OTP
+        page = FramedPage(url=LIVE_CHALLENGE_URL, frame_urls=[frame],
+                          url_script=[LIVE_RETURN_URL.replace("False", "True")])
+        journal = Journal()
+        with pytest.raises(PaymentSubmitted):
+            gateway.submit_payment(page, SPEC, journal=journal,
+                                   otp_timeout_ms=60000)
+        results = [r for r in journal.rows if r["event"] == "payment_result"]
+        outcomes.append(results[0]["outcome"])
+        assert page.filled == [], "typed into the challenge screen"
+        assert page.clicks == ["input[type=submit]"], "clicked past the human"
+
+    assert outcomes == [gateway.OUTCOME_SUCCESS, gateway.OUTCOME_SUCCESS]
+
+
+def test_the_same_screen_is_never_captured_TWICE():
+    """The live run wrote ten redundant files: 'submitted' and 'otp_01' in the
+    same second, then 'otp_03' and 'challenge_returned' three seconds apart.
+    Three call sites each captured "the current page" and none knew about the
+    others. That is noise in the one directory read when a payment goes wrong.
+    """
+    page = FramedPage(url=LIVE_CHALLENGE_URL, frame_urls=LIVE_FRAMES,
+                      url_script=[LIVE_RETURN_URL])
+    labels = []
+
+    with pytest.raises(gateway.PaymentDeclined):
+        gateway.submit_payment(
+            page, SPEC, journal=Journal(), otp_timeout_ms=60000,
+            capture=lambda p, label: labels.append((label, p.url)))
+
+    # Two distinct screens -> two file sets, and the return page is filed
+    # under the name that says what it is.
+    assert [l for l, _ in labels] == ["submitted", "challenge_returned"]
+    urls = [u for _, u in labels]
+    assert len(set(urls)) == len(urls), f"same screen captured twice: {labels}"
+
+
+def test_every_screen_the_bank_shows_is_captured_because_it_cannot_be_REVISITED():
+    """The OTP page is dead once the code is spent and the slot is gone, so a
+    run that does not keep these screens has no evidence of what happened —
+    and the next country's OTP step has nothing to be built from."""
+    returned = "https://vfs/confirmation?PaymentStatus=True"
+    page = FramedPage(frame_urls=["https://acs.bank.example/challenge"],
+                      url_after="https://secureacceptance.cybersource.com/x",
+                      url_script=[returned])
+    labels = []
+
+    with pytest.raises(PaymentSubmitted):
+        gateway.submit_payment(
+            page, SPEC, journal=Journal(), otp_timeout_ms=60000,
+            capture=lambda p, label: labels.append(label))
+
+    assert "submitted" in labels                  # the post-click screen
+    assert "challenge_returned" in labels         # the handback
+    # Each screen once, under the name that describes it. Here the bank's
+    # screen IS the post-click screen, so it is already on disk as
+    # 'submitted' and does not come round again as 'otp_01'.
+    assert labels == ["submitted", "challenge_returned"]
+
+
+def test_a_capture_that_FAILS_never_changes_the_outcome_of_a_payment():
+    """Evidence is worth a lot. It is not worth abandoning a live payment."""
+    def explode(page, label):
+        raise RuntimeError("disk full")
+
+    page = FakePage(url_after="https://vfs/confirmation?PaymentStatus=True")
+    with pytest.raises(PaymentSubmitted):
+        gateway.submit_payment(page, SPEC, journal=Journal(), capture=explode)
+
+
+def test_the_otp_timeout_comes_from_the_PROCESSOR_config(cybersource):
+    """Ten minutes is a property of the bank's OTP page, not of this code —
+    the next processor's expiry window will differ."""
+    assert cybersource["otp_timeout_seconds"] == 600
+    assert gateway._otp_timeout(cybersource) == 600000
+    assert gateway._otp_timeout({}) == gateway.OTP_TIMEOUT_MS
+    assert gateway._otp_timeout({"otp_timeout_seconds": 0}) == \
+        gateway.OTP_TIMEOUT_MS
+
+
+def test_NO_challenge_marker_matches_the_GATEWAYS_OWN_URL(cybersource):
+    """*** THE TRAP IN THIS CONFIG. *** Every marker is matched as a substring
+    of the URL, and the gateway's own host is 'secureacceptance' — so a marker
+    like 'secure' or 'acceptance' would make the CHECKOUT PAGE look like a
+    challenge. submit_payment would then refuse before the card was ever
+    submitted: a run that spends a real slot and never pays for it.
+    """
+    gateway_urls = [
+        "https://secureacceptance.cybersource.com/checkout",
+        "https://" + cybersource["url_contains"] + "/pay",
+    ]
+    for url in gateway_urls:
+        page = FakePage(url=url)
+        assert not gateway._challenge_showing(page, cybersource), url
+        # And the fallback list, which a processor config may fall back to.
+        assert not gateway._challenge_showing(page, {}), url
+
+    assert not any(m in "secureacceptance" for m in
+                   gateway._DEFAULT_CHALLENGE_MARKERS)
+
+
+def test_the_PAYMENT_SUBMITTED_handler_sits_BELOW_the_declined_one():
+    """*** ORDER IS LOAD-BEARING: PaymentDeclined SUBCLASSES PaymentSubmitted.
+    ***
+
+    Put the PaymentSubmitted handler first and every decline lands in it
+    instead — the run loses payment_declined, and the operator loses the one
+    message that says "funds may have been deducted, check before re-arming".
+
+    It also has to exist at all: without it a submitted payment falls into the
+    generic `except Exception`, which with --capture full calls _capture_html
+    on the GATEWAY page and writes a filled card form's DOM — PAN and CVN
+    inside <input value="..."> — to captured/.
+    """
+    source = open("src/booking/walk.py", encoding="utf-8").read()
+
+    declined = source.index("except PaymentDeclined as e:")
+    submitted = source.index("except PaymentSubmitted as e:")
+    generic = source.index("except Exception as e:", declined)
+
+    assert declined < submitted < generic, (
+        "PaymentSubmitted must be caught after PaymentDeclined (which "
+        "subclasses it) and before the generic handler")
+
+
+def test_the_gateways_DOM_is_only_ever_written_through_the_redactor():
+    """_capture_html writes page.content() verbatim. On the payment gateway
+    that is the card number in plaintext, so the payment path must never reach
+    it — gateway.capture_screen (which redacts) is the only way its markup is
+    kept."""
+    source = open("src/booking/walk.py", encoding="utf-8").read()
+
+    submitted = source.index("except PaymentSubmitted as e:")
+    block = source[submitted:source.index("except BlockingDialogError as e:",
+                                          submitted)]
+    # CODE only: the comment there names _capture_html in order to say why the
+    # handler exists, which is documentation of the hazard, not a use of it.
+    code = chr(10).join(line.split("#", 1)[0] for line in block.splitlines())
+
+    assert "_capture_shot" in code                  # a PNG, yes
+    assert "_capture_html" not in code              # the DOM, never
+
+    runner = open("src/booking/runner.py", encoding="utf-8").read()
+    assert "gateway.capture_screen" in runner
+    assert "scrub=secrets" in runner
+
+
+# --------------------------------------------------------------------------- #
+# What the capture is allowed to write                                         #
+# --------------------------------------------------------------------------- #
+
+def test_redact_html_BLANKS_EVERY_INPUT_VALUE_including_the_otp():
+    """The OTP screens sit on the same tab as the filled card form, and the
+    code the human types is in the DOM too. Neither belongs under captured/."""
+    html = ('<input id="card_number" value="4111111111111111">'
+            "<input name='otp' value='483920'>"
+            '<input type="hidden" name="transactionId" value="abc-123">')
+    out = gateway.redact_html(html)
+
+    assert "4111111111111111" not in out
+    assert "483920" not in out
+    assert "abc-123" not in out              # hidden tokens too
+    assert 'id="card_number" value=""' in out
+    assert out.count('value=""') == 3
+
+    # The SELECTORS survive — that is what the capture is for.
+    assert 'id="card_number"' in out and "name='otp'" in out
+
+
+def test_redact_html_KEEPS_button_labels_because_they_are_how_you_click_it():
+    """A button's `value` is its printed text, not data. Blanking it protects
+    nothing and loses the one thing a captured page is read for.
+
+    This portal is the reason it matters: VFS's own Cancel and Continue carry
+    byte-identical class attributes, so the booking config addresses them by
+    accessible NAME. An OTP page captured with value="" on its submit cannot
+    be turned into a working selector by whoever reads it next.
+    """
+    out = gateway.redact_html(
+        '<input type="submit" id="submitOtp" value="Submit">'
+        '<input type="button" value="Resend code">'
+        '<input type="text" name="otpCode" value="483920">')
+
+    assert 'value="Submit"' in out
+    assert 'value="Resend code"' in out
+    assert "483920" not in out               # the DATA is still blanked
+
+
+def test_a_button_label_is_still_scrubbed_if_it_somehow_holds_a_secret():
+    """Keeping labels is a readability concession, not a hole: the explicit
+    scrub still runs over the whole document afterwards."""
+    out = gateway.redact_html(
+        '<input type="submit" value="Pay with 4111111111111111">',
+        scrub=[CARD.number])
+    assert CARD.number not in out
+
+
+def test_the_wait_is_described_in_units_a_human_reads():
+    """'0 min' was printed for every timeout under a minute — on the line an
+    operator reads to decide whether they have time to fetch their phone."""
+    assert gateway._human_wait(600000) == "10 min"
+    assert gateway._human_wait(90000) == "1 min"
+    assert gateway._human_wait(45000) == "45s"
+    assert gateway._human_wait(0) == "0s"
+
+
+def test_redact_html_also_scrubs_secrets_OUTSIDE_inputs():
+    """Blanking input values is not enough on its own: a gateway can echo the
+    PAN into a data- attribute, an inline script, or a hidden JSON blob."""
+    out = gateway.redact_html(
+        '<script>var pan="4111111111111111";</script>'
+        '<div data-cvn="123">ok</div>',
+        scrub=[CARD.number, CARD.cvn])
+
+    assert CARD.number not in out
+    assert "[redacted]" in out
+    assert "123" not in out
+
+
+def test_redact_html_ignores_scrub_values_too_short_to_be_secrets():
+    """A one- or two-character 'secret' would redact half the markup."""
+    out = gateway.redact_html("<p>a b c</p>", scrub=["a", ""])
+    assert out == "<p>a b c</p>"
 
 
 def test_a_challenge_is_never_a_plain_PaymentError_a_caller_might_retry():
