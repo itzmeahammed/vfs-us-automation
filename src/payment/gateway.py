@@ -416,22 +416,33 @@ MAX_CHALLENGE_SHOTS = 25
 
 def _await_challenge(page, spec: Dict[str, Any], journal, capture,
                      journal_path: str, timeout_ms: int,
-                     seen: Optional[set] = None) -> None:
-    """Hold the open browser while a HUMAN completes the 3-D Secure challenge.
+                     seen: Optional[set] = None, otp=None) -> None:
+    """See the 3-D Secure challenge through: auto-fill the code if we can read
+    it, otherwise hold the open browser for a HUMAN.
 
-    *** THE BOT NEVER COMPLETES THE CHALLENGE. *** Whatever the issuer asks
-    for — a code texted to the cardholder's phone, an approval in a banking
-    app — it is not something this process has or should have. All it does is
-    wait, keep every screen the bank shows (they cannot be revisited once a
-    code is spent), and notice the handback so the outcome can be read and
-    journalled rather than left "unknown".
+    *** THE OUTCOME, NOT THE CHALLENGE, IS WHAT THIS GUARANTEES. *** It waits,
+    keeps every screen the bank shows (they cannot be revisited once a code is
+    spent), and notices the handback so the outcome can be read and journalled
+    rather than left "unknown". That contract is unchanged whether a code gets
+    typed automatically or not.
+
+    `otp` is an optional src.otp_relay.OtpInbox. When one is supplied AND the
+    challenge turns out to be a typed code AND a fresh SMS can be read, the
+    code is filled and submitted here. EVERY ONE of those can fail, and each
+    failure falls back to the same place: keep waiting, let a human finish in
+    the browser. Which is what this function did before auto-fill existed, so
+    the fallback path is the well-tested one rather than a new risk.
+
+    It does NOT press Continue on an out-of-band ("approve in your app")
+    challenge — that approval is the cardholder's, and clicking ahead of them
+    fails the authentication. See src/payment/otp.py.
 
     `seen` carries signatures already captured by the caller, so the screen
     photographed immediately after the click is not photographed again one
     millisecond later under a second name.
 
-    Returns when the browser is back on VFS. Raises PaymentSubmitted when the
-    human never finishes inside the window.
+    Returns when the browser is back on VFS. Raises PaymentSubmitted when
+    nobody — bot or human — finished inside the window.
     """
     _journal_quietly(journal, {
         "event": "payment_challenge",
@@ -450,6 +461,15 @@ def _await_challenge(page, spec: Dict[str, Any], journal, capture,
     log.warning("  3-D SECURE: FINISH THE BANK'S CHECK IN THE OPEN BROWSER.")
     log.warning("  (an OTP to type, or an approval in your banking app — "
                 "whichever your bank shows)")
+    if otp is not None:
+        # Said as an assist, not as a promise: the SIM may be elsewhere, the
+        # relay may be down, and the issuer may not be asking for a code at
+        # all. An operator who reads "the bot will handle it" and walks away
+        # from a challenge that needs their phone loses the booking.
+        log.warning("  An SMS relay is configured and will try to type a "
+                    "texted code automatically —")
+        log.warning("  DO NOT RELY ON IT. Stay with the browser: an app "
+                    "approval still needs you.")
     log.warning(f"  Waiting up to {_human_wait(timeout_ms)}. Do not close it.")
     log.warning("=" * 70)
 
@@ -459,6 +479,8 @@ def _await_challenge(page, spec: Dict[str, Any], journal, capture,
     if seen is None:
         seen = set()
     shots = 0
+    otp_attempts = 0
+    max_otp_attempts = _otp_max_attempts(spec)
     deadline = time.monotonic() + timeout_ms / 1000.0
     while True:
         # THE HANDBACK IS CHECKED FIRST, and that ordering is the difference
@@ -478,6 +500,47 @@ def _await_challenge(page, spec: Dict[str, Any], journal, capture,
                 capture(page, f"otp_{shots:02d}")
             except Exception as e:                          # noqa: BLE001
                 log.warning(f"  could not capture the challenge screen: {e}")
+
+        # ── AUTO-FILL, IF ALL OF IT LINES UP ────────────────────────────────
+        # Deliberately AFTER the handback check and the capture: a code typed
+        # into a screen we never photographed loses the only evidence of what
+        # the bank asked, and the handback must win over everything.
+        #
+        # The attempt cap is the point of this block. Banks lock a card after
+        # a few wrong codes, so a loop that retried for the full ten minutes
+        # would turn a parsing bug into a dead card. Two tries, then the
+        # human — who is the fallback for every other failure here anyway.
+        if otp is not None and otp_attempts < max_otp_attempts:
+            code = otp.poll()
+            if code:
+                otp_attempts += 1
+                from src.payment import otp as payment_otp
+
+                filled = payment_otp.fill_and_submit(page, spec, code)
+                _journal_quietly(journal, {
+                    "event": "payment_otp_filled" if filled
+                             else "payment_otp_fill_failed",
+                    # The code itself is NEVER journalled. state/payments.jsonl
+                    # is a durable file an operator greps; a live OTP in it is
+                    # a secret written down for no reason, and by the time
+                    # anyone reads the row the code is spent anyway.
+                    "detail": (f"attempt {otp_attempts}/{max_otp_attempts}, "
+                               f"{len(code)} digits from the SMS relay"),
+                    "url": getattr(page, "url", ""),
+                })
+                if filled:
+                    log.info("  code typed and submitted; waiting for the "
+                             "bank to answer")
+                else:
+                    log.warning(
+                        "  a code was read from SMS but could not be "
+                        "submitted to the bank's screen. Finish in the open "
+                        "browser.")
+                # Give the ACS a beat to navigate before the next handback
+                # check, so the loop does not photograph a half-submitted form.
+                _pause(page, 2000)
+                continue
+
         if time.monotonic() >= deadline:
             raise PaymentSubmitted(
                 "The payment was submitted and the 3-D Secure challenge was "
@@ -658,9 +721,28 @@ def _otp_timeout(spec: Dict[str, Any]) -> int:
     return ms if ms > 0 else OTP_TIMEOUT_MS
 
 
+#: How many codes may be typed before the bot stops trying and leaves it to a
+#: human. Two, because banks lock a card after a small number of wrong codes
+#: and the cost of stopping early is a fallback that already works.
+MAX_OTP_ATTEMPTS = 2
+
+
+def _otp_max_attempts(spec: Dict[str, Any]) -> int:
+    """From the processor's config, clamped. Zero disables auto-fill for one
+    processor without touching the relay or the route."""
+    value = spec.get("otp_max_attempts", MAX_OTP_ATTEMPTS)
+    try:
+        attempts = int(value)
+    except (TypeError, ValueError):
+        return MAX_OTP_ATTEMPTS
+    # Never unbounded, whatever the file says. A config typo must not be able
+    # to spend a card's retry budget.
+    return max(0, min(attempts, 3))
+
+
 def submit_payment(page, spec: Dict[str, Any], journal=None,
                    timeout_ms: int = SETTLE_TIMEOUT_MS, capture=None,
-                   otp_timeout_ms: Optional[int] = None) -> str:
+                   otp_timeout_ms: Optional[int] = None, otp=None) -> str:
     """Submit the payment. THE IRREVERSIBLE CALL.
 
     Raises PaymentSubmitted in every case where the click has happened —
@@ -681,6 +763,10 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
     `otp_timeout_ms` is how long a HUMAN gets at the 3-D Secure screen,
     defaulting to the processor's `otp_timeout_seconds`. Pass 0 in tests, or
     they wait ten real minutes.
+
+    `otp` is an optional src.otp_relay.OtpInbox. It is ARMED HERE, immediately
+    before the click, rather than by the caller — see the comment at the arm()
+    call. Without one, the 3-D Secure path behaves exactly as it always has.
     """
     submit = spec.get("submit") or "input[type=submit]"
     if otp_timeout_ms is None:
@@ -710,6 +796,24 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
             raise PaymentError(
                 f"Refusing to submit a payment that cannot be journalled: {e}"
             ) from e
+
+    # ─────────── ARM THE SMS INBOX. AS LATE AS POSSIBLE. ───────────
+    # Every second between arming and the click is a second in which an SMS
+    # from an EARLIER attempt could land inside the window and be typed. The
+    # bank cannot text a code for a payment that has not been submitted, so
+    # arming here means the first eligible message is necessarily this
+    # payment's. Doing it in the caller — before filling the card, say — would
+    # widen that window to a minute for no benefit whatsoever.
+    #
+    # Best-effort: a relay that cannot be armed must not stop a payment that
+    # is otherwise ready. It only costs the auto-fill.
+    if otp is not None:
+        try:
+            otp.arm()
+        except Exception as e:                              # noqa: BLE001
+            log.warning(f"  could not arm the SMS relay ({e}); the 3-D "
+                        "Secure code will have to be typed by hand.")
+            otp = None
 
     log.warning("SUBMITTING PAYMENT — this cannot be undone.")
     try:
@@ -784,7 +888,7 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
         # bot still never types the OTP — it waits for the human and then
         # READS.
         _await_challenge(page, spec, journal, capture, journal_path,
-                         otp_timeout_ms, seen=captured)
+                         otp_timeout_ms, seen=captured, otp=otp)
         try:
             page.wait_for_load_state("load", timeout=timeout_ms)
         except Exception as e:                              # noqa: BLE001

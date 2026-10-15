@@ -66,6 +66,17 @@ proxies.local.ini
 # Generated analytics report
 analytics_report.txt
 
+# The company payment card. Worse than a password in one specific way: a
+# password can be rotated by its owner in a minute, while a leaked PAN means
+# cancelling the card every booking in flight depends on. src/payment/card.py
+# REFUSES to read a card file that `git check-ignore` does not match, so these
+# rules are load-bearing, not advisory — deleting them disables the card file.
+# Matched by basename as well as path: the file is allowed to live anywhere.
+config/card.local.txt
+card.local.txt
+*.card.txt
+card.txt
+
 # Local secret overrides (see VFS_BOT_CONFIG_PATH in the README)
 config/config.local.ini
 *.local.ini

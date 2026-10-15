@@ -252,7 +252,8 @@ def card_problem() -> str:
         from src.payment import card as card_mod
         return "" if card_mod.load() is not None else (
             "no company card: set VFS_CARD_NUMBER, VFS_CARD_EXPIRY and "
-            "VFS_CARD_CVN for the user that runs the scheduled task")
+            "VFS_CARD_CVN for the user that runs the scheduled task, or "
+            "fill in config/card.local.txt")
     except Exception as exc:                                # noqa: BLE001
         return f"company card unusable: {exc}"
 

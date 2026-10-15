@@ -7,6 +7,7 @@ The card numbers below are the publicly published test numbers every payment
 processor documents (4111..., 3714...). They are not anyone's card.
 """
 
+import os
 from datetime import date
 
 import pytest
@@ -193,3 +194,236 @@ def test_the_masked_form_is_what_is_safe_to_print():
                 cvn="123", card_type="visa")
     assert card.masked == "visa ****1111"
     assert card.expiry_mm_yy == "11/29"
+
+
+# --------------------------------------------------------------------------- #
+# THE CARD FILE                                                                #
+#                                                                              #
+# A file is the source most likely to end up somewhere it should not be, so    #
+# most of these tests are about the refusals rather than the happy path.       #
+#                                                                              #
+# tmp_path lies outside any work tree, so `git check-ignore` exits 128 and the #
+# committable guard stands down. That is deliberate behaviour, and it is       #
+# asserted directly rather than relied on silently.                            #
+# --------------------------------------------------------------------------- #
+
+def _card_file(tmp_path, text, name="card.local.txt"):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_a_card_file_loads(tmp_path):
+    path = _card_file(tmp_path, "number = 4111 1111 1111 1111\n"
+                                "expiry = 11/29\n"
+                                "cvn = 123\n"
+                                "name = A COMPANY LTD\n")
+    card = card_mod.load({}, today=TODAY, card_file=path)
+    assert card.number == VISA
+    assert card.expiry_mm_yy == "11/29"
+    assert card.cvn == "123"
+    assert card.name == "A COMPANY LTD"
+    assert card.card_type == "visa"
+
+
+def test_comments_blank_lines_and_colons_are_accepted(tmp_path):
+    path = _card_file(tmp_path, "# the company card\n"
+                                "\n"
+                                "number: 4111-1111-1111-1111\n"
+                                "  expiry : 11/29   \n"
+                                "; a semicolon comment\n"
+                                'cvn = "123"\n')
+    assert card_mod.load({}, today=TODAY, card_file=path).number == VISA
+
+
+def test_the_full_variable_names_work_as_keys_too(tmp_path):
+    """One set of documentation has to cover both sources."""
+    path = _card_file(tmp_path, f"VFS_CARD_NUMBER = {VISA}\n"
+                                "VFS_CARD_EXPIRY = 11/29\n"
+                                "VFS_CARD_CVN = 123\n")
+    assert card_mod.load({}, today=TODAY, card_file=path).number == VISA
+
+
+def test_cvv_and_cardholder_aliases_work(tmp_path):
+    """The operator is reading a plastic card, which says CVV, not CVN."""
+    path = _card_file(tmp_path, f"pan = {VISA}\nexp = 11/29\ncvv = 123\n"
+                                "cardholder = A COMPANY LTD\n")
+    card = card_mod.load({}, today=TODAY, card_file=path)
+    assert card.cvn == "123" and card.name == "A COMPANY LTD"
+
+
+def test_a_notepad_byte_order_mark_does_not_break_the_first_key(tmp_path):
+    """Windows operators will write this file in Notepad."""
+    path = tmp_path / "card.local.txt"
+    path.write_text(f"number = {VISA}\nexpiry = 11/29\ncvn = 123\n",
+                    encoding="utf-8-sig")
+    assert card_mod.load({}, today=TODAY,
+                         card_file=str(path)).number == VISA
+
+
+def test_the_environment_beats_the_file_field_by_field(tmp_path):
+    """Exporting one value for one run must not require editing the file."""
+    path = _card_file(tmp_path, f"number = {VISA}\nexpiry = 11/29\n"
+                                "cvn = 123\nname = FROM FILE\n")
+    card = card_mod.load({"VFS_CARD_CVN": "321"}, today=TODAY,
+                         card_file=path)
+    assert card.cvn == "321"            # from the environment
+    assert card.number == VISA          # still from the file
+    assert card.name == "FROM FILE"
+
+
+def test_file_values_are_validated_exactly_like_environment_ones(tmp_path):
+    """The validation is the point. A file must not be a way around it."""
+    path = _card_file(tmp_path, "number = 4111111111111112\n"
+                                "expiry = 11/29\ncvn = 123\n")
+    with pytest.raises(CardError, match="Luhn"):
+        card_mod.load({}, today=TODAY, card_file=path)
+
+    expired = _card_file(tmp_path, f"number = {VISA}\nexpiry = 01/25\n"
+                                   "cvn = 123\n", name="old.card.txt")
+    with pytest.raises(CardError, match="expired"):
+        card_mod.load({}, today=TODAY, card_file=expired)
+
+
+def test_a_missing_discovered_file_is_not_an_error(tmp_path):
+    """No card file on a developer machine is an ordinary state."""
+    missing = str(tmp_path / "nope.txt")
+    assert card_mod.read_card_file(missing, required=False) == {}
+
+
+def test_a_missing_named_file_is_an_error(tmp_path):
+    """A typo'd VFS_CARD_FILE must not look identical to having no card."""
+    missing = str(tmp_path / "nope.txt")
+    with pytest.raises(CardError, match="No card file at"):
+        card_mod.load({"VFS_CARD_FILE": missing}, today=TODAY)
+
+
+def test_an_unknown_key_is_refused_by_name(tmp_path):
+    """Silently ignoring `cv2 = 123` means the CVN is silently missing."""
+    path = _card_file(tmp_path, f"number = {VISA}\nexpiry = 11/29\n"
+                                "cv2 = 123\n")
+    with pytest.raises(CardError, match="line 3: unknown key 'cv2'"):
+        card_mod.load({}, today=TODAY, card_file=path)
+
+
+def test_a_key_set_twice_is_refused(tmp_path):
+    path = _card_file(tmp_path, f"number = {VISA}\nnumber = {AMEX}\n")
+    with pytest.raises(CardError, match="set twice"):
+        card_mod.load({}, today=TODAY, card_file=path)
+
+
+def test_a_line_with_no_separator_is_refused_without_echoing_it(tmp_path):
+    path = _card_file(tmp_path, f"number = {VISA}\n{VISA}\n")
+    with pytest.raises(CardError) as caught:
+        card_mod.load({}, today=TODAY, card_file=path)
+    assert "line 2" in str(caught.value)
+    assert VISA not in str(caught.value)
+
+
+def test_a_file_error_never_quotes_a_value(tmp_path):
+    """Same rule as the environment: the error has to be actionable without
+    a copy of the card in it. This is the message someone pastes into chat."""
+    path = _card_file(tmp_path, "number = 4111111111111112\n"
+                                "expiry = 11/29\ncvn = 123\n")
+    with pytest.raises(CardError) as caught:
+        card_mod.load({}, today=TODAY, card_file=path)
+    assert "4111111111111112" not in str(caught.value)
+
+
+# ----------------------------- THE REFUSALS -------------------------------- #
+
+def test_a_card_file_git_would_let_you_commit_is_refused(tmp_path,
+                                                         monkeypatch):
+    """The whole reason a file is tolerable at all. A PAN in git history is
+    not removed by deleting the file — the remedy is cancelling the card."""
+    path = _card_file(tmp_path, f"number = {VISA}\nexpiry = 11/29\n"
+                                "cvn = 123\n")
+    monkeypatch.setattr(card_mod, "_git_ignores", lambda p: False)
+    with pytest.raises(CardError, match="NOT gitignored"):
+        card_mod.load({}, today=TODAY, card_file=path)
+
+
+def test_a_gitignored_card_file_is_accepted(tmp_path, monkeypatch):
+    path = _card_file(tmp_path, f"number = {VISA}\nexpiry = 11/29\n"
+                                "cvn = 123\n")
+    monkeypatch.setattr(card_mod, "_git_ignores", lambda p: True)
+    assert card_mod.load({}, today=TODAY, card_file=path).number == VISA
+
+
+def test_a_file_git_cannot_judge_is_accepted(tmp_path, monkeypatch):
+    """None means git is absent or the file is outside any work tree. A card
+    kept outside the repo is the BEST case and must not be refused."""
+    path = _card_file(tmp_path, f"number = {VISA}\nexpiry = 11/29\n"
+                                "cvn = 123\n")
+    monkeypatch.setattr(card_mod, "_git_ignores", lambda p: None)
+    assert card_mod.load({}, today=TODAY, card_file=path).number == VISA
+
+
+def test_the_real_repo_gitignores_the_default_card_file():
+    """Guards the .gitignore entry itself: delete it and the default path
+    stops being loadable, because _check_committable refuses it."""
+    assert card_mod._git_ignores(card_mod.DEFAULT_CARD_FILE) is not False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="st_mode is a fiction on NT")
+def test_a_world_readable_card_file_is_refused(tmp_path):
+    path = _card_file(tmp_path, f"number = {VISA}\nexpiry = 11/29\n"
+                                "cvn = 123\n")
+    os.chmod(path, 0o644)
+    with pytest.raises(CardError, match="readable by other users"):
+        card_mod.load({}, today=TODAY, card_file=path)
+
+    os.chmod(path, 0o600)
+    assert card_mod.load({}, today=TODAY, card_file=path).number == VISA
+
+
+# -------------------------- DISCOVERY / PRECEDENCE ------------------------- #
+
+def test_passing_an_env_dict_turns_off_file_discovery():
+    """Otherwise every other test in this file would start depending on
+    whether the machine running it happens to have a card file on disk."""
+    assert card_mod.resolve_card_file({}, explicit_env=True) is None
+    assert (card_mod.resolve_card_file({}, explicit_env=False)
+            == card_mod.DEFAULT_CARD_FILE)
+
+
+def test_an_explicitly_named_file_is_used_even_with_an_env_dict(tmp_path):
+    path = _card_file(tmp_path, f"number = {VISA}\nexpiry = 11/29\n"
+                                "cvn = 123\n")
+    assert card_mod.resolve_card_file({"VFS_CARD_FILE": path},
+                                      explicit_env=True) == path
+    assert card_mod.load({"VFS_CARD_FILE": path},
+                         today=TODAY).number == VISA
+
+
+def test_card_file_none_means_environment_only(tmp_path, monkeypatch):
+    """The escape hatch: a caller that wants nothing to do with disk."""
+    monkeypatch.setenv("VFS_CARD_FILE", _card_file(
+        tmp_path, f"number = {VISA}\nexpiry = 11/29\ncvn = 123\n"))
+    for name in ("VFS_CARD_NUMBER", "VFS_CARD_EXPIRY", "VFS_CARD_CVN"):
+        monkeypatch.delenv(name, raising=False)
+    assert card_mod.load(today=TODAY, card_file=None) is None
+
+
+def test_the_file_is_never_written_to(tmp_path, monkeypatch):
+    """Reading a card must not rewrite, normalise or even touch the file."""
+    text = f"number = {VISA}\nexpiry = 11/29\ncvn = 123\n"
+    path = _card_file(tmp_path, text)
+    monkeypatch.setattr(card_mod, "_git_ignores", lambda p: True)
+    card_mod.load({}, today=TODAY, card_file=path)
+    with open(path, encoding="utf-8") as fh:
+        assert fh.read() == text
+
+
+def test_the_card_file_path_is_not_a_secret_but_its_contents_are(tmp_path,
+                                                                 monkeypatch):
+    """The path appears in errors on purpose — it is how an operator finds
+    the file to fix. Nothing inside it may follow."""
+    path = _card_file(tmp_path, f"number = {VISA}\nexpiry = 11/29\n"
+                                "cvn = 999\nname = SECRET HOLDER\n")
+    monkeypatch.setattr(card_mod, "_git_ignores", lambda p: True)
+    card = card_mod.load({}, today=TODAY, card_file=path)
+    rendered = f"{card!r} {card}"
+    assert VISA not in rendered
+    assert "999" not in rendered
+    assert "SECRET HOLDER" not in rendered

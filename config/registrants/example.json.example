@@ -53,6 +53,12 @@
   "address_line_1": "FLAT 101, AL BARSHA TOWER",
   "address_line_2": "SHEIKH ZAYED ROAD, DUBAI",
 
+  "_comment_billing": "*** REQUIRED BY THE PAYMENT GATEWAY, NOT BY ANY WAITLIST PAGE. *** CyberSource marks city, country and postcode aria-required on the billing form, and that form comes AFTER the appointment is created on some routes (Norway) — so a client file missing these produces the worst outcome this system has: a real appointment, booked, that cannot be paid for. They were absent from this template until 2026-10-15, which is why tests/test_payment_gateway.py asserts every mandatory gateway field has a source on a real record. Add them to every client who might ever be booked, not just registered.",
+  "city": "Dubai",
+  "country_code": "AE",
+  "postcode": "000000",
+  "_comment_country_code": "ISO-2, and effectively fixed per route: the captured CyberSource country select offers exactly one option (AE), because the gateway is scoped to the applying country. Postcode is often not a real thing in the UAE — 000000 is what the portal accepts.",
+
   "_comment_passport_scan": "REQUIRED on portals that take the details from an uploaded document instead of typed fields (Italy). Two forms: \"managed\" to use the managed store (python -m src.waitlist documents add --registrant <id> --file <path>), or an absolute path to a file you keep yourself. PNG/JPG/PDF, under 2MB — validated before any browser launches. A managed document is DELETED automatically once the registration is confirmed.",
   "passport_scan": "managed",
 

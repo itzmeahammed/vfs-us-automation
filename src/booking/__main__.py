@@ -264,7 +264,8 @@ def _confirm_commit(args) -> bool:
     if card is None:
         print()
         print("  No card is configured, so the payment step cannot run. Set "
-              "VFS_CARD_NUMBER, VFS_CARD_EXPIRY and VFS_CARD_CVN.")
+              "VFS_CARD_NUMBER, VFS_CARD_EXPIRY and VFS_CARD_CVN, or fill "
+              "in config/card.local.txt (see the .example beside it).")
         return False
 
     try:

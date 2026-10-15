@@ -1,0 +1,43 @@
+# The company payment card.
+#
+# COPY THIS FILE, DO NOT EDIT IT:
+#
+#     cp config/card.local.txt.example config/card.local.txt
+#     chmod 600 config/card.local.txt          # POSIX only; required there
+#
+# config/card.local.txt is gitignored. This .example file is NOT — so it must
+# never hold a real value. The pre-commit hook blocks a commit that stages a
+# card file or a filled-in card number, but .gitignore and a hook only protect
+# you from an accident. They cannot protect you from editing this file.
+#
+# The bot reads this file ONLY if the VFS_CARD_* environment variables are not
+# set; anything exported wins per field. To keep the card somewhere other than
+# config/ (a USB key, an encrypted volume, your user profile — all better than
+# the repo), put it anywhere and point the bot at it:
+#
+#     VFS_CARD_FILE=/secure/volume/card.txt
+#
+# Check it loads, without starting a browser or charging anything:
+#
+#     python -m src.payment card
+#
+# ---------------------------------------------------------------------------
+# Keys: number, expiry, cvn, type, name. `#` starts a comment.
+# Aliases are accepted where a card says something else: cvv/cvc for cvn,
+# cardholder for name. Spaces and dashes in the number are stripped.
+# ---------------------------------------------------------------------------
+
+# Required. 12-19 digits; checked against Luhn before any browser starts.
+number = 4111 1111 1111 1111
+
+# Required. MM/YY or MM/YYYY. A card is valid THROUGH the last day of the month.
+expiry = 11/29
+
+# Required. 3 digits, or 4 for amex.
+cvn = 123
+
+# Optional. visa | mastercard | amex. Inferred from the number when omitted.
+# type = visa
+
+# Optional. The name printed on the card, for the gateway's billing form.
+# name = YOUR COMPANY LTD
