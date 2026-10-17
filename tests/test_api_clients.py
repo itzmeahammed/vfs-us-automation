@@ -35,6 +35,36 @@ HEADERS = {"X-Webhook-Secret-Token": os.environ["VFSAPI_SECRET_TOKEN"]}
 READY_ROUTE = "AE-CHE"
 READY_COMBO = "Dubai - SCHENGEN"
 
+
+def _route_with_waitlist_disabled():
+    """A route whose waitlist is switched off in config, resolved at import.
+
+    Naming a literal here is what broke three tests in this file: they pinned
+    AE-DEU because its waitlist was off when they were written, and commit
+    dc5f8a2 ("confirm DEU") turned it on. The assertions then described a route
+    that no longer matched, and the suite reported a safety guard as broken
+    when only the config had moved. Scanning means a config change relocates
+    these tests instead of failing them.
+
+    `_default.json` is the fallback template, not a route, so it is skipped.
+    """
+    candidates = []
+    for path in sorted((REPO_ROOT / "config" / "waitlist").glob("*.json")):
+        if path.stem.startswith("_"):
+            continue
+        try:
+            if json.loads(path.read_text(encoding="utf-8")).get("enabled") is False:
+                candidates.append(path.stem.upper())
+        except (OSError, ValueError):
+            continue
+    return candidates[0] if candidates else None
+
+
+#: None when every configured route has its waitlist enabled — in which case
+#: the "config says off" property is not observable and its tests skip rather
+#: than assert something they cannot see.
+WAITLIST_OFF_ROUTE = _route_with_waitlist_disabled()
+
 SECRET_PASSWORD = "sup3r-secret-vfs-password"
 
 
@@ -129,14 +159,23 @@ def test_ready_route_reports_its_combos(api):
     assert READY_COMBO in body["combos"]
 
 
-def test_disabled_route_is_not_ready_and_says_why(api):
-    """AE-DEU is disabled pending the known centre bug — say so, don't hide it."""
-    r = api.get("/v1/routes/AE-DEU/readiness", headers=HEADERS)
+@pytest.mark.skipif(WAITLIST_OFF_ROUTE is None,
+                    reason="every configured route has its waitlist enabled")
+def test_a_config_disabled_flow_is_not_ready_and_says_why(api):
+    """A flow switched off in config must say so, not merely report not-ready.
+
+    Asserted per FLOW rather than per route. Every configured route currently
+    has at least one ready flow, so route-level not-ready is only reachable for
+    an unknown route — which test_unknown_route_is_not_ready already covers.
+    The property worth guarding is that a DISABLED flow names the reason, so an
+    operator is not left guessing why a country will not register.
+    """
+    r = api.get(f"/v1/routes/{WAITLIST_OFF_ROUTE}/readiness", headers=HEADERS)
     assert r.status_code == 200
-    body = r.json()
-    assert body["ready"] is False
-    assert body["problems"], "a not-ready route must explain why"
-    assert any("enabled" in p["message"].lower() for p in body["problems"])
+    flow = r.json()["flows"]["waitlist"]
+    assert flow["ready"] is False
+    assert flow["problems"], "a not-ready flow must explain why"
+    assert any("enabled" in p["message"].lower() for p in flow["problems"])
 
 
 def test_unknown_route_is_not_ready(api):
@@ -191,7 +230,10 @@ def test_route_listing_reports_the_flow_per_country(api):
     by_id = {row["route"]: row for row in r.json()["routes"]}
     assert by_id[READY_ROUTE]["flow"] == "waitlist"
     assert by_id["AE-NOR"]["flow"] == "live"
-    assert by_id["AE-DEU"]["flow"] is None
+    # The AE-DEU spot-check that used to sit here asserted `flow is None` for a
+    # route with neither flow ready. No configured route is in that state any
+    # more, and the invariant below is the general form of the same claim, so
+    # pinning one country added nothing but a dependency on live config.
     for row in by_id.values():
         assert row["ready"] is (row["flow"] is not None)
         assert set(row["flows"]) == {"waitlist", "live"}
@@ -636,9 +678,17 @@ def test_resuming_restores_the_route(api, pauses):
     assert pauses.snapshot() == {}
 
 
+@pytest.mark.skipif(WAITLIST_OFF_ROUTE is None,
+                    reason="every configured route has its waitlist enabled")
 def test_resume_cannot_enable_what_the_config_has_off(api, pauses):
-    """AE-DEU's waitlist is disabled in config; the API must not turn it on."""
-    body = _patch_flow(api, "AE-DEU", "waitlist", enabled=True).json()
+    """A resume lifts a pause; it must never switch a flow on against config.
+
+    Structural rather than conditional: set_flow(enabled=True) only calls
+    route_pause.resume(), which can delete a pause key and nothing else, and
+    readiness is then recomputed from config. Both halves are asserted — that
+    nothing changed, and that the flow is still not ready.
+    """
+    body = _patch_flow(api, WAITLIST_OFF_ROUTE, "waitlist", enabled=True).json()
     assert body["changed"] is False
     assert body["readiness"]["flows"]["waitlist"]["ready"] is False
 

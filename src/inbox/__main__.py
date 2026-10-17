@@ -235,7 +235,11 @@ def cmd_reconcile(args) -> int:
     from src.inbox.watcher import run_pass
 
     print("Reading mailboxes for confirmation emails...")
-    result = run_pass()
+    # Without --apply this is a preview, so the pass must not mark the messages
+    # seen. It used to: the preview consumed the confirmations and the
+    # follow-up `--apply` it tells you to run then found nothing. See
+    # watcher.run_pass's docstring.
+    result = run_pass(persist=bool(args.apply))
     confirmations = result.confirmations()
     print(
         f"{result.mailboxes_checked} mailbox(es), "

@@ -290,13 +290,41 @@ def clear() -> None:
         logging.warning(f"Waitlist journal {JOURNAL_FILE} cleared.")
 
 
+class NotDanglingError(Exception):
+    """A resolve was aimed at a triple that is not awaiting a human.
+
+    Carries `current_status` (None when the triple has no history at all) so
+    the caller can say what it found instead of a flat "bad request".
+    """
+
+    def __init__(self, message: str, current_status: Optional[str] = None):
+        super().__init__(message)
+        self.current_status = current_status
+
+
 def resolve(route: str, combo: str, registrant_id: str,
-            status: str, reason: str = "") -> WaitlistResult:
+            status: str, reason: str = "",
+            reference: Optional[str] = None) -> WaitlistResult:
     """
     Human resolution of a dangling entry: records what was actually found on the
     VFS account, unblocking (or permanently blocking) the triple.
 
     Used by the CLI's `resolve` command after someone has checked the portal.
+
+    REFUSES anything that is not actually dangling. This used to validate only
+    the status VALUE, so it would accept any triple at all:
+
+      * Resolving a row that already said SUCCESS to FAILED was accepted, and
+        silenced both duplicate gates — so the next run registered that person
+        a SECOND time, for a VFS place they already held. The appended row was
+        self-contradictory too: status "failed" carrying a real VFS reference.
+      * Resolving a triple with NO history manufactured a success row, which
+        then permanently blocked that client on that route via gate 6b — with
+        no account and no reference to investigate with. A mistyped combo did
+        this silently, and the proxy accepts any combo label up to 80 chars.
+
+    Only PENDING and UNKNOWN rows are awaiting an answer (Status.NEEDS_ATTENTION),
+    so only those may be resolved.
     """
     if status not in (Status.SUCCESS, Status.FAILED):
         raise ValueError(
@@ -304,12 +332,35 @@ def resolve(route: str, combo: str, registrant_id: str,
             f"'{Status.FAILED}' (it did not); got '{status}'."
         )
     row = latest_for(route, combo, registrant_id)
+    if row is None:
+        raise NotDanglingError(
+            f"No registration history for {registrant_id!r} on {route} / "
+            f"{combo!r}, so there is nothing to resolve. Check the combo label "
+            "— resolving a triple that never ran would invent a result and "
+            "block this client on this route.")
+    current = str(row.get("status") or "")
+    if current not in Status.NEEDS_ATTENTION:
+        raise NotDanglingError(
+            f"{registrant_id!r} on {route} / {combo!r} is already settled as "
+            f"{current!r}, so it is not awaiting a human. Re-resolving a "
+            "settled row would unblock it and allow a duplicate registration.",
+            current_status=current)
+
+    # Carry the reference the operator actually read off the portal. Without a
+    # field for it, the console folded it into free prose and every downstream
+    # reader (the duplicate gates, the per-client rollup, the reconcile
+    # backfill) saw an empty reference for every human-resolved registration.
+    #
+    # Never carry one onto a FAILED row: "it did not register" plus a real VFS
+    # reference number is a contradiction, and that is what the old code wrote
+    # when it copied the prior row's reference forward unconditionally.
+    carried = reference or (row or {}).get("vfs_reference")
     result = WaitlistResult(
         route=route, combo=combo, registrant_id=registrant_id,
         status=status,
         account=(row or {}).get("account", ""),
         reason=reason or "resolved manually",
-        vfs_reference=(row or {}).get("vfs_reference"),
+        vfs_reference=carried if status == Status.SUCCESS else None,
     )
     result.finish(status, result.reason)
     append(result)

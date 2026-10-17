@@ -111,15 +111,67 @@ def read_all() -> list:
     return rows
 
 
+#: Events that record the gateway's answer to a submitted payment.
+#:
+#: `payment_confirmed` has no writer in this repo today (only gateway.py writes
+#: `payment_submitting` and `payment_result`). It is kept because an
+#: out-of-band reconciler is the obvious thing to add here — but such a writer
+#: MUST carry the original payment's `run_id`, or its row will not pair with
+#: the submit it answers and the submit will stay flagged.
+_ANSWERING_EVENTS = ("payment_result", "payment_confirmed")
+
+#: Submits whose row carries no `run_id` at all. `append()` sets one from the
+#: run context, so this should not happen — but a hand-edited or pre-`run_id`
+#: row must not silently vanish from the report, so it gets its own bucket
+#: rather than being dropped or merged with a real run.
+_NO_RUN_ID = object()
+
+
 def unanswered() -> list:
     """Rows saying a payment was submitted with no outcome recorded after it.
 
     THE FIRST THING TO CHECK after a run dies unexpectedly. Each of these is a
     payment that may have been charged, and none of them may be retried without
     a human confirming at the gateway.
+
+    Correlation is by `run_id`, PAIRED IN ORDER within each run.
+
+    This used to match on `booking_ref`, which is not a reference: runner.py
+    writes `reference or slot`, and the walk leaves the reference empty, so in
+    practice every row carries the appointment slot string — and the live
+    journal confirms it. Two different runs that pick the same first-available
+    slot therefore share a key. That made the most likely real retry — "the
+    payment failed, try again" — collapse into one key, so if the retry died
+    between the click and the gateway's answer, the earlier run's `payment_result`
+    marked the later submit as answered and this function returned nothing.
+    The console then renders "Every payment has a recorded outcome", which is
+    the one thing it must never say wrongly. Rows with an empty `booking_ref`
+    collapsed together for the same reason.
+
+    `run_id` is the right key: `append()` stamps every row with it, and it also
+    ties the row to the API job, the log lines and the screenshots folder.
+
+    Pairing in order rather than by set membership matters because one run can
+    submit more than once (a retry inside the same run). Set membership would
+    mark every submit in that run answered as soon as any one of them was. A
+    result pops the OLDEST still-open submit for its run, so a run with two
+    submits and one result correctly reports one unanswered payment.
     """
-    rows = read_all()
-    submitted = [r for r in rows if r.get("event") == "payment_submitting"]
-    answered = {r.get("booking_ref") for r in rows
-                if r.get("event") in ("payment_result", "payment_confirmed")}
-    return [r for r in submitted if r.get("booking_ref") not in answered]
+    pending: Dict[Any, list] = {}
+
+    # Ordered walk: the file is append-only, so file order is time order.
+    for row in read_all():
+        event = row.get("event")
+        if event not in ("payment_submitting",) + _ANSWERING_EVENTS:
+            continue
+        key = row.get("run_id") or _NO_RUN_ID
+        if event == "payment_submitting":
+            pending.setdefault(key, []).append(row)
+        elif pending.get(key):
+            pending[key].pop(0)
+
+    # Flatten back to a single list. Sorted by `at` so the report reads
+    # oldest-first regardless of how the runs interleaved in the file.
+    out = [row for queue in pending.values() for row in queue]
+    out.sort(key=lambda r: str(r.get("at") or ""))
+    return out

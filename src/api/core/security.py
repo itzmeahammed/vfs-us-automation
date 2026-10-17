@@ -130,6 +130,28 @@ _limiter = _RateLimiter(
     max_global_requests=_settings.rate_limit_global_requests,
 )
 
+#: A SEPARATE, much smaller budget for requests that failed authentication.
+#:
+#: The limiter above used to be checked before the token comparison, so an
+#: unauthenticated caller spent the same budget as the console. Verified live
+#: against the running bot with no token at all: the first 429 arrived at
+#: request 113, and because the per-IP bucket keys on the caller-supplied
+#: X-Forwarded-For, rotating that header moved the whole flood onto the GLOBAL
+#: ceiling — which counts the console's legitimate traffic too. Tripping it was
+#: itself the denial of service: every operator action then failed with
+#: "the bot is rate-limiting this server" while `GET /v1/health` kept
+#: answering, so the connection banner still reported the bot as up.
+#:
+#: Failed auth now spends only this bucket, and it is keyed on the real socket
+#: peer rather than a header, so header rotation cannot escape it.
+_AUTH_FAIL_MAX_PER_PEER = 20
+_AUTH_FAIL_MAX_GLOBAL = 60
+_auth_fail_limiter = _RateLimiter(
+    max_requests=_AUTH_FAIL_MAX_PER_PEER,
+    window_seconds=_settings.rate_limit_window_seconds,
+    max_global_requests=_AUTH_FAIL_MAX_GLOBAL,
+)
+
 
 def _client_ip(request: Request) -> str:
     """Best-effort client identity for rate limiting.
@@ -144,6 +166,43 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _peer_ip(request: Request) -> str:
+    """The actual socket peer, which the caller cannot forge.
+
+    Behind the tunnel this is loopback for everyone, so it is useless for
+    telling callers apart — but that is exactly what makes it the right key for
+    the failed-auth bucket: one shared, unforgeable ceiling on how much
+    unauthenticated noise this process will absorb, no matter how many
+    X-Forwarded-For values a flood invents.
+    """
+    return request.client.host if request.client else "unknown"
+
+
+def _too_many(settings: ApiSettings) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many requests. Slow down.",
+        headers={"Retry-After": str(settings.rate_limit_window_seconds)},
+    )
+
+
+async def rate_limit_only(request: Request) -> None:
+    """The rate limiter, without the token check.
+
+    Exists so an endpoint that is deliberately unauthenticated is still
+    bounded. `GET /v1/health` is public on purpose — so a tunnel can be probed
+    without handing out the token — but because the limiter lived inside
+    `require_token`, that endpoint had no ceiling at all, not even the global
+    one. Anyone who learned the tunnel URL could poll it without limit and
+    consume the worker pool the authenticated endpoints share.
+    """
+    settings: ApiSettings = get_settings()
+    if _limiter.check(_client_ip(request)) is not None:
+        log.warning("Rate limit exceeded (public endpoint) for %s on %s",
+                    _client_ip(request), request.url.path)
+        raise _too_many(settings)
+
+
 async def require_token(
     request: Request,
     x_webhook_secret_token: str | None = Security(_api_key_header),
@@ -156,8 +215,42 @@ async def require_token(
     settings: ApiSettings = get_settings()
     ip = _client_ip(request)
 
-    # Rate limit BEFORE the comparison so a flood of bad tokens is cheap to
-    # absorb and cannot be used to probe timing.
+    def _fail(reason: str) -> HTTPException:
+        """Charge a failed attempt to the strict bucket, then refuse.
+
+        The comparison runs BEFORE any limiter now. That is safe — and it is
+        what stops unauthenticated traffic from spending the console's budget.
+        `hmac.compare_digest` is constant time and costs nothing measurable, so
+        the original reason for limiting first ("a flood of bad tokens is cheap
+        to absorb and cannot be used to probe timing") still holds: the flood
+        is absorbed by _auth_fail_limiter, and the comparison leaks no timing.
+        """
+        log.warning("Auth failure (%s) from %s on %s", reason, ip, request.url.path)
+        tripped = _auth_fail_limiter.check(_peer_ip(request))
+        if tripped is not None:
+            # A flood of bad tokens. 429 rather than 401 so it is obvious in
+            # the log that this is volume, not one misconfigured caller.
+            log.warning("Failed-auth rate limit exceeded (%s) on %s",
+                        tripped, request.url.path)
+            return _too_many(settings)
+        return HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_AUTH_FAILED_DETAIL,
+        )
+
+    if not x_webhook_secret_token:
+        raise _fail("header absent")
+
+    # Constant-time comparison. Both sides encoded to bytes so a non-ASCII
+    # header cannot raise inside compare_digest.
+    supplied = x_webhook_secret_token.strip().encode("utf-8")
+    expected = settings.secret_token.encode("utf-8")
+    if not hmac.compare_digest(supplied, expected):
+        # Never log the supplied token, not even a prefix.
+        raise _fail("bad token")
+
+    # Authenticated. Only now does this request spend the real budget, so no
+    # amount of unauthenticated noise can exhaust what the console needs.
     tripped = _limiter.check(ip)
     if tripped is not None:
         # Logged with WHICH ceiling tripped, because a 'global' trip is the
@@ -166,30 +259,7 @@ async def require_token(
         # the same opaque 429 either way.
         log.warning("Rate limit exceeded (%s) for %s on %s",
                     tripped, ip, request.url.path)
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many requests. Slow down.",
-            headers={"Retry-After": str(settings.rate_limit_window_seconds)},
-        )
-
-    if not x_webhook_secret_token:
-        log.warning("Auth failure (header absent) from %s on %s", ip, request.url.path)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=_AUTH_FAILED_DETAIL,
-        )
-
-    # Constant-time comparison. Both sides encoded to bytes so a non-ASCII
-    # header cannot raise inside compare_digest.
-    supplied = x_webhook_secret_token.strip().encode("utf-8")
-    expected = settings.secret_token.encode("utf-8")
-    if not hmac.compare_digest(supplied, expected):
-        # Never log the supplied token, not even a prefix.
-        log.warning("Auth failure (bad token) from %s on %s", ip, request.url.path)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=_AUTH_FAILED_DETAIL,
-        )
+        raise _too_many(settings)
 
 
 def _reset_rate_limiter() -> None:
@@ -200,6 +270,7 @@ def _reset_rate_limiter() -> None:
     client flooding the endpoint. Tests call this between cases instead of
     raising the production limit to accommodate them.
     """
-    with _limiter._lock:                       # noqa: SLF001 — test seam
-        _limiter._hits.clear()                 # noqa: SLF001
-        _limiter._global.clear()               # noqa: SLF001
+    for limiter in (_limiter, _auth_fail_limiter):
+        with limiter._lock:                    # noqa: SLF001 — test seam
+            limiter._hits.clear()              # noqa: SLF001
+            limiter._global.clear()            # noqa: SLF001

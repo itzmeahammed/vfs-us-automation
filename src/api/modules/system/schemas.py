@@ -53,6 +53,10 @@ class PipelineResponse(BaseModel):
 class ConfigResponse(BaseModel):
     """Operational settings, secrets stripped."""
 
+    #: The four master switches. First, because they override everything below
+    #: them: a reader who sees `waitlist.dry_run: true` and stops there has
+    #: drawn the wrong conclusion if `live_booking` is on.
+    switches: Dict[str, Any] = Field(default_factory=dict)
     schedule: Dict[str, Any] = Field(default_factory=dict)
     timeouts: Dict[str, Any] = Field(default_factory=dict)
     retry: Dict[str, Any] = Field(default_factory=dict)

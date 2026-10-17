@@ -479,16 +479,58 @@ def mailbox_accounts() -> List[Tuple[str, str]]:
         except Exception as e:
             log.debug(f"No account resolved for client {client.id}: {e}")
             continue
-        if account and account.email and account.password:
-            found.setdefault(account.email, account.password)
+        # THE MAILBOX PASSWORD. This dict feeds imap.login(), not a VFS form —
+        # account.password is the PORTAL credential and the two diverged when
+        # the webmail password was rotated on 2026-10-16. The property falls
+        # back to the portal one when no email_password is configured.
+        # THE MAILBOX PASSWORD, which is NOT account.password — this dict
+        # feeds imap.login(), and the two credentials diverged when the
+        # webmail password was rotated on 2026-10-16.
+        #
+        # An account without one is SKIPPED, loudly, rather than attempted
+        # with the portal password: a wrong password on a mail server is how
+        # a mailbox gets rate-limited or locked, and silently reading nothing
+        # is indistinguishable from "no invitations arrived".
+        #
+        # getattr because resolve() is monkeypatched with stubs in several
+        # tests and a watcher must not hard-require a newly added field.
+        if not (account and account.email):
+            continue
+        mailbox_pw = getattr(account, "email_password", "")
+        if not mailbox_pw:
+            log.warning(
+                f"Mailbox for {account.email} is NOT being watched: no "
+                "'email_password' is configured for it. The IMAP password is "
+                "not assumed to equal the VFS portal password. "
+                "Run: python -m src.utils.credentials check")
+            continue
+        found.setdefault(account.email, mailbox_pw)
     return sorted(found.items())
 
 
-def run_pass(state: Optional[seen_state.SeenState] = None) -> PassResult:
+def run_pass(state: Optional[seen_state.SeenState] = None,
+             persist: bool = True) -> PassResult:
     """One sweep: every waitlist mailbox, classified, state saved.
 
     State is saved after EACH mailbox rather than once at the end, so a crash
     part-way through does not re-report the mailboxes already done.
+
+    `persist=False` makes the pass NON-CONSUMING: the seen-state is not written
+    and invitations are not recorded, so the same messages are offered again by
+    the next pass. It exists for the reconcile PREVIEW.
+
+    Without it, a preview destroyed the thing the apply step needed. Only
+    unseen UIDs are fetched, and every fetched UID is marked seen in a
+    `finally` and then fsync'd to disk — so the preview consumed the VFS
+    confirmation emails, wrote nothing to the journal, and the subsequent
+    apply found nothing fresh and reported "settled 0" as a success. The
+    confirmation email is the independent second source for exactly the fact
+    the browser failed to capture, and it was gone for good; recovery meant
+    hand-editing state/inbox_seen.json on the bot machine.
+
+    The in-memory `state` object is still marked during the pass, because
+    `fetch_mailbox` uses it to avoid re-fetching within this same sweep. Not
+    saving it is what makes the pass non-consuming.
     """
     result = PassResult()
     host, port = _imap_settings()
@@ -538,18 +580,25 @@ def run_pass(state: Optional[seen_state.SeenState] = None) -> PassResult:
             log.warning(f"{label}: mailbox pass failed: {e}")
             result.mailboxes_failed.append(label)
         finally:
-            seen_state.save(state)
+            if persist:
+                seen_state.save(state)
 
     # RECORD, don't act: invitations go to the Flow 2 queue so that ANY pass —
     # the supervisor's or a manual `watch` — is seen by the booking side. A
     # message is marked seen once classified here, so an invitation dropped
     # now would never be offered again. Acting on it is gated separately
     # ([switches] invite_booking), in src/booking/invites.py.
-    try:
-        from src.booking import invites
-        invites.record(result.invitations())
-    except Exception as e:                                  # noqa: BLE001
-        log.error(f"Could not record invitations for booking: {e}")
+    #
+    # Skipped on a non-persisting pass: recording is a write, and because the
+    # seen-state is not saved either, the next real pass sees these same
+    # messages and records them then. Recording here would make a "preview"
+    # enqueue booking work.
+    if persist:
+        try:
+            from src.booking import invites
+            invites.record(result.invitations())
+        except Exception as e:                              # noqa: BLE001
+            log.error(f"Could not record invitations for booking: {e}")
 
     return result
 

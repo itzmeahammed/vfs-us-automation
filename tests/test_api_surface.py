@@ -13,11 +13,22 @@ except a small, named allowlist must refuse an unauthenticated request. A new
 endpoint is covered the moment it is added, without anyone remembering to add
 a test.
 
-The routes are read from /openapi.json, not from app.routes, because this
+The routes come from the OpenAPI schema, not from app.routes, because this
 FastAPI version keeps included routers as lazy `_IncludedRouter` wrappers whose
 paths are invisible to naive introspection — an audit written against
-app.routes silently sees 11 routes where there are 34, and reports a clean bill
+app.routes silently sees 1 route where there are 47, and reports a clean bill
 of health for endpoints it never looked at.
+
+The schema is built IN PROCESS with app.openapi(), not fetched over HTTP from
+/openapi.json. Fetching it coupled this file to VFSAPI_ENABLE_DOCS, which is
+off by default and documented as local-only: with docs off the request 404s,
+`spec["paths"]` is empty, and the sweep below iterated NOTHING — so the test
+that exists to prove every route is authenticated passed while asserting
+nothing at all, for every default checkout and every CI run. app.openapi()
+returns the full contract whether or not the route is published, so the guard
+now works in the configuration that actually ships. `_assert_enumerable`
+keeps it that way: an empty or implausibly short enumeration is itself a
+failure, because silence here is indistinguishable from success.
 """
 
 from __future__ import annotations
@@ -87,15 +98,41 @@ def _fill(path: str) -> str:
     return path
 
 
-def _documented_routes(client):
-    """(method, path) for every route in the OpenAPI spec."""
-    spec = client.get("/openapi.json").json()
+#: The surface has 47 routes today. The floor is deliberately well below that,
+#: so routine additions and removals do not trip it — it is here to catch an
+#: enumeration that collapsed, not to pin an exact count.
+_MIN_PLAUSIBLE_ROUTES = 40
+
+
+def _documented_routes():
+    """(method, path) for every route in the OpenAPI schema.
+
+    Built in process, so it does not depend on /openapi.json being published.
+    """
+    from src.api.main import app
+
+    spec = app.openapi()
     routes = []
     for path, operations in spec.get("paths", {}).items():
         for method in operations:
             if method.upper() in ("GET", "POST", "PUT", "PATCH", "DELETE"):
                 routes.append((method.upper(), path))
     return sorted(routes)
+
+
+def _assert_enumerable(routes):
+    """Fail loudly when the enumeration itself broke.
+
+    Every assertion in this file is a loop over `routes`. An empty list makes
+    all of them vacuous — the tests go green having checked nothing, which is
+    the one outcome a security guard must never produce. So the enumeration is
+    asserted before anything is concluded from it.
+    """
+    assert len(routes) >= _MIN_PLAUSIBLE_ROUTES, (
+        f"Only {len(routes)} route(s) could be enumerated, expected at least "
+        f"{_MIN_PLAUSIBLE_ROUTES}. The schema did not build, so every check in "
+        "this file would otherwise pass without testing anything.")
+    return routes
 
 
 def test_the_router_set_is_actually_mounted(api):
@@ -106,7 +143,7 @@ def test_the_router_set_is_actually_mounted(api):
     include_router line, leaves a server that starts cleanly and serves a
     fraction of its contract — with no failure anywhere.
     """
-    paths = {path for _, path in _documented_routes(api)}
+    paths = {path for _, path in _assert_enumerable(_documented_routes())}
 
     for expected in ("/v1/clients", "/v1/booking/status", "/v1/booking/runs",
                      "/v1/waitlist/status", "/v1/overview", "/v1/accounts",
@@ -129,7 +166,7 @@ def test_every_route_requires_the_token(api):
     """
     unauthenticated = []
 
-    for method, path in _documented_routes(api):
+    for method, path in _assert_enumerable(_documented_routes()):
         if (method, path) in PUBLIC_ROUTES:
             continue
         response = api.request(method, _fill(path))

@@ -88,6 +88,29 @@ def _norm_route(route: str) -> str:
     return (route or "").strip().upper()
 
 
+def _norm_email(email: str) -> str:
+    """The key an account's health is stored under.
+
+    Routes were already normalised here; emails were not, so this store was
+    case-sensitive while everything around it is not. `credentials.py` supplies
+    the pool email verbatim (it only strips whitespace) and
+    `credentials.password_for` compares case-insensitively — but the console
+    lowercases before it ever gets here (`validation.email()`), so the two
+    sides disagreed for any account with a capital letter.
+
+    The effect was a bench that reported success and did nothing: the API wrote
+    a NEW record under the lowercased key while selection kept reading the
+    original, so the bot went on logging in as an account the operator believed
+    it had stopped using — and on an account VFS has already blocked, that is
+    the behaviour the UI warns "may extend the block". The Accounts list then
+    showed two cards for one account, one benched and one not.
+
+    Latent today (all 13 configured emails are lowercase), live the moment
+    anyone types one with a capital letter.
+    """
+    return (email or "").strip().lower()
+
+
 def _normalize(rec: dict) -> dict:
     """Return `rec` in the new per-route shape, migrating a legacy flat record.
 
@@ -118,7 +141,22 @@ def _load() -> dict:
             raw = json.load(f) or {}
     except (FileNotFoundError, ValueError, OSError):
         return {}
-    return {email: _normalize(rec) for email, rec in raw.items()}
+    folded: dict = {}
+    for email, rec in raw.items():
+        key = _norm_email(email)
+        normalised = _normalize(rec)
+        if key in folded:
+            # Two casings of one account. Merge rather than letting the last
+            # one win: a bench recorded under either spelling must still count.
+            existing = folded[key]
+            existing["routes"].update(normalised.get("routes") or {})
+            for field in ("disabled", "disabled_at", "disabled_reason",
+                          "cooldown_until", "last_reason"):
+                if normalised.get(field) and not existing.get(field):
+                    existing[field] = normalised[field]
+        else:
+            folded[key] = normalised
+    return folded
 
 
 def _save(data: dict) -> None:
@@ -165,6 +203,7 @@ def is_benched(email: str, route: str = None) -> bool:
     manual DISABLE (account-global), a legacy global cooldown, or an active
     cooldown on this specific route. With no route, only the global states count.
     """
+    email = _norm_email(email)
     if not email:
         return False
     rec = _load().get(email)
@@ -186,6 +225,7 @@ def is_benched(email: str, route: str = None) -> bool:
 def benched_until(email: str, route: str = None) -> float:
     """Epoch when `email`'s bench for `route` ends (0 if not benched). Takes the
     later of any global cooldown and the route's own cooldown."""
+    email = _norm_email(email)
     rec = _load().get(email or "")
     if not rec:
         return 0.0
@@ -201,6 +241,7 @@ def benched_until(email: str, route: str = None) -> float:
 def bench(email: str, route: str, hours: int, reason: str) -> None:
     """Bench `email` on `route` for `hours` immediately (a hard block), clearing
     that route's strikes. Other routes are unaffected."""
+    email = _norm_email(email)
     if not email:
         return
     data = _load()
@@ -216,6 +257,7 @@ def bench(email: str, route: str, hours: int, reason: str) -> None:
 def record_success(email: str, route: str = None) -> None:
     """Clear `email`'s strikes/cooldown FOR `route` (it's healthy there again),
     plus any legacy global cooldown. Does NOT lift an account-global disable."""
+    email = _norm_email(email)
     if not email:
         return
     data = _load()
@@ -243,6 +285,7 @@ def record_failure(email: str, route: str, reason: str) -> bool:
     Count a consecutive strike for `email` ON `route`; soft-bench that route if it
     reaches the threshold. Returns True if the route got benched by this strike.
     """
+    email = _norm_email(email)
     if not email:
         return False
     data = _load()
@@ -275,6 +318,7 @@ def disable(email: str, reason: str) -> None:
     Denied Due to Unauthorised Activity (429002)'. The account stays skipped
     everywhere until someone fixes it and runs `clear()` (flags it healthy).
     """
+    email = _norm_email(email)
     if not email:
         return
     data = _load()
@@ -290,6 +334,7 @@ def disable(email: str, reason: str) -> None:
 
 def is_disabled(email: str) -> bool:
     """True if `email` is under an indefinite account-global manual disable."""
+    email = _norm_email(email)
     rec = _load().get(email or "")
     return bool(rec and rec.get("disabled"))
 
@@ -301,6 +346,7 @@ def clear(email: str, route: str = None) -> bool:
     remove the whole record (clears a global disable and every route). Returns
     True if anything was removed.
     """
+    email = _norm_email(email)
     data = _load()
     if email not in data:
         return False

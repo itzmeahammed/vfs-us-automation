@@ -88,6 +88,10 @@ def get_booking_status() -> BookingStatusResponse:
             ))
     except Exception as exc:                       # noqa: BLE001
         log.exception("Could not read client booking statuses.")
+        # Say so. An empty list that means "unknown" must not be reported as
+        # an empty list that means "all clear".
+        return BookingStatusResponse(routes=routes, clients=[],
+                                     clients_readable=False)
 
     return BookingStatusResponse(routes=routes, clients=clients)
 

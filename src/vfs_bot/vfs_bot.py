@@ -989,8 +989,27 @@ class VfsBot(ABC):
                 if self.schema.get("otp"):
                     # "otp_mode": "text" (Greece) reads the code from the email
                     # text — no AI; default "image" uses the OpenAI PNG reader.
+                    #
+                    # THE MAILBOX PASSWORD, NOT THE VFS ONE. `password` above
+                    # signed in to the PORTAL; this signs in to Roundcube over
+                    # IMAP. They were the same string until the webmail
+                    # password was rotated on 2026-10-16, at which point
+                    # passing `password` here failed every otp:true route
+                    # while VFS login carried on working — a failure that
+                    # reads as "the OTP never arrived" and sends you looking
+                    # at the wrong system.
+                    #
+                    # NO `or password` FALLBACK. It raises instead, by design:
+                    # a fallback would make a forgotten config line look
+                    # exactly like a deliberate one and quietly resume using
+                    # the wrong credential. The raise happens HERE, before the
+                    # IMAP connection, so the message names the account and
+                    # the missing key rather than surfacing as an IMAP
+                    # authentication failure.
+                    from src.utils import credentials
+                    mailbox_password = credentials.email_password_for(email_id)
                     otp_flow.verify_otp(
-                        page, self.selectors["otp"], email_id, password,
+                        page, self.selectors["otp"], email_id, mailbox_password,
                         otp_since, otp_mode=self.schema.get("otp_mode", "image"),
                         # Keep reading captured VFS 403s while we wait for the
                         # OTP field: a late login-403 must surface as an IP block

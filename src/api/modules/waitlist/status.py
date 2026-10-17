@@ -234,7 +234,17 @@ def resolve_entry(payload: ResolveRequest) -> Dict[str, Any]:
             route=payload.route, combo=payload.combo,
             registrant_id=payload.registrant_id,
             status=payload.status, reason=payload.reason or "resolved via API",
+            reference=payload.reference,
         )
+    except journal.NotDanglingError as exc:
+        # 409, not 400: the request is well formed, the row is just not in a
+        # state that can be resolved — usually because someone else settled it
+        # first, or the combo label is wrong. A flat 400 told the operator
+        # "bad request" for both, which is not actionable.
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     except Exception as exc:                       # noqa: BLE001
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,

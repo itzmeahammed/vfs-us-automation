@@ -757,7 +757,8 @@ def test_client_mailboxes_are_still_included(monkeypatch, inbox_config_value):
 
     class FakeAccount:
         email = "client@x.com"
-        password = "pw2"
+        password = "pw2"              # the VFS portal — NOT used for IMAP
+        email_password = "mailbox2"   # the mailbox. Required since 2026-10-16.
 
     from src.waitlist import accounts as acc
     from src.waitlist import registrant as reg
@@ -767,3 +768,37 @@ def test_client_mailboxes_are_still_included(monkeypatch, inbox_config_value):
 
     found = dict(mailbox_accounts())
     assert set(found) == {"extra@x.com", "client@x.com"}
+    # THE MAILBOX password reaches imap.login(), never the portal one.
+    assert found["client@x.com"] == "mailbox2"
+
+
+def test_a_client_without_a_mailbox_password_is_skipped_not_guessed(
+        monkeypatch, inbox_config_value):
+    """*** The watcher must not fall back to the VFS password. ***
+
+    A wrong password against a mail server is how a mailbox gets rate-limited
+    or locked, and reading nothing is indistinguishable from "no invitations
+    arrived" — so the account is skipped, loudly, instead.
+    """
+    from src.inbox.watcher import mailbox_accounts
+
+    inbox_config_value("extra@x.com:pw")
+
+    class FakeClient:
+        id = "c1"
+
+    class FakeAccount:
+        email = "client@x.com"
+        password = "portal-pw"
+        email_password = ""           # not configured
+
+    from src.waitlist import accounts as acc
+    from src.waitlist import registrant as reg
+
+    monkeypatch.setattr(reg, "load_all", lambda skip_invalid=True: [FakeClient()])
+    monkeypatch.setattr(acc, "resolve", lambda c: FakeAccount())
+
+    found = dict(mailbox_accounts())
+    assert "client@x.com" not in found
+    assert "portal-pw" not in found.values()
+    assert set(found) == {"extra@x.com"}

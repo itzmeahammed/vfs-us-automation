@@ -31,11 +31,44 @@ class BookingClientStatus(BaseModel):
     vfs_reference: Optional[str] = None
     phase: str = ""
     needs_attention: bool = False
+class InvitationStatus(str, Enum):
+    """The invitation lifecycle, as src/booking/invites.py defines it.
+
+    A `Literal`/enum rather than a free string, so an unknown value is a 422
+    naming the field instead of a 200 with an empty list. `?status=nonsense`
+    used to answer `{"items": [], "total": 0}` — "there are no invitations like
+    that" — which for a queue whose deadlines are measured in hours is the
+    wrong failure mode for a typo or a renamed status. The proxy already
+    validated this (`validation.INVITATION_STATUSES`), so only a direct caller
+    was exposed; this closes it at the source.
+    """
+
+    PENDING = "pending"
+    BOOKING = "booking"
+    BOOKED = "booked"
+    NEEDS_ATTENTION = "needs_attention"
+    MANUAL = "manual"
+    EXPIRED = "expired"
+    DISMISSED = "dismissed"
+
+
 class BookingStatusResponse(BaseModel):
     """Booking pipeline overview."""
 
     routes: List[BookingRouteStatus] = Field(default_factory=list)
     clients: List[BookingClientStatus] = Field(default_factory=list)
+    #: False when the waitlist journal could not be read, so `clients` is
+    #: EMPTY BECAUSE WE DO NOT KNOW rather than because nothing is in progress.
+    #:
+    #: The handler swallowed that exception and returned `clients: []` with no
+    #: way to tell the two apart, so the console rendered "No waitlist client
+    #: is in the booking phase" over an unreadable journal — including any
+    #: client flagged needs_attention, which here means a run may have reached
+    #: payment. The sibling payments endpoint states the rule this restores:
+    #: "'I cannot read the file' and 'there is nothing in the file' are the
+    #: same shape over JSON and have opposite meanings, and picking the
+    #: reassuring one would hide exactly the emergency this exists to surface."
+    clients_readable: bool = True
 class BookingMode(str, Enum):
     """How far a booking run is allowed to go. There is no boolean here.
 

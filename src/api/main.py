@@ -207,7 +207,11 @@ async def validation_exception_handler(
 ) -> JSONResponse:
     """422 with the offending fields named, but no internal detail leaked."""
     problems = [
-        {"field": ".".join(str(p) for p in err.get("loc", [])), "message": err.get("msg", "")}
+        {"field": _problem_field(err.get("loc", ())),
+         "message": err.get("msg", ""),
+         # The untrimmed path is still useful when debugging a nested model, so
+         # it is kept rather than dropped — just not in the field name.
+         "hint": ".".join(str(p) for p in err.get("loc", ()))}
         for err in exc.errors()
     ]
     log.info("Validation error on %s: %s", request.url.path, problems)
@@ -227,14 +231,81 @@ async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Last resort: log the traceback, tell the caller nothing useful."""
     log.exception("Unhandled error on %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content=envelope(
+    # Audit HERE, not in the middleware. Starlette installs this handler inside
+    # ServerErrorMiddleware, which sits OUTSIDE user middleware, so a crashed
+    # request never returns through `security_headers` — and the audit write
+    # and the header block there were both skipped. That lost exactly the row
+    # you most need: a mutating call that died mid-flight, where "did this
+    # register someone / charge a card?" is the open question.
+    _audit_once(request, 500)
+    response = JSONResponse(status_code=500, content=envelope(
         request, 500, "An internal error occurred. Quote the request_id.",
         "internal_error"))
+    return _stamp_headers(request, response)
 
 
 # --------------------------------------------------------------------------
 # Middleware
 # --------------------------------------------------------------------------
+
+
+#: Where pydantic says a bad value came from. Useful for debugging, useless as
+#: a field name — and the browser keys its per-field form errors by exact name.
+_LOC_PREFIXES = ("body", "query", "path", "header", "cookie")
+
+
+def _problem_field(loc: Any) -> str:
+    """The field name a form can bind an error to.
+
+    FastAPI's `loc` leads with the location, so a rejected body field arrives
+    as `body.client_id` and a query param as `query.limit`. The console indexes
+    problems by exact field name (`errorFor('client_id')`) and filters
+    candidates with `/^[a-z][a-z0-9_]*$/i`, which a dotted name fails — so a
+    422 neither highlighted the offending input nor produced an inline message,
+    and the operator had to read the field name out of the banner. The
+    hand-built 422s elsewhere in the API already use bare names, which is why
+    most validation errors did work and these did not.
+    """
+    parts = [str(p) for p in (loc or ())]
+    if parts and parts[0] in _LOC_PREFIXES:
+        parts = parts[1:]
+    return ".".join(parts)
+
+
+def _audit_once(request: Request, status_code: int) -> None:
+    """Append the audit row for this request, at most once.
+
+    Both the middleware and the error handlers can reach this, and a request
+    that fails after the middleware already recorded it must not appear twice.
+    """
+    if getattr(request.state, "_audited", False):
+        return
+    try:
+        request.state._audited = True
+        req_context.audit(request, status_code)
+    except Exception:                              # noqa: BLE001
+        # A missing audit row is worth a loud log, never a failed response:
+        # this runs on the error path, where the caller already has a problem.
+        log.exception("Could not write the audit row for %s %s",
+                      request.method, request.url.path)
+
+
+def _stamp_headers(request: Request, response: Any) -> Any:
+    """The hardening headers, for responses that bypass the middleware.
+
+    A 413 returned early, and any 500 raised past ServerErrorMiddleware, used
+    to arrive with none of these — no X-Request-ID to quote, no CSP, no
+    nosniff, no Cache-Control. Confirmed live: the 413 response carried none of
+    the header block that a 401 or 404 carried.
+    """
+    response.headers["X-Request-ID"] = getattr(request.state, "request_id", "")
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; frame-ancestors 'none'")
+    return response
 
 
 @app.middleware("http")
@@ -270,13 +341,47 @@ async def security_headers(request: Request, call_next: Any) -> Any:
     max_bytes = (documents_max_upload_bytes() if is_upload else 64 * 1024)
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > max_bytes:
-        return JSONResponse(status_code=413, content=envelope(
+        _audit_once(request, 413)
+        return _stamp_headers(request, JSONResponse(status_code=413, content=envelope(
             request, 413, f"Request body exceeds {max_bytes} bytes.",
-            "payload_too_large"))
+            "payload_too_large")))
+
+    # A body sent with Transfer-Encoding: chunked carries NO Content-Length, so
+    # the check above sees nothing and the cap was simply skipped. Verified
+    # against the running server: the same 70,008-byte payload was rejected 413
+    # with a Content-Length header and accepted (routed, 404) without one. The
+    # "the endpoint still enforces documents.MAX_BYTES on the bytes it actually
+    # reads" note above is true only for /documents; every JSON route had no
+    # post-read ceiling at all, so an arbitrarily large chunked body was
+    # buffered by uvicorn and handed to pydantic — in the single worker that
+    # drives real registrations.
+    #
+    # So measure instead of trusting the header. Reading here is bounded: the
+    # loop stops at the first chunk that crosses the cap, and the bytes are
+    # cached on the request so handlers (including the multipart parser, which
+    # replays from `_body`) still see the body exactly once.
+    if content_length is None and request.method in ("POST", "PUT", "PATCH"):
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                log.warning("Chunked body over the %d-byte cap on %s %s",
+                            max_bytes, request.method, request.url.path)
+                _audit_once(request, 413)
+                return _stamp_headers(request, JSONResponse(
+                    status_code=413, content=envelope(
+                        request, 413,
+                        f"Request body exceeds {max_bytes} bytes.",
+                        "payload_too_large")))
+            chunks.append(chunk)
+        request._body = b"".join(chunks)        # noqa: SLF001 — Starlette's cache
 
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
-    req_context.audit(request, response.status_code)
+    _audit_once(request, response.status_code)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"

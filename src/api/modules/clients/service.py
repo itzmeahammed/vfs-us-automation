@@ -199,6 +199,8 @@ def detail(client_id: str) -> Dict[str, Any]:
     from src.api.modules.clients import live as live
     from src.api.modules.clients import waitlist as waitlist
 
+    from src.booking import requests as req_store
+
     cid = client_id.strip().lower()
     flow = require_flow(cid)
     row = next((r for r in list_clients(flow=flow) if r["client_id"] == cid), {})
@@ -208,10 +210,33 @@ def detail(client_id: str) -> Dict[str, Any]:
         runnable = resp.runnable
     else:
         resp = live.get_request(cid)
-        details, problems, runnable = resp.request, [], resp.enabled
+        details = resp.request
+        # Run the SAME pre-flight the listing runs. This used to be hardcoded
+        # `problems=[], runnable=resp.enabled`, which made the one gate in front
+        # of "Book and pay" unfalsifiable: a live client with a missing billing
+        # postcode reported runnable, and a parked one reported not-runnable
+        # with an empty reason list. It also meant the list and the detail view
+        # disagreed about the same client.
+        #
+        # Read from the stored record rather than `resp.request`, which is the
+        # masked view — precheck needs the real values.
+        fields = {k: v for k, v in req_store.get(cid).data.items()
+                  if k not in req_store.STATE_KEYS}
+        problems = [p.to_dict() for p in req_store.precheck(cid, fields)]
+        runnable = not problems
     details = {k: v for k, v in details.items()
                if k not in ("history", "client_id", "request_id")}
     return {**row, "client_id": cid, "flow": flow, "runnable": runnable,
+            # `row` comes from list_clients(include_problems=False), so its
+            # problem_count is None. Now that the count is known, say it —
+            # otherwise a caller cannot tell "no problems" from "not computed".
+            #
+            # Errors only, matching the listing: a waitlist pre-flight also
+            # returns warnings, and counting those here would make the same
+            # client show a different number in the list and in the drawer.
+            # Live problems carry no severity at all, so they all count.
+            "problem_count": sum(1 for p in problems
+                                 if (p.get("severity") or "error") != "warning"),
             "details": details, "problems": problems}
 
 

@@ -378,7 +378,35 @@ def cmd_probe(args) -> int:
             except autobook.ManualRunRefused as e:
                 print(f"\nRefused: {e}")
                 return 3
+        elif args.walk:
+            # A walk or commit WITHOUT a stored request — a waitlist-entry
+            # client, which is what `POST /v1/booking/runs` sends for anyone
+            # not in the booking request store.
+            #
+            # This branch used to call _run() bare, so it took NO machine-wide
+            # booking lock at all. runlock appears nowhere in probe.py, walk.py
+            # or runner.py — only autobook and invites acquire it — and the job
+            # manager's own single-flight check is explicitly documented as a
+            # courtesy, not the boundary ("The real mutual exclusion is the
+            # child's own acquire"). The automatic lanes use on_busy="skip", so
+            # they saw the lock free and started a SECOND browser against the
+            # same shared VFS account while this one was mid-payment. The
+            # select_slot/payment walk runs for minutes, so the window was wide.
+            #
+            # Same lock, same lane, same non-blocking semantics as manual_run.
+            from src.utils import runlock
+            with runlock.acquire("manual-booking", lane=runlock.LANE_BOOKING,
+                                 timeout=0, on_busy="skip") as lock:
+                if not lock.held:
+                    hint = getattr(lock, "holder_hint", "")
+                    print("\nRefused: another booking is running on this machine"
+                          + (f" ({hint})" if hint else "")
+                          + ". Try again when it finishes.")
+                    return 3
+                result = _run()
         else:
+            # A plain probe: reads the dashboard and clicks nothing that books,
+            # so it does not contend for the booking lane.
             result = _run()
     except KeyboardInterrupt:
         # Ctrl-C before run_probe's own handler is reachable — during

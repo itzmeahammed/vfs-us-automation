@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel, Field
 
 from src.api.modules.booking import handlers as handlers
+from src.api.modules.booking.schemas import InvitationStatus
 from src.api.modules.booking import payments as payments
 from src.api.core.context import actor_for
 from src.api.core.errors import ERROR_RESPONSES, ApiError
@@ -124,7 +125,7 @@ def _invite_view(item: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/invitations", summary="VFS invitation emails and their outcome")
 def list_invitations(page: PageParams = Depends(),
-                     status: Optional[str] = Query(
+                     status: Optional[InvitationStatus] = Query(
                          default=None, description="pending | booking | booked | "
                          "needs_attention | manual | expired | dismissed"),
                      route: Optional[str] = None) -> Dict[str, Any]:

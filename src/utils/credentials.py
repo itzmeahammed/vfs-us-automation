@@ -10,13 +10,46 @@ Accounts live in a dedicated, gitignored file `config/credentials.local.ini`:
 
     [cred1]
     email = a@example.com
-    password = your-password-1
+    password = your-vfs-password-1          ; THE VFS PORTAL
+    email_password = your-webmail-pw-1      ; THE MAILBOX. Both are REQUIRED.
     routes = AE-CHE, AE-CZE      ; registered ONLY on these routes
 
     [cred2]
     email = b@example.com
-    password = your-password-2
+    password = your-vfs-password-2
+    email_password = your-webmail-pw-2
     ; no "routes" key -> registered on ALL routes (the default)
+
+    ═══════ TWO PASSWORDS, BECAUSE THERE ARE TWO SYSTEMS. BOTH REQUIRED. ══════
+
+`email` is both a VFS login AND a real mailbox, and the bot signs in to both:
+
+    password        THE VFS PORTAL. Typed into the browser at login.
+    email_password  THE MAILBOX (Roundcube/IMAP). Used to read the emailed
+                    one-time password on `otp: true` routes, and by
+                    `python -m src.inbox watch`.
+
+    ───────────────────── WHY THERE IS NO FALLBACK ─────────────────────
+
+These were ONE value until 2026-10-16, because the two systems happened to
+share a password. Rotating the webmail password broke every `otp: true` route
+instantly — while VFS login carried on working, so the symptom was "the OTP
+email never arrived" and the investigation went to the mail matcher, the clock
+skew and the IMAP search before the password.
+
+The obvious repair is `email_password or password`. That is REJECTED here on
+purpose: a fallback makes a missing key indistinguishable from a deliberate
+one, so the system silently resumes using the wrong credential the moment
+someone adds an account and forgets the second line — reproducing the exact
+bug, at the exact moment nobody is looking for it.
+
+So an account is only usable when it declares BOTH. An account missing either
+is DROPPED FROM THE POOL with a loud error naming it and the fix. Dropped, not
+fatal: one malformed entry must not take every route offline with it.
+
+Validate offline, before any browser starts:
+
+    python -m src.utils.credentials check
 
 Rotation (per route): the route's eligible pool is every credential whose
 `routes` list contains that route plus every credential without a list, in
@@ -97,10 +130,88 @@ def _load_pool() -> list:
     for section in parser.sections():
         email = parser.get(section, "email", fallback="").strip()
         pwd = parser.get(section, "password", fallback="").strip()
+        mailbox = parser.get(section, "email_password", fallback="").strip()
         routes = _parse_routes(parser.get(section, "routes", fallback=""))
-        if email and pwd:
-            pool.append((email, pwd, routes))
+
+        if not (email and pwd):
+            continue
+
+        # BOTH PASSWORDS OR NOTHING. See the module docstring: falling back to
+        # `password` here is what silently reintroduces the 2026-10-16 bug, so
+        # an incomplete account is refused instead. Dropped rather than fatal —
+        # one bad section must not take every route offline.
+        if not mailbox:
+            logging.error(
+                f"{CREDENTIALS_FILE} [{section}] ({mask(email)}) has no "
+                "'email_password' — the mailbox password used to read OTP "
+                "emails. It is REQUIRED and is NOT assumed to equal "
+                "'password'. This account is skipped until it is set. "
+                "Run: python -m src.utils.credentials check")
+            continue
+
+        pool.append((email, pwd, routes))
     return pool
+
+
+def _pool_sections() -> list:
+    """[(section, email, password, email_password, routes_raw)] — every
+    [credN] in the file, INCLUDING incomplete ones.
+
+    _load_pool() deliberately hides broken accounts so a run keeps going;
+    this is what check() needs in order to report them.
+    """
+    if not os.path.isfile(CREDENTIALS_FILE):
+        return []
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(CREDENTIALS_FILE)
+    except configparser.Error:
+        return []
+    out = []
+    for section in parser.sections():
+        out.append((
+            section,
+            parser.get(section, "email", fallback="").strip(),
+            parser.get(section, "password", fallback="").strip(),
+            parser.get(section, "email_password", fallback="").strip(),
+            parser.get(section, "routes", fallback="").strip(),
+        ))
+    return out
+
+
+def check() -> list:
+    """Problems with the credentials file, as human-readable strings. PURE-ish.
+
+    Offline and free: this is what to run after editing the file, and it is
+    the difference between finding a missing mailbox password now and finding
+    it when an OTP route fails at 06:00 with "no OTP email arrived".
+    """
+    problems = []
+    sections = _pool_sections()
+    if not sections:
+        return [f"No accounts found in {CREDENTIALS_FILE}."]
+
+    for section, email, pwd, mailbox, _routes in sections:
+        where = f"[{section}]" + (f" ({mask(email)})" if email else "")
+        if not email:
+            problems.append(f"{where}: no 'email'.")
+            continue
+        if not pwd:
+            problems.append(f"{where}: no 'password' (the VFS portal login).")
+        if not mailbox:
+            problems.append(
+                f"{where}: no 'email_password' (the Roundcube/IMAP mailbox "
+                "login). REQUIRED — it is not assumed to equal 'password'. "
+                "Every otp:true route for this account will fail without it.")
+        if pwd and mailbox and pwd == mailbox:
+            # Not an error: they are allowed to be equal. Worth saying once,
+            # because an account that still shares one password is the one
+            # that breaks next time the webmail password is rotated.
+            problems.append(
+                f"{where}: NOTE — 'password' and 'email_password' are the "
+                "same value. Legal, but this account breaks the next time "
+                "only one of them is rotated.")
+    return problems
 
 
 def _eligible(pool: list, route: str) -> list:
@@ -126,14 +237,98 @@ def _available(pool: list, route: str) -> list:
 
 
 def password_for(email: str) -> str:
-    """Password for `email` from the pool (or the single [vfs-credential]), or ''.
-    Used by the --email test override to force a specific account."""
+    """The VFS PORTAL password for `email`, or ''.
+
+    Not the mailbox password — see email_password_for(). Used by the --email
+    test override to force a specific account.
+    """
     key = (email or "").strip().lower()
     for e, pw, _ in _load_pool():
         if e.lower() == key:
             return pw
-    if key and key == (get_config_value("vfs-credential", "email") or "").lower():
-        return get_config_value("vfs-credential", "password") or ""
+    # Guarded for the same reason as email_password_for(): get_config_value()
+    # dereferences a parser that is None until something initialises it, and
+    # this runs on the login path. '' means "not configured here", which every
+    # caller already handles; an AttributeError would crash the sign-in.
+    try:
+        if key and key == (get_config_value("vfs-credential", "email")
+                           or "").lower():
+            return get_config_value("vfs-credential", "password") or ""
+    except Exception as e:                                      # noqa: BLE001
+        logging.debug(f"No [vfs-credential] password available: {e}")
+    return ""
+
+
+class MissingMailboxPassword(Exception):
+    """An account has no `email_password`, so its mailbox cannot be read.
+
+    Its own exception type because the ONLY correct response is a human
+    editing the config. It must never be caught and turned into a retry, and
+    it must never be quietly swallowed into "the OTP email has not arrived
+    yet" — which is precisely the confusion the split exists to end.
+    """
+
+
+def email_password_for(email: str, required: bool = True) -> str:
+    """The MAILBOX (Roundcube/IMAP) password for `email`.
+
+    *** THERE IS NO FALLBACK TO THE VFS PASSWORD. *** See the module
+    docstring. With `required` (the default) a missing one raises
+    MissingMailboxPassword, naming the account and the fix, BEFORE any IMAP
+    connection is attempted. Pass required=False for a diagnostic that wants
+    to report rather than raise.
+
+    Read straight from the file rather than through _load_pool(), which
+    deliberately still yields (email, password, routes) triples — widening
+    that tuple would break every caller that unpacks three values for a change
+    none of them care about.
+    """
+    key = (email or "").strip().lower()
+    if not key:
+        if required:
+            raise MissingMailboxPassword(
+                "No email given, so no mailbox password can be looked up.")
+        return ""
+
+    for section, found, _pwd, mailbox, _routes in _pool_sections():
+        if found.strip().lower() != key:
+            continue
+        if mailbox:
+            return mailbox
+        if required:
+            raise MissingMailboxPassword(
+                f"Account {mask(email)} ([{section}] in {CREDENTIALS_FILE}) "
+                "has no 'email_password'. That is the Roundcube/IMAP mailbox "
+                "password, and it is NOT assumed to be the same as the VFS "
+                "portal password — they are separate secrets and were last "
+                "rotated apart on 2026-10-16.\n"
+                f"Add to [{section}]:  email_password = <webmail password>\n"
+                "Then check: python -m src.utils.credentials check")
+        return ""
+
+    # Not in the pool at all. The single-account [vfs-credential] fallback is
+    # wrapped because get_config_value() dereferences a parser that is None
+    # until something initialises it, and this runs on the LOGIN path.
+    try:
+        if key == (get_config_value("vfs-credential", "email") or "").lower():
+            mailbox = get_config_value("vfs-credential", "email_password")
+            if mailbox:
+                return mailbox
+            if required:
+                raise MissingMailboxPassword(
+                    f"[vfs-credential] {mask(email)} has no 'email_password'. "
+                    "Add it — the mailbox password is not assumed to equal "
+                    "the VFS one.")
+            return ""
+    except MissingMailboxPassword:
+        raise
+    except Exception as e:                                      # noqa: BLE001
+        logging.debug(f"No [vfs-credential] mailbox password available: {e}")
+
+    if required:
+        raise MissingMailboxPassword(
+            f"No account named {mask(email)} is configured in "
+            f"{CREDENTIALS_FILE}, so its mailbox password is unknown.")
     return ""
 
 
@@ -289,3 +484,64 @@ def rotation_schedule(route: str = None) -> list:
             out.append((f"{hour:02d}:{k * step:02d}", ri, who))
             ri += 1
     return out
+
+
+# --------------------------------------------------------------------------- #
+# `python -m src.utils.credentials check`                                      #
+# --------------------------------------------------------------------------- #
+
+def _main(argv=None) -> int:
+    """Validate the credentials file offline. Prints no password, ever.
+
+    Exists because the alternative place to discover a missing mailbox
+    password is a 06:00 scheduled run reporting "no OTP email arrived".
+    """
+    import sys
+
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] not in ("check", "-h", "--help"):
+        print(f"usage: python -m src.utils.credentials check")
+        return 2
+    if argv[:1] in (["-h"], ["--help"]):
+        print("usage: python -m src.utils.credentials check")
+        return 0
+
+    print()
+    print("=" * 68)
+    print("CREDENTIALS")
+    print("=" * 68)
+    print(f"file: {CREDENTIALS_FILE}")
+
+    sections = _pool_sections()
+    usable = _load_pool()
+    print(f"accounts: {len(sections)} defined, {len(usable)} usable")
+    print()
+
+    for section, email, pwd, mailbox, routes in sections:
+        marks = ("vfs " if pwd else "VFS? ") + ("mail" if mailbox else "MAIL?")
+        state = "ok " if (pwd and mailbox and email) else "BAD"
+        print(f"  [{state}] {section:8s} {mask(email) or '(no email)':22s} "
+              f"{marks:10s} {routes or '(all routes)'}")
+
+    problems = check()
+    print()
+    if not problems:
+        print("No problems. Every account declares both passwords.")
+        return 0
+
+    print("-" * 68)
+    for problem in problems:
+        print(f"  {problem}")
+    print("-" * 68)
+    # NOTEs are advisory; only real problems fail the check.
+    fatal = [p for p in problems if ": NOTE —" not in p]
+    if fatal:
+        print(f"{len(fatal)} problem(s). Accounts marked BAD are SKIPPED by "
+              "the bot until fixed.")
+        return 1
+    print("Advisories only — nothing is broken.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

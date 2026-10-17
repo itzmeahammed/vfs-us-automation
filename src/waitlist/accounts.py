@@ -65,13 +65,31 @@ class Account:
     """A resolved (email, password) plus where it came from, for logging.
 
     `proxy` is an optional per-client exit-IP pin (see resolve_proxy).
+
+    TWO PASSWORDS, ONE ADDRESS. `password` signs in to the VFS PORTAL;
+    `email_password` signs in to the MAILBOX (Roundcube/IMAP) that the same
+    address names — which is what src/inbox/watcher.py connects to.
+
+    *** email_password DOES NOT FALL BACK TO password. *** It is '' when
+    unset, and a caller that needs a mailbox must treat '' as "this account
+    cannot be read" rather than substituting the portal password. The two were
+    one value until 2026-10-16; assuming they still match is the bug this
+    split exists to prevent, and a fallback would quietly reinstate it.
     """
 
-    def __init__(self, email: str, password: str, source: str, proxy: str = ""):
+    def __init__(self, email: str, password: str, source: str, proxy: str = "",
+                 email_password: str = ""):
         self.email = email
         self.password = password
         self.source = source
         self.proxy = proxy or ""
+        #: '' when not configured. Deliberately NOT defaulted to `password`.
+        self.email_password = email_password or ""
+
+    @property
+    def can_read_mailbox(self) -> bool:
+        """True when this account has a mailbox password to log in with."""
+        return bool(self.email_password)
 
     @property
     def masked(self) -> str:
@@ -112,7 +130,12 @@ def resolve(registrant, cli_email: str = None,
                 "config/credentials.local.ini.")
         return Account(pinned, registrant.account_password,
                        f"client file ({registrant.id})",
-                       proxy=getattr(registrant, "proxy", ""))
+                       proxy=getattr(registrant, "proxy", ""),
+                       # OPTIONAL. Only needed once the mailbox password stops
+                       # matching the portal one; absent, Account.email_password
+                       # falls back and nothing changes.
+                       email_password=getattr(
+                           registrant, "account_email_password", "") or "")
 
     # 3 — the shared waitlist default.
     # Idempotent; guarantees the INI is loaded even when resolve() is called
@@ -129,7 +152,11 @@ def resolve(registrant, cli_email: str = None,
                 "config/config.local.ini — waitlist accounts are a separate "
                 "pool, so the password is never taken from "
                 "config/credentials.local.ini.")
-        return Account(default_email, password, "[waitlist] account")
+        return Account(
+            default_email, password, "[waitlist] account",
+            # OPTIONAL, same fallback as everywhere else.
+            email_password=(get_config_value(
+                "waitlist", "account_email_password", "") or "").strip())
 
     # No fallback to the slot-check credentials — by design.
     raise WaitlistConfigError(

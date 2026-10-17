@@ -26,9 +26,15 @@ from src.api.core.context import read_audit
 from src.api.core.schemas import HealthResponse
 from src.api.core.errors import ERROR_RESPONSES
 from src.api.modules.system import service
-from src.api.core.security import require_token
+from src.api.core.security import rate_limit_only, require_token
 
-public_router = APIRouter(tags=["system"])
+# Unauthenticated, but NOT unbounded. The limiter used to live inside
+# `require_token`, so this router — which deliberately skips that dependency —
+# had no ceiling at all, not even the global one. Anyone who learned the tunnel
+# URL could poll /v1/health without limit and consume the uvicorn worker pool
+# that every authenticated endpoint shares.
+public_router = APIRouter(tags=["system"],
+                          dependencies=[Depends(rate_limit_only)])
 router = APIRouter(tags=["system"], dependencies=[Depends(require_token)],
                    responses=ERROR_RESPONSES)
 

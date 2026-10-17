@@ -69,11 +69,14 @@ def clear_account(
 
     cleared = account_health.clear(email, route=route)
     if not cleared:
-        raise HTTPException(
-            status_code=http_status.HTTP_404_NOT_FOUND,
-            detail=f"No health record for '{email}'"
-                   + (f" on route '{route}'" if route else "") + ".",
-        )
+        # Idempotent: "there was nothing to clear" is the end state the caller
+        # asked for, not an error. This used to 404, so two operators lifting
+        # the same bench — or one double-click — put a red failure on a safety
+        # control that had in fact done its job. The response model already
+        # carries `cleared`, so the distinction survives for anyone who cares.
+        log.info("No account health to clear for %s%s — already lifted.",
+                 email, f" on {route}" if route else "")
+        return AccountClearResponse(email=email, route=route, cleared=False)
 
     log.info("Cleared account health for %s%s via API.",
              email, f" on {route}" if route else "")

@@ -64,8 +64,17 @@ _HEADER = [
 ]
 
 _SECTION_RE = re.compile(r"^\s*(;+)?\s*\[(?P<name>[^\]]+)\]\s*$")
-_KEY_RE = re.compile(r"^\s*(;+)?\s*(?P<k>email|password|routes)\s*=\s*(?P<v>.*?)\s*$",
-                     re.IGNORECASE)
+#: `email_password` MUST be listed here. This editor rewrites the whole file
+#: from the keys it recognises, so a key missing from this pattern is silently
+#: DELETED on the next save — which for the mailbox password would restore the
+#: single-credential bug the split exists to prevent, invisibly, at whatever
+#: moment someone next edits an unrelated account.
+#: LONGEST ALTERNATIVE FIRST. `email` would otherwise be tried against
+#: "email_password" before it; the match only survives on backtracking, which
+#: is a fragile thing to rest a credential file on.
+_KEY_RE = re.compile(
+    r"^\s*(;+)?\s*(?P<k>email_password|email|password|routes)\s*=\s*(?P<v>.*?)\s*$",
+    re.IGNORECASE)
 _ROUTE_DEF_RE = re.compile(r"^\s*;?\s*(?P<code>AE-[A-Z]{2,4})\s*=", re.IGNORECASE)
 
 
@@ -87,7 +96,7 @@ def parse_credentials():
                 if cur is not None:
                     accounts.append(cur)
                 cur = {"enabled": m.group(1) is None, "email": "",
-                       "password": "", "routes": []}
+                       "password": "", "email_password": "", "routes": []}
                 continue
             if cur is None:
                 continue
@@ -150,12 +159,21 @@ def validate(accounts):
     for i, a in enumerate(accounts, 1):
         email = (a.get("email") or "").strip()
         pwd = (a.get("password") or "").strip()
-        if not email and not pwd and not a.get("routes"):
+        mailbox = (a.get("email_password") or "").strip()
+        if not email and not pwd and not mailbox and not a.get("routes"):
             continue  # blank row -> dropped
         if not email:
             errors.append(f"Row {i}: email is required.")
         if not pwd:
-            errors.append(f"Row {i}: password is required.")
+            errors.append(f"Row {i}: password (VFS portal) is required.")
+        if not mailbox:
+            # REQUIRED, not optional. src/utils/credentials.py drops an account
+            # without one from the rotation entirely, so saving a file here
+            # that omits it would silently take that account offline.
+            errors.append(
+                f"Row {i}: email_password (Roundcube/IMAP mailbox) is "
+                "required. It is a SEPARATE secret from the VFS password — "
+                "an account without it is skipped by the bot.")
     return errors
 
 
@@ -166,12 +184,17 @@ def render_ini(accounts):
     for a in accounts:
         email = (a.get("email") or "").strip()
         pwd = (a.get("password") or "").strip()
-        if not email and not pwd and not a.get("routes"):
+        mailbox = (a.get("email_password") or "").strip()
+        if not email and not pwd and not mailbox and not a.get("routes"):
             continue  # skip blank rows
         n += 1
         routes = ", ".join(r.strip().upper() for r in a.get("routes", []) if r.strip())
+        # email_password is written ALWAYS, even when empty: a file that is
+        # missing the line reads as "someone forgot", while an empty one reads
+        # as "this still needs filling in" and is what `credentials check`
+        # reports. Dropping the key is the failure mode this editor had.
         block = [f"[cred{n}]", f"email = {email}", f"password = {pwd}",
-                 f"routes = {routes}"]
+                 f"email_password = {mailbox}", f"routes = {routes}"]
         if not a.get("enabled", True):
             block = ["; " + b for b in block]
         out.append("")
@@ -1072,6 +1095,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if _AI is not None and _AI.handle(self):
+            return
         if self.path in ("/", "/index.html"):
             self._send(200, PAGE.replace("<!--NAV-->", nav_html("/")),
                        "text/html; charset=utf-8")
@@ -1082,8 +1107,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/health":
             self._send(200, json.dumps(health_payload()))
         elif self.path in ("/stats", "/stats/"):
-            self._send(200, PAGE_STATS.replace("<!--NAV-->", nav_html("/stats")),
-                       "text/html; charset=utf-8")
+            page = PAGE_STATS.replace("<!--NAV-->", nav_html("/stats"))
+            if _AI is not None:
+                page = page.replace("</body>", _AI.script_tag() + "\n</body>", 1)
+            self._send(200, page, "text/html; charset=utf-8")
         elif self.path.startswith("/api/stats"):
             q = urllib.parse.urlparse(self.path).query
             day = urllib.parse.parse_qs(q).get("day", [None])[0]
@@ -1114,6 +1141,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
+        if _AI is not None and _AI.handle(self):
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length) or b"{}")
@@ -1248,7 +1277,7 @@ PAGE = r"""<!doctype html>
       <table>
         <thead><tr>
           <th style="width:34px">On</th><th style="width:30px">#</th>
-          <th>Email</th><th>Password</th>
+          <th>Email</th><th>VFS password</th><th>Mailbox password</th>
           <th>Routes <span class="num">(none = all)</span></th><th style="width:120px">Move</th>
         </tr></thead>
         <tbody id="rows"></tbody>
@@ -1376,7 +1405,10 @@ function renderCreds() {
       <td><input type="text" value="${esc(a.email)}"
           oninput="setAcct(${i},'email',this.value)" placeholder="name@travnook.com"></td>
       <td><input type="text" value="${esc(a.password)}"
-          oninput="setAcct(${i},'password',this.value)" placeholder="password"></td>
+          oninput="setAcct(${i},'password',this.value)" placeholder="VFS portal"></td>
+      <td><input type="text" value="${esc(a.email_password||'')}"
+          oninput="setAcct(${i},'email_password',this.value)"
+          placeholder="Roundcube/IMAP"></td>
       <td><div class="routes">${chips || '<span class=num>no routes defined</span>'}</div></td>
       <td class="ops">
         <button onclick="moveAcct(${i},-1)" ${i===0?'disabled':''}>↑</button>
@@ -1390,7 +1422,7 @@ function renderCreds() {
 function setAcct(i,k,v){ accounts[i][k]=v; if(k==='enabled') renderCreds(); else renderSummary(); }
 function toggleRoute(i,rc,on){ const s=new Set(accounts[i].routes);
   on?s.add(rc):s.delete(rc); accounts[i].routes=ROUTES.filter(r=>s.has(r)); renderSummary(); }
-function addAcct(){ accounts.push({enabled:true,email:'',password:'',routes:[]}); renderCreds(); }
+function addAcct(){ accounts.push({enabled:true,email:'',password:'',email_password:'',routes:[]}); renderCreds(); }
 function delAcct(i){ accounts.splice(i,1); renderCreds(); }
 function moveAcct(i,d){ const j=i+d; if(j<0||j>=accounts.length)return;
   [accounts[i],accounts[j]]=[accounts[j],accounts[i]]; renderCreds(); }
@@ -2365,8 +2397,26 @@ setInterval(() => loadProxy(), 300000);
 </body></html>
 """
 
+# The AI assistant panel on /stats (ai_assistant/ + assistant_vfs.py). None when
+# it is switched off or has no key; a failure to build it never stops the editor.
+_AI = None
+
+
+def _mount_assistant():
+    global _AI
+    try:
+        import assistant_vfs
+        _AI = assistant_vfs.build(sys.modules[__name__])
+    except Exception as e:
+        print(f"  assistant: off ({type(e).__name__}: {e})")
+        return
+    print("  assistant: " + ("on (/stats)" if _AI else
+                             "off (no OpenAI key, or [assistant] enabled = false)"))
+
+
 def main():
     socketserver.TCPServer.allow_reuse_address = True
+    _mount_assistant()
     with socketserver.ThreadingTCPServer(("127.0.0.1", PORT), Handler) as httpd:
         url = f"http://127.0.0.1:{PORT}"
         print(f"Accounts + routes editor serving at {url}")

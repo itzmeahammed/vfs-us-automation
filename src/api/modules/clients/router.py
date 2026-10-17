@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import (APIRouter, Body, Depends, File, Form, Query, Request,
+                     UploadFile)
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.modules.clients import live as live
@@ -155,8 +156,27 @@ async def list_documents(client_id: str):
     return await waitlist.list_documents(client_id)
 
 
-router.post("/{client_id}/documents", status_code=201,
-            summary="Upload a document (passport scan)")(waitlist.upload_document)
+@router.post("/{client_id}/documents", status_code=201,
+             summary="Upload a document (passport scan)")
+async def upload_document(
+    client_id: str,
+    file: UploadFile = File(..., description="PNG, JPG or PDF. Max 2 MB."),
+    kind: str = Form(default="passport_bio",
+                     description="Document kind. Only passport_bio today."),
+) -> Dict[str, Any]:
+    """Gated on the flow like its GET and DELETE siblings.
+
+    This used to attach `waitlist.upload_document` directly, skipping the
+    `_waitlist_only` check the other two document routes make. The handler then
+    looked the client up in the WAITLIST store and 404'd, so uploading for a
+    live client reported "No client '<id>'." — "this client does not exist" —
+    instead of the accurate "live clients have no documents" that GET returns.
+
+    The signature mirrors the handler's so FastAPI still parses the multipart
+    body; only the guard is added.
+    """
+    _waitlist_only(client_id)
+    return await waitlist.upload_document(client_id, file=file, kind=kind)
 
 
 @router.delete("/{client_id}/documents", summary="Delete documents")

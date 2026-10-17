@@ -141,9 +141,10 @@ def test_resolve_accepts_a_definite_outcome(api, monkeypatch):
 
     captured = {}
 
-    def fake_resolve(route, combo, registrant_id, status, reason=""):
+    def fake_resolve(route, combo, registrant_id, status, reason="",
+                     reference=None):
         captured.update(route=route, combo=combo, registrant_id=registrant_id,
-                        status=status, reason=reason)
+                        status=status, reason=reason, reference=reference)
         return WaitlistResult(route=route, combo=combo,
                               registrant_id=registrant_id, status=Status.SUCCESS)
 
@@ -152,11 +153,37 @@ def test_resolve_accepts_a_definite_outcome(api, monkeypatch):
         "route": "AE-CHE", "combo": "Dubai - SCHENGEN",
         "registrant_id": "x", "status": "success",
         "reason": "verified on the portal",
+        "reference": "SWDB79918334684",
     })
     assert r.status_code == 200
     assert r.json()["resolved"] is True
     assert captured["status"] == "success"
     assert captured["registrant_id"] == "x"
+    # The reference must reach the journal as DATA, not folded into `reason`:
+    # the duplicate gates and the reconcile backfill read the structured field.
+    assert captured["reference"] == "SWDB79918334684"
+
+
+def test_resolve_refuses_a_row_that_is_not_dangling(api, monkeypatch):
+    """A settled row must not be re-resolvable — that is how duplicates happen.
+
+    409 rather than 400: the request is well formed, the row is simply not
+    awaiting an answer (someone else settled it, or the combo label is wrong).
+    """
+    from src.waitlist import journal
+
+    def refuse(*args, **kwargs):
+        raise journal.NotDanglingError(
+            "'x' on AE-CHE / 'Dubai - SCHENGEN' is already settled as "
+            "'success'.", current_status="success")
+
+    monkeypatch.setattr("src.waitlist.journal.resolve", refuse)
+    r = api.post("/v1/waitlist/dangling/resolve", headers=HEADERS, json={
+        "route": "AE-CHE", "combo": "Dubai - SCHENGEN",
+        "registrant_id": "x", "status": "failed",
+    })
+    assert r.status_code == 409
+    assert "already settled" in r.json()["error"]["message"]
 
 
 # --------------------------------------------------------------------------

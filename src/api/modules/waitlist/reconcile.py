@@ -38,7 +38,12 @@ def reconcile_inbox(payload: ReconcileRequest) -> ReconcileResponse:
     from src.inbox.watcher import run_pass
 
     try:
-        result = run_pass()
+        # A preview must not consume the emails the apply step needs. The pass
+        # marks every fetched UID seen and fsyncs it, so a previewing pass used
+        # to destroy its own evidence: the apply then found nothing fresh and
+        # reported "settled 0" as success, with the VFS confirmations gone for
+        # good. See run_pass's docstring.
+        result = run_pass(persist=not payload.dry_run)
     except Exception as exc:                       # noqa: BLE001
         log.exception("Inbox pass failed during reconcile.")
         raise HTTPException(
