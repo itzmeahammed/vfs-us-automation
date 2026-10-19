@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Query
 
+from src.api.core import search
 from src.api.core.errors import ERROR_RESPONSES
 from src.api.core.pagination import PageParams, paginate
 from src.api.core.security import require_token
@@ -34,9 +35,14 @@ def list_jobs(page: PageParams = Depends(),
               lane: Optional[str] = Query(default=None, description="waitlist | booking"),
               status: Optional[str] = Query(default=None,
                                             description="running | succeeded | failed | ..."),
-              needs_attention: bool = Query(default=False)) -> Dict[str, Any]:
+              needs_attention: bool = Query(default=False),
+              q: Optional[str] = Query(default=None, max_length=120, description=(
+                  "Free-text search over job id, status, detail and the "
+                  "payload's registrant/client/route/mode. All terms must "
+                  "match; each may match a different field."))) -> Dict[str, Any]:
     from src.api.modules.jobs.schemas import JobResponse
 
+    needle = search.terms(q)
     rows = []
     for record in _manager().recent(500):
         if lane and (record.payload or {}).get("lane", "waitlist") != lane:
@@ -45,8 +51,35 @@ def list_jobs(page: PageParams = Depends(),
             continue
         if needs_attention and not record.needs_attention:
             continue
-        rows.append(JobResponse(**record.to_dict()).model_dump())
+        row = JobResponse(**record.to_dict()).model_dump()
+        if not search.matches(_haystack(row), needle, _SEARCHABLE):
+            continue
+        rows.append(row)
     return paginate(rows, page)
+
+
+#: What `q` may look at on a job. `payload` is flattened into its own row by
+#: `_haystack` rather than named here, because `search.matches` only reads a
+#: dict's KEYS — and for a payload it is the values (which client, which route)
+#: that an operator searches for.
+_SEARCHABLE = ("job_id", "status", "detail", "lane",
+               "registrant", "client_id", "route", "mode")
+
+
+def _haystack(row: Dict[str, Any]) -> Dict[str, Any]:
+    """A job row flattened so the payload's own fields are searchable.
+
+    Only the payload keys named in `_SEARCHABLE` are lifted. A job payload can
+    carry anything a caller sent — including, on a live-flow run, applicant
+    fields — so lifting the whole payload would make `q` a search over data the
+    clients endpoint deliberately masks.
+    """
+    payload = row.get("payload") or {}
+    merged = {k: v for k, v in row.items() if k != "payload"}
+    for key in ("registrant", "client_id", "route", "mode", "lane"):
+        if key in payload and key not in merged:
+            merged[key] = payload[key]
+    return merged
 
 
 @router.get("/active", summary="Running jobs, per lane")

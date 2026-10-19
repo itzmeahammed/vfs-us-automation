@@ -32,6 +32,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from src.api.core.errors import ApiError
+from src.api.core import search
 
 WAITLIST = "waitlist"
 LIVE = "live"
@@ -111,13 +112,23 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
                  status: Optional[str] = None,
                  enabled: Optional[bool] = None,
                  include_problems: bool = False,
-                 runnable: Optional[bool] = None) -> List[Dict[str, Any]]:
+                 runnable: Optional[bool] = None,
+                 q: Optional[str] = None) -> List[Dict[str, Any]]:
     """Both flows, newest first.
 
     `include_problems` runs each client's full pre-flight and adds `runnable`
     and `problem_count` — the dashboard's "which clients are broken" in ONE
     call instead of a GET per client. Off by default: it is real work per
     client, and a picker does not need it. Filtering on `runnable` implies it.
+
+    `q` is a free-text match over the fields a list row ALREADY carries — see
+    `_SEARCHABLE`. It deliberately cannot reach a passport number, date of
+    birth, email or phone: `detail()` masks those and a list row never holds
+    them at all, so letting `q` match them would turn this endpoint into an
+    oracle for confirming a guessed value the API refuses to show.
+
+    `q` is applied BEFORE the pre-flight, so searching a large fleet costs one
+    cheap string match per client rather than a full validation per client.
     """
     include_problems = include_problems or runnable is not None
     from src.booking import requests as req_store
@@ -125,6 +136,7 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
 
     rows: List[Dict[str, Any]] = []
     route = route.upper() if route else None
+    needle = search.terms(q)
 
     if flow in (None, WAITLIST):
         history = journal.summarise_by_client()
@@ -149,6 +161,9 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
                 "run_count": int((history.get(cid) or {}).get("run_count") or 0),
                 "runnable": None, "problem_count": None,
             })
+            if not search.matches(rows[-1], needle, _SEARCHABLE):
+                rows.pop()
+                continue
             if include_problems:
                 from src.waitlist import validate
                 errors = [p for p in validate.precheck_client(cid, data)
@@ -170,6 +185,9 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
                 "appointment": req.data.get("booked") or None,
                 "runnable": None, "problem_count": None,
             })
+            if not search.matches(rows[-1], needle, _SEARCHABLE):
+                rows.pop()
+                continue
             if include_problems:
                 fields = {k: v for k, v in req.data.items()
                           if k not in req_store.STATE_KEYS}
@@ -188,6 +206,15 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
 
 def _name(data: Dict[str, Any]) -> str:
     return " ".join(str(data.get(k) or "") for k in ("first_name", "last_name")).strip()
+
+
+#: What `q` may look at on a client. Every one of these is already in the list
+#: response, so searching cannot reveal anything a plain GET /clients would
+#: not. DELIBERATELY ABSENT: passport_number, date_of_birth, email,
+#: phone_number — `detail()` masks them, a list row never holds them, and
+#: making them searchable would let a caller confirm a guessed value one
+#: request at a time. See src/api/core/search.py.
+_SEARCHABLE = ("client_id", "name", "route", "combos", "vfs_reference", "status")
 
 
 # --------------------------------------------------------------------------- #

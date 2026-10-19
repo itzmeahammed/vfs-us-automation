@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from src.api.modules.booking import handlers as handlers
 from src.api.modules.booking.schemas import InvitationStatus
 from src.api.modules.booking import payments as payments
+from src.api.core import search
 from src.api.core.context import actor_for
 from src.api.core.errors import ERROR_RESPONSES, ApiError
 from src.api.core.pagination import PageParams, paginate
@@ -123,18 +124,37 @@ def _invite_view(item: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+#: What `q` may look at on an invitation. All of these are already columns in
+#: the console's table. `clients` is a dict, and `search.matches` reads a
+#: dict's KEYS — here that is exactly right, because the keys are the client
+#: ids shown in the "Matched to" column. DELIBERATELY ABSENT: `account`, which
+#: `_invite_view` masks, and `history`, whose entries are not cleared for
+#: search. See src/api/core/search.py.
+_INVITE_SEARCHABLE = ("key", "applicant_name", "category", "route",
+                      "status", "clients")
+
+
 @router.get("/invitations", summary="VFS invitation emails and their outcome")
 def list_invitations(page: PageParams = Depends(),
                      status: Optional[InvitationStatus] = Query(
                          default=None, description="pending | booking | booked | "
                          "needs_attention | manual | expired | dismissed"),
-                     route: Optional[str] = None) -> Dict[str, Any]:
+                     route: Optional[str] = None,
+                     q: Optional[str] = Query(default=None, max_length=120,
+                         description=("Free-text search over the invitation "
+                                      "key, applicant name, category, route, "
+                                      "status and matched client ids. All "
+                                      "terms must match; each may match a "
+                                      "different field."))) -> Dict[str, Any]:
     from src.booking import invites
 
+    needle = search.terms(q)
     items = [i for i in invites.list_all(status=status)
              if not route or i.get("route") == route.upper()]
     items.reverse()                                          # newest first
-    return paginate([_invite_view(i) for i in items], page)
+    views = [_invite_view(i) for i in items]
+    return paginate([v for v in views
+                     if search.matches(v, needle, _INVITE_SEARCHABLE)], page)
 
 
 @router.get("/invitations/{key}", summary="One invitation")

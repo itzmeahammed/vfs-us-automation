@@ -79,7 +79,13 @@ def list_(page: PageParams = Depends(),
               "client's pre-flight, so it costs work per client).")),
           runnable: Optional[bool] = Query(default=None, description=(
               "Only clients that would (true) or would not (false) run now. "
-              "Implies include=problems."))) -> Dict[str, Any]:
+              "Implies include=problems.")),
+          q: Optional[str] = Query(default=None, max_length=120, description=(
+              "Free-text search over client_id, name, route, combos, VFS "
+              "reference and status. All terms must match, each may match a "
+              "different field. Cannot search a passport number, date of "
+              "birth, email or phone — those are masked and are never in a "
+              "list row."))) -> Dict[str, Any]:
     if flow and flow not in service.FLOWS:
         raise ApiError(422, "flow must be 'waitlist' or 'live'.")
     wanted = {p.strip() for p in (include or "").split(",") if p.strip()}
@@ -87,7 +93,7 @@ def list_(page: PageParams = Depends(),
         raise ApiError(422, "include accepts only 'problems'.")
     return paginate(service.list_clients(flow, route, status, enabled,
                                          include_problems="problems" in wanted,
-                                         runnable=runnable), page)
+                                         runnable=runnable, q=q), page)
 
 
 @router.get("/{client_id}", summary="One client")
