@@ -1071,6 +1071,15 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                 _click(page, submit, f"step '{name}' submit", timeout_ms)
                 page.wait_for_timeout(1500)
 
+                # Dismiss any VFS modal/dialog that appears after submit
+                # (e.g. France's "no slots" Reminder popup). Run JS to
+                # click any visible dialog button so the walk can proceed.
+                post_js = step.get("post_submit_js")
+                if post_js:
+                    log.info(f"  running post_submit_js on '{name}'...")
+                    page.evaluate(post_js)
+                    page.wait_for_timeout(1500)
+
             report.ok = True
             report.detail = f"completed; now at {page.url}"
 

@@ -1,7 +1,8 @@
 {
   "_comment": "UAE -> Netherlands booking flow. Built from AE-SWE/AE-HUN proven configs (2026-10-15).",
   "extends": "_default",
-  "enabled": true,
+  "enabled": false,
+  "_comment_enabled": "NLD is waitlist-only. No live/full automation. Portal falls back to waitlist flow when no slots are available.",
   "steps": [
     {
       "name": "start_booking",
