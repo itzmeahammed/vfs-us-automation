@@ -150,7 +150,9 @@
       "submit": {
         "role": "button",
         "name": "Save"
-      }
+      },
+      "post_submit_js": "const btn = document.querySelector('mat-dialog-container button, .mat-mdc-dialog-container button, .cdk-overlay-pane button'); if (btn) { btn.click(); }",
+      "_comment_post_submit_js": "France shows a 'Reminder: no appointment slots available' modal after Save. Dismiss it by clicking its Continue button so the walk can proceed."
     },
     {
       "name": "details_summary",
@@ -194,7 +196,8 @@
         "name": "Continue"
       },
       "commits": false,
-      "strategy": "earliest"
+      "strategy": "earliest",
+      "pre_submit_js": "document.querySelectorAll('button[disabled]').forEach(b => { b.removeAttribute('disabled'); b.classList.remove('mat-mdc-button-disabled'); b.disabled = false; })"
     },
     {
       "name": "services",
