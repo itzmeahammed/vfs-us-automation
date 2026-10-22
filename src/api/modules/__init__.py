@@ -23,6 +23,7 @@ def v1_router() -> APIRouter:
     from src.api.modules.booking.router import router as booking
     from src.api.modules.catalog.router import router as catalog
     from src.api.modules.clients.router import router as clients
+    from src.api.modules.inbox.router import router as inbox
     from src.api.modules.jobs.router import router as jobs
     from src.api.modules.notifications.router import router as notifications
     from src.api.modules.system.router import public_router, router as system
@@ -30,6 +31,6 @@ def v1_router() -> APIRouter:
 
     root = APIRouter(prefix="/v1")
     for sub in (public_router, system, accounts, catalog, clients, waitlist,
-                booking, jobs, notifications):
+                booking, inbox, jobs, notifications):
         root.include_router(sub)
     return root

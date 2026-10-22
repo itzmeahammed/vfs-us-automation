@@ -355,7 +355,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"schedule\": {},\n  \"timeouts\": {},\n  \"retry\": {},\n  \"browser\": {},\n  \"account_safety\": {},\n  \"waitlist\": {},\n  \"webhook\": {},\n  \"inbox\": {},\n  \"bandwidth\": {}\n}"
+              "body": "{\n  \"switches\": {},\n  \"schedule\": {},\n  \"timeouts\": {},\n  \"retry\": {},\n  \"browser\": {},\n  \"account_safety\": {},\n  \"waitlist\": {},\n  \"webhook\": {},\n  \"inbox\": {},\n  \"bandwidth\": {}\n}"
             }
           ]
         },
@@ -637,6 +637,12 @@
                   "disabled": true
                 },
                 {
+                  "key": "q",
+                  "value": "",
+                  "description": "Free-text search over client_id, name, route, combos, VFS reference and status. All terms must match, each may match a different field. Cannot search a passport number, date of birth, email or phone — those are masked and are never in a list row.",
+                  "disabled": true
+                },
+                {
                   "key": "limit",
                   "value": "50",
                   "description": "",
@@ -702,6 +708,12 @@
                       "key": "runnable",
                       "value": "",
                       "description": "Only clients that would (true) or would not (false) run now. Implies include=problems.",
+                      "disabled": true
+                    },
+                    {
+                      "key": "q",
+                      "value": "",
+                      "description": "Free-text search over client_id, name, route, combos, VFS reference and status. All terms must match, each may match a different field. Cannot search a passport number, date of birth, email or phone — those are masked and are never in a list row.",
                       "disabled": true
                     },
                     {
@@ -1303,7 +1315,7 @@
                 "documents"
               ]
             },
-            "description": "Attach a document to a client, for routes whose form requires an upload.\n\nCall this when `GET /routes/{route}/readiness` reports a field with\n`\"kind\": \"file\"`. After uploading, set that field's value in the client to\nthe sentinel `\"managed\"` so the run looks the document up in the store.\n\nNever returns the stored path: it is a location on the bot's filesystem and\na caller has no use for it.",
+            "description": "Gated on the flow like its GET and DELETE siblings.\n\nThis used to attach `waitlist.upload_document` directly, skipping the\n`_waitlist_only` check the other two document routes make. The handler then\nlooked the client up in the WAITLIST store and 404'd, so uploading for a\nlive client reported \"No client '<id>'.\" — \"this client does not exist\" —\ninstead of the accurate \"live clients have no documents\" that GET returns.\n\nThe signature mirrors the handler's so FastAPI still parses the multipart\nbody; only the guard is added.",
             "body": {
               "mode": "formdata",
               "formdata": [
@@ -1662,7 +1674,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"accepted\": true,\n  \"message\": \"string\",\n  \"job\": {\n    \"job_id\": \"string\",\n    \"run_id\": \"\",\n    \"status\": \"string\",\n    \"command\": [\n      \"string\"\n    ],\n    \"pid\": 0,\n    \"started_at\": \"string\",\n    \"finished_at\": \"string\",\n    \"exit_code\": 0,\n    \"log_file\": \"string\",\n    \"detail\": \"string\",\n    \"payload\": {},\n    \"outcome\": \"string\",\n    \"results\": [\n      {}\n    ],\n    \"needs_attention\": false\n  },\n  \"replayed\": false\n}"
+              "body": "{\n  \"accepted\": true,\n  \"message\": \"string\",\n  \"job\": {\n    \"job_id\": \"string\",\n    \"run_id\": \"\",\n    \"status\": \"string\",\n    \"command\": [\n      \"string\"\n    ],\n    \"pid\": 0,\n    \"started_at\": \"string\",\n    \"finished_at\": \"string\",\n    \"exit_code\": 0,\n    \"log_file\": \"string\",\n    \"detail\": \"string\",\n    \"payload\": {},\n    \"outcome\": \"string\",\n    \"error\": {\n      \"key\": \"string\"\n    },\n    \"results\": [\n      {}\n    ],\n    \"needs_attention\": false\n  },\n  \"replayed\": false\n}"
             }
           ],
           "event": [
@@ -2039,7 +2051,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"routes\": [\n    {\n      \"route\": \"string\",\n      \"enabled\": false,\n      \"commit_step\": \"\",\n      \"steps\": [\n        {}\n      ]\n    }\n  ],\n  \"clients\": [\n    {\n      \"client_id\": \"string\",\n      \"route\": \"string\",\n      \"status\": \"\",\n      \"vfs_reference\": \"string\",\n      \"phase\": \"\",\n      \"needs_attention\": false\n    }\n  ]\n}"
+              "body": "{\n  \"routes\": [\n    {\n      \"route\": \"string\",\n      \"enabled\": false,\n      \"commit_step\": \"\",\n      \"steps\": [\n        {}\n      ]\n    }\n  ],\n  \"clients\": [\n    {\n      \"client_id\": \"string\",\n      \"route\": \"string\",\n      \"status\": \"\",\n      \"vfs_reference\": \"string\",\n      \"phase\": \"\",\n      \"needs_attention\": false\n    }\n  ],\n  \"clients_readable\": true\n}"
             }
           ]
         },
@@ -2123,6 +2135,12 @@
                   "disabled": true
                 },
                 {
+                  "key": "q",
+                  "value": "",
+                  "description": "Free-text search over the invitation key, applicant name, category, route, status and matched client ids. All terms must match; each may match a different field.",
+                  "disabled": true
+                },
+                {
                   "key": "limit",
                   "value": "50",
                   "description": "",
@@ -2165,6 +2183,12 @@
                       "key": "route",
                       "value": "",
                       "description": "",
+                      "disabled": true
+                    },
+                    {
+                      "key": "q",
+                      "value": "",
+                      "description": "Free-text search over the invitation key, applicant name, category, route, status and matched client ids. All terms must match; each may match a different field.",
                       "disabled": true
                     },
                     {
@@ -2379,6 +2403,12 @@
                   "disabled": true
                 },
                 {
+                  "key": "q",
+                  "value": "",
+                  "description": "Free-text search over job id, status, detail and the payload's registrant/client/route/mode. All terms must match; each may match a different field.",
+                  "disabled": true
+                },
+                {
                   "key": "limit",
                   "value": "50",
                   "description": "",
@@ -2426,6 +2456,12 @@
                       "key": "needs_attention",
                       "value": "false",
                       "description": "",
+                      "disabled": true
+                    },
+                    {
+                      "key": "q",
+                      "value": "",
+                      "description": "Free-text search over job id, status, detail and the payload's registrant/client/route/mode. All terms must match; each may match a different field.",
                       "disabled": true
                     },
                     {
@@ -2563,7 +2599,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"job_id\": \"string\",\n  \"run_id\": \"\",\n  \"status\": \"string\",\n  \"command\": [\n    \"string\"\n  ],\n  \"pid\": 0,\n  \"started_at\": \"string\",\n  \"finished_at\": \"string\",\n  \"exit_code\": 0,\n  \"log_file\": \"string\",\n  \"detail\": \"string\",\n  \"payload\": {},\n  \"outcome\": \"string\",\n  \"results\": [\n    {}\n  ],\n  \"needs_attention\": false\n}"
+              "body": "{\n  \"job_id\": \"string\",\n  \"run_id\": \"\",\n  \"status\": \"string\",\n  \"command\": [\n    \"string\"\n  ],\n  \"pid\": 0,\n  \"started_at\": \"string\",\n  \"finished_at\": \"string\",\n  \"exit_code\": 0,\n  \"log_file\": \"string\",\n  \"detail\": \"string\",\n  \"payload\": {},\n  \"outcome\": \"string\",\n  \"error\": {\n    \"key\": \"string\"\n  },\n  \"results\": [\n    {}\n  ],\n  \"needs_attention\": false\n}"
             }
           ]
         },
@@ -2710,7 +2746,7 @@
                   "value": "application/json"
                 }
               ],
-              "body": "{\n  \"job_id\": \"string\",\n  \"run_id\": \"\",\n  \"status\": \"string\",\n  \"command\": [\n    \"string\"\n  ],\n  \"pid\": 0,\n  \"started_at\": \"string\",\n  \"finished_at\": \"string\",\n  \"exit_code\": 0,\n  \"log_file\": \"string\",\n  \"detail\": \"string\",\n  \"payload\": {},\n  \"outcome\": \"string\",\n  \"results\": [\n    {}\n  ],\n  \"needs_attention\": false\n}"
+              "body": "{\n  \"job_id\": \"string\",\n  \"run_id\": \"\",\n  \"status\": \"string\",\n  \"command\": [\n    \"string\"\n  ],\n  \"pid\": 0,\n  \"started_at\": \"string\",\n  \"finished_at\": \"string\",\n  \"exit_code\": 0,\n  \"log_file\": \"string\",\n  \"detail\": \"string\",\n  \"payload\": {},\n  \"outcome\": \"string\",\n  \"error\": {\n    \"key\": \"string\"\n  },\n  \"results\": [\n    {}\n  ],\n  \"needs_attention\": false\n}"
             }
           ]
         }
@@ -3069,6 +3105,209 @@
               "body": "{}"
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "Inbox",
+      "item": [
+        {
+          "name": "Is the inbox watcher alive, and what did it find",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/inbox/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "inbox",
+                "status"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "200 example (shape only)",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/inbox/status",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "inbox",
+                    "status"
+                  ]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{}"
+            }
+          ]
+        },
+        {
+          "name": "Watcher status as Server-Sent Events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/inbox/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "inbox",
+                "stream"
+              ],
+              "query": [
+                {
+                  "key": "interval",
+                  "value": "10",
+                  "description": "seconds between updates",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Pushes a `status` event immediately and then every `interval` seconds,\nfor up to an hour, so a page can show the watcher working without\npolling. Each event's data is the same object GET /v1/inbox/status returns."
+          },
+          "response": []
+        },
+        {
+          "name": "VFS appointment-confirmation emails",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/inbox/confirmations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "inbox",
+                "confirmations"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "",
+                  "description": "matched | unmatched | ambiguous",
+                  "disabled": true
+                },
+                {
+                  "key": "route",
+                  "value": "",
+                  "description": "",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "",
+                  "disabled": true
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "200 example (shape only)",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/inbox/confirmations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "inbox",
+                    "confirmations"
+                  ],
+                  "query": [
+                    {
+                      "key": "status",
+                      "value": "",
+                      "description": "matched | unmatched | ambiguous",
+                      "disabled": true
+                    },
+                    {
+                      "key": "route",
+                      "value": "",
+                      "description": "",
+                      "disabled": true
+                    },
+                    {
+                      "key": "limit",
+                      "value": "50",
+                      "description": "",
+                      "disabled": true
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0",
+                      "description": "",
+                      "disabled": true
+                    }
+                  ]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{}"
+            }
+          ]
+        },
+        {
+          "name": "Run one inbox pass now",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/inbox/pass",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "inbox",
+                "pass"
+              ]
+            },
+            "description": "Reads every mailbox once and acts on what it finds exactly as the\nbackground watcher would (booking only while invite_booking is on).\n409 when a pass is already running."
+          },
+          "response": []
         }
       ]
     }

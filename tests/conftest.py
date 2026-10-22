@@ -74,3 +74,30 @@ def _isolate_inbox_seen_state(tmp_path, monkeypatch):
     monkeypatch.setattr(seen, "STATE_DIR", str(directory))
     monkeypatch.setattr(seen, "STATE_FILE", str(directory / "inbox_seen.json"))
     yield
+
+
+# --------------------------------------------------------------------------- #
+# Keep the developer's real mailboxes and the live watcher out of the suite    #
+# --------------------------------------------------------------------------- #
+
+import pytest as _pytest_inbox_guard  # noqa: E402
+
+
+@_pytest_inbox_guard.fixture(autouse=True)
+def _no_real_mailboxes_or_background_watcher(monkeypatch):
+    """[inbox] watch_all_accounts pulls every account in the REAL
+    config/credentials.local.ini into mailbox_accounts(), and background_watch
+    would start an IMAP-polling thread inside any TestClient that runs the
+    lifespan. Neither belongs in a test: both are off here unless a test turns
+    them on against its own stubs."""
+    try:
+        from src.settings import settings
+        monkeypatch.setattr(settings().inbox, "watch_all_accounts", False)
+        monkeypatch.setattr(settings().inbox, "background_watch", False)
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        from src.inbox import background
+        monkeypatch.setattr(background, "start", lambda: False)
+    except Exception:                                   # noqa: BLE001
+        pass

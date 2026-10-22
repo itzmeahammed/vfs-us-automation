@@ -28,6 +28,14 @@ REAL_DATES = ["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-11"]
 REAL_TIMES = ["11:15", "11:30", "11:45"]
 
 
+@pytest.fixture(autouse=True)
+def _no_availability_wait(monkeypatch):
+    """Fake calendars are complete on arrival; don't sit out the real wait."""
+    from src.booking import walk as walk_mod
+
+    monkeypatch.setattr(walk_mod, "DEFAULT_AVAILABILITY_WAIT_MS", 0)
+
+
 @pytest.fixture(scope="module")
 def html():
     if not os.path.isfile(HTML_PATH):
@@ -1609,3 +1617,145 @@ def test_walk_flow_hands_the_client_window_to_the_slot_picker(monkeypatch):
 
     assert seen["values"]["date_from"] == "2026-10-10"
     assert seen["values"]["date_to"] == "2026-10-20"
+
+
+def _walk_with_empty_calendar(monkeypatch, dry_run):
+    """A route whose slot step has pre_submit_js, over a calendar with no dates."""
+    from unittest import mock
+
+    from src.booking import config as booking_config
+    from src.booking import walk as walk_mod
+    from src.waitlist import register
+
+    js = "/* force-enable Continue */"
+    steps = [{"name": "select_slot", "type": "slot_pick", "pre_submit_js": js},
+             {"name": "services", "type": "form"}]
+    monkeypatch.setattr(booking_config, "steps_for", lambda *a, **k: steps)
+    monkeypatch.setattr(register, "_await_page", lambda *a, **k: None)
+    monkeypatch.setattr(walk_mod, "_page_text", lambda *a, **k: "")
+    monkeypatch.setattr(walk_mod, "_dwell", lambda *a, **k: None)
+
+    def no_dates(*a, **k):
+        raise RuntimeError("No appointment is available in the window.")
+
+    monkeypatch.setattr(walk_mod, "_do_slot_pick", no_dates)
+    page = mock.MagicMock()
+    page.url = "https://example.invalid/book-appointment"
+    result = walk_mod.walk_flow(page, "AE-HUN", entry="new", dry_run=dry_run,
+                                values={"date_from": "2026-10-22",
+                                        "date_to": "2026-11-22"},
+                                capture="off")
+    forced = any(c.args and c.args[0] == js for c in page.evaluate.call_args_list)
+    return result, forced
+
+
+def test_a_commit_run_never_forces_past_an_empty_calendar(monkeypatch):
+    """No slot means no booking — never a walk on to the Pay click.
+
+    2026-10-22, c8c76e4fa3dab8e8: an AE-HUN --commit found 0 dates in four
+    months, ran pre_submit_js to enable Continue, and walked services and
+    review-pay to the payment click with no date picked.
+    """
+    result, forced = _walk_with_empty_calendar(monkeypatch, dry_run=False)
+
+    assert not forced
+    assert result.stopped_at == "select_slot"
+    assert [s.name for s in result.steps if s.ok] == []
+
+
+def test_a_dry_run_may_still_force_past_for_dom_capture(monkeypatch):
+    _, forced = _walk_with_empty_calendar(monkeypatch, dry_run=True)
+
+    assert forced
+
+
+def _probe(walk_steps_ok, errors=(), interrupted=False):
+    from src.booking.probe import ProbeResult
+    from src.booking.walk import StepReport, WalkResult
+
+    walk = None
+    if walk_steps_ok is not None:
+        walk = WalkResult()
+        for i, ok in enumerate(walk_steps_ok):
+            walk.steps.append(StepReport(name=f"s{i}", ok=ok))
+    return ProbeResult(route="AE-HUN", errors=list(errors), walk=walk,
+                       interrupted=interrupted)
+
+
+def test_a_walk_that_stopped_on_a_failed_step_exits_non_zero():
+    """c8c76e4fa3dab8e8 ended needs_attention but the job list said succeeded."""
+    from src.booking.__main__ import _probe_exit_code
+
+    assert _probe_exit_code(_probe([True, True, False])) == 1
+
+
+def test_a_clean_walk_and_a_plain_probe_exit_zero():
+    from src.booking.__main__ import _probe_exit_code
+
+    assert _probe_exit_code(_probe([True, True])) == 0
+    assert _probe_exit_code(_probe(None)) == 0
+    assert _probe_exit_code(_probe(None, errors=["login failed"])) == 1
+    assert _probe_exit_code(_probe([False], interrupted=True)) == 130
+
+
+class _LateCalendar:
+    """A page whose available days arrive `after` reads after it is opened."""
+
+    def __init__(self, after, dates=("2026-11-04",)):
+        self.reads, self.after, self.dates = 0, after, list(dates)
+
+    def locator(self, selector):
+        page = self
+
+        class _Loc:
+            first = property(lambda s: s)
+
+            def wait_for(self, **k):
+                pass
+
+            def count(self):
+                if "date-availiable" not in selector:
+                    return 1
+                page.reads += 1
+                return len(page.dates) if page.reads > page.after else 0
+
+            def nth(self, i):
+                class _Cell:
+                    def get_attribute(self, name):
+                        return page.dates[i]
+                return _Cell()
+
+        return _Loc()
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+def _no_loader(monkeypatch):
+    from src.vfs_bot import turnstile
+
+    monkeypatch.setattr(turnstile, "wait_for_loader", lambda *a, **k: None)
+
+
+def test_a_month_read_before_vfs_fills_it_waits_for_the_dates(monkeypatch):
+    """AE-HUN 2026-10-22: November read as 0 while 04-11 and 16-11 were open."""
+    from src.booking.walk import read_month_dates
+
+    _no_loader(monkeypatch)
+    page = _LateCalendar(after=3)
+    cal = {"available_day": "td.fc-daygrid-day.date-availiable"}
+
+    assert read_month_dates(page, cal, wait_ms=5000) == ["2026-11-04"]
+    assert page.reads == 4
+
+
+def test_a_truly_empty_month_gives_up_after_the_wait(monkeypatch):
+    from src.booking import walk as walk_mod
+
+    _no_loader(monkeypatch)
+    clock = iter(range(0, 1000))
+    monkeypatch.setattr(walk_mod.time, "monotonic", lambda: next(clock))
+    page = _LateCalendar(after=10**6)
+    cal = {"available_day": "td.fc-daygrid-day.date-availiable"}
+
+    assert walk_mod.read_month_dates(page, cal, wait_ms=5000) == []

@@ -657,7 +657,16 @@ def register(page, route: str, combo: str, registrant, account: str = "",
                            attempted_this_run=attempted_this_run)
     if not verdict:
         logging.info(f"Waitlist registration skipped: {verdict.reason}")
-        return result.finish(Status.SKIPPED, verdict.reason)
+        # Journalled so the attempt is VISIBLE — in the client's timeline, in
+        # /v1/waitlist/status, in `journal` — not only in a terminal that has
+        # since been closed. A skipped row never blocks and never counts
+        # toward any cap (journal readers filter on status).
+        result.finish(Status.SKIPPED, verdict.reason)
+        try:
+            journal.update_status(result)
+        except Exception as e:                                # noqa: BLE001
+            logging.warning(f"Could not journal the skip: {e}")
+        return result
 
     dry_run = guards.dry_run() if force_dry_run is None else force_dry_run
     cfg = waitlist_config.get(route)

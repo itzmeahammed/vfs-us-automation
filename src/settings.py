@@ -180,10 +180,21 @@ class Inbox(_Section):
     VFS account's own email and password, resolved through waitlist/accounts.py.
     """
 
-    #: Seconds between passes when watching continuously. Deliberately slow: an
-    #: invitation is valid for 48 hours, so minutes of latency are irrelevant and
-    #: a low poll rate keeps the watcher a negligible load on the mail server.
-    poll_seconds: int = Field(default=300, ge=30)
+    #: Seconds between passes when watching continuously. An invitation is
+    #: valid for 36-48 hours, so 20 minutes of latency costs nothing and keeps
+    #: the watcher a negligible load on the mail server.
+    poll_seconds: int = Field(default=1200, ge=30)
+
+    #: Run the watcher as a background thread inside the API process
+    #: (src/inbox/background.py), so mail is read every poll_seconds rather
+    #: than once per slot-check run. The booking side is still gated by
+    #: [switches] invite_booking; with that off the thread only records.
+    background_watch: bool = True
+
+    #: Also watch every account in config/credentials.local.ini that has an
+    #: `email_password`. OFF: by default only accounts that hold a waitlist
+    #: registration are watched, because only they receive VFS invitations.
+    watch_all_accounts: bool = False
 
     #: How far back a mailbox's FIRST pass looks. Without a bound, a mailbox with
     #: years of history would be fetched in full on day one. Anything older than
@@ -220,6 +231,15 @@ class Waitlist(_Section):
     auto_trigger_dry_run: bool = True
     max_per_run: int = Field(default=1, ge=0)
     max_per_day: int = Field(default=5, ge=0)
+    # How many LOGIN attempts one run makes before giving up, each on a
+    # DIFFERENT exit IP from the pool (same account). Only the login phase is
+    # retried — nothing is ever re-submitted. 1 = the old behaviour.
+    login_ip_tries: int = Field(default=2, ge=1)
+    # How many FAILED attempts one client may collect on one combination per
+    # day before the guards stop retrying them until tomorrow. Bounds the
+    # "retry on every trigger forever" case a login failure used to be.
+    # 0 = no cap.
+    max_failures_per_client_per_day: int = Field(default=3, ge=0)
     # Telegram for REGISTRATION outcomes. OFF by default: this bot runs on
     # demand with you watching the terminal, so a message is redundant noise in
     # a chat whose value is that it only pings when the hourly checker finds

@@ -1,8 +1,10 @@
 {
   "_comment": "UAE -> Netherlands booking flow. Built from AE-SWE/AE-HUN proven configs (2026-10-15).",
   "extends": "_default",
-  "enabled": false,
+  "enabled": true,
   "_comment_enabled": "NLD is waitlist-only. No live/full automation. Portal falls back to waitlist flow when no slots are available.",
+  "entries_enabled": {"waitlist": true, "new": false},
+  "_comment_entries_enabled": "2026-10-20: book from VFS invitation emails (waitlist entry) but never from a live slot (new entry). The waitlist-entry pages (dashboard_resume, verify_identity) are inherited from _default and have not yet been walked on an invited NLD account; a mismatch fails BEFORE payment and the invitation goes to a human.",
   "steps": [
     {
       "name": "start_booking",

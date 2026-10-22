@@ -275,8 +275,10 @@ def route_problem(route: str) -> str:
             return f"no booking map for {route} (config/booking/{route}.json)"
         if booking_config.ENTRY_WAITLIST not in booking_config.entry_modes(route):
             return f"{route}'s booking map has no waitlist entry"
-        if not booking_config.is_enabled(route):
-            return f"{route}'s booking map is not enabled yet"
+        if not booking_config.is_enabled(route, booking_config.ENTRY_WAITLIST):
+            return (f"{route}'s booking map is not enabled for invitations "
+                    f"(config/booking/{route}.json \"entries_enabled\": "
+                    "{\"waitlist\": true})")
     except Exception as exc:                                # noqa: BLE001
         return f"{route}'s booking map is unreadable: {exc}"
     return ""

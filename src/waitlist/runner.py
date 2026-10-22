@@ -33,10 +33,23 @@ from src.utils import proxy_pool
 from src.utils.chrome_launcher import ChromeProcess
 from src.utils.config_reader import get_config_value, set_config_value
 from src.vfs_bot import slot_check, turnstile
+from src.vfs_bot.errors import (
+    AccessRestrictedError,
+    AccountBlockedError,
+    AccountLockedError,
+    CdpConnectError,
+    EmailNotRegisteredError,
+    GeoBlockedError,
+    InvalidCredentialsError,
+    IpBlockedError,
+    LoginFormNotReadyError,
+    RetryableError,
+    SignInDisabledError,
+)
 from src.vfs_bot.vfs_bot_factory import get_vfs_bot
 from src.waitlist import accounts
 from src.waitlist import config as waitlist_config
-from src.waitlist import detect, guards, notify
+from src.waitlist import detect, guards, journal, notify
 from src.waitlist import register as register_mod
 from src.waitlist import registrant as registrant_mod
 from src.waitlist.errors import (
@@ -45,6 +58,20 @@ from src.waitlist.errors import (
     WaitlistNotOfferedError,
 )
 from src.waitlist.result import Status, WaitlistResult
+
+#: Login failures that mean "this IP is not working here", never the account:
+#: a 403201 block, VFS's 403203 refusal, Cloudflare/Turnstile that would not
+#: pass, a login form that never rendered, or a CDP endpoint that never came
+#: up. The runner answers these by relaunching on a DIFFERENT exit IP with the
+#: SAME account. Mirrors the supervisor's rotation set.
+_IP_ERRORS = (IpBlockedError, GeoBlockedError, SignInDisabledError,
+              LoginFormNotReadyError, CdpConnectError)
+
+#: Login failures that ARE the account's fault. Never retried: hammering a
+#: locked or wrongly-configured account is how it stays locked.
+_ACCOUNT_ERRORS = (InvalidCredentialsError, EmailNotRegisteredError,
+                   AccountLockedError, AccountBlockedError,
+                   AccessRestrictedError)
 
 
 class SlotsAvailable(Exception):
@@ -387,6 +414,40 @@ def run_registration(source: str, dest: str,
             + (f" with --combo '{only_combo}'" if only_combo else "")
             + ". Check the \"combos\" lists in the client files.")
 
+    # PREFERENCE ORDER: a client who already holds an entry on this route
+    # (registered, or a submit awaiting a human) is finished here. Dropped
+    # BEFORE login, so re-running a registered client costs nothing and never
+    # touches the portal.
+    held_by = {}
+    for person, _ in plan:
+        if person.id not in held_by:
+            held_by[person.id] = journal.blocking_entry_for_route(route, person.id)
+    for pid, row in held_by.items():
+        if row:
+            logging.info(
+                f"{pid} already holds a {route} entry for '{row.get('combo')}' "
+                f"(status {row.get('status')}"
+                + (f", ref {row.get('vfs_reference')}" if row.get("vfs_reference") else "")
+                + ") — nothing to do for this client.")
+    plan = [(p, c) for p, c in plan if not held_by.get(p.id)]
+    if not plan:
+        raise WaitlistConfigError(
+            f"Every client for {route} already holds a waitlist entry. "
+            "Nothing to do.")
+
+    # Clients that already hit today's failure cap are dropped from the plan
+    # HERE, before a login is spent on them. Their rows in the journal say why.
+    capped = [(p, c) for p, c in plan
+              if guards.failure_cap_problem(route, c, p.id)]
+    for person, combo in capped:
+        logging.warning(guards.failure_cap_problem(route, combo, person.id))
+    plan = [pc for pc in plan if pc not in capped]
+    if not plan:
+        raise WaitlistConfigError(
+            f"Every client for {route} has hit today's failure cap "
+            "([waitlist] max_failures_per_client_per_day). Nothing to do until "
+            "tomorrow; read the failed rows in the journal for why.")
+
     logging.info(
         f"Plan: {len(plan)} registration(s) across {len(people)} client(s) — "
         + "; ".join(f"{p.id}:{c}" for p, c in plan))
@@ -456,42 +517,198 @@ def run_registration(source: str, dest: str,
             resolved=resolved, account=account, proxy_url=proxy_url,
             force_dry_run=force_dry_run, keep_open=keep_open,
             results=results, committed_this_run=committed_this_run, bot=bot,
+            proxy_forced=(proxy is not None),
         )
+
+
+def _journal_login_failure(plan, route: str, account: str, reason: str,
+                           results: List[WaitlistResult]) -> None:
+    """One FAILED row per planned registration when the login never happened.
+
+    Before this, a login failure left NO record: the client's timeline said
+    nothing, the daily failure cap had nothing to count, and the API could not
+    show that an attempt had been made. 'failed' is the right status — nothing
+    was submitted, so it blocks nothing — and the reason names the cause.
+    """
+    for person, combo in plan:
+        result = WaitlistResult(
+            route=route, combo=combo, registrant_id=person.id,
+            status=Status.FAILED, account=account,
+        ).finish(Status.FAILED, f"login failed: {reason}")
+        try:
+            journal.update_status(result)
+        except Exception as e:                                # noqa: BLE001
+            logging.warning(f"Could not journal the login failure: {e}")
+        results.append(result)
+
+
+APPOINTMENT_URL_FRAGMENT = "application-detail"
+
+
+def _ensure_appointment_page(bot, page, login_url: str):
+    """Puts the browser back on Appointment Details if it has left it.
+
+    No-op when already there. Otherwise opens the dashboard (same session, no
+    new login) and clicks Start New Booking again. Nothing was submitted on the
+    way out — a combination that reached the committing click and failed is
+    journalled 'unknown' and stops the whole run before this is reached.
+    """
+    current = getattr(page, "url", "") or ""
+    if APPOINTMENT_URL_FRAGMENT in current:
+        return page
+    dashboard = login_url.rsplit("/login", 1)[0] + "/dashboard" \
+        if "/login" in login_url else login_url
+    logging.info(f"Returning to Appointment Details (was on {current or '?'}).")
+    try:
+        page.goto(dashboard, timeout=settings().timeouts.page_load_ms,
+                  wait_until="domcontentloaded")
+        turnstile.wait_for_loader(page)
+        bot.start_booking(page, await_page=True)
+    except Exception as e:                                    # noqa: BLE001
+        raise WaitlistConfigError(
+            f"Could not get back to Appointment Details: {e}") from e
+    return page
+
+
+def _skipped(route: str, combo: str, registrant_id: str, account: str,
+             reason: str) -> WaitlistResult:
+    """A SKIPPED result, journalled.
+
+    Journalled so a run that logged in and then declined every combination
+    ("no waitlist offered", a capacity rule, a guard) is visible in the
+    client's timeline and the API, not only in the terminal that ran it. A
+    skipped row never blocks and never counts toward a cap.
+    """
+    result = WaitlistResult(
+        route=route, combo=combo, registrant_id=registrant_id,
+        status=Status.SKIPPED, account=account,
+    ).finish(Status.SKIPPED, reason)
+    try:
+        journal.update_status(result)
+    except Exception as e:                                    # noqa: BLE001
+        logging.warning(f"Could not journal the skip: {e}")
+    return result
+
+
+def _next_proxy(route: str, email: str, tried: set) -> Optional[str]:
+    """A pool IP not yet tried this run, or None when there is none."""
+    try:
+        newp, _ip = proxy_pool.pick_for_run(route, email=email, exclude=tried)
+    except Exception as e:                                    # noqa: BLE001
+        logging.debug(f"Could not pick another proxy: {e}")
+        return None
+    if newp and newp not in tried:
+        return newp
+    return None
 
 
 def _run_registration_locked(*, route, source, dest, plan, url, resolved,
                              account, proxy_url, force_dry_run, keep_open,
                              results, committed_this_run,
-                             bot) -> List[WaitlistResult]:
+                             bot, proxy_forced: bool = False) -> List[WaitlistResult]:
     """The browser-driving half of run_registration, holding the run lock.
 
     Split out purely so the lock's scope is explicit and covers every line that
     touches Chrome or the journal. See run_registration for the contract.
+
+    LOGIN IS RETRIED, REGISTRATION IS NOT. The login phase (Chrome launch,
+    Cloudflare, sign-in, reaching Appointment Details) may be attempted up to
+    [waitlist] login_ip_tries times, each on a DIFFERENT exit IP from the pool
+    with the SAME account — a blocked IP is the common failure, and it is the
+    IP's fault, not the account's. Once logged in, nothing past this point is
+    ever retried: a retry after a submit is how a client gets registered
+    twice. When every login attempt fails, one FAILED journal row is written
+    per planned registration so the attempt is visible everywhere a human
+    looks (CLI, API timeline, daily failure cap).
     """
     _reset_usage()
-    chrome = ChromeProcess(port=settings().retry.cdp_port, url=url,
-                           proxy=proxy_url, profile_key=resolved.email)
-    try:
-        chrome.start()
-        # Set ON THE BOT as well as in the config: a concurrent slot check
-        # launches its own Chrome, and the shared config key would leave both
-        # bots attached to whichever started last.
-        set_config_value("browser", "cdp_url", chrome.cdp_url)
-        egress_changed = bool(getattr(chrome, "egress_changed", False))
-        set_config_value("browser", "keep_cf_clearance",
-                         "false" if egress_changed else "true")
+    tries = max(1, int(settings().waitlist.login_ip_tries or 1))
+    tried = {proxy_url} if proxy_url else set()
+    chrome = None
+    page = None
+    logged_in = False
+    account_fault = False
+    attempt = 0
 
-        bot = get_vfs_bot(source, dest)
-        bot.cdp_url = chrome.cdp_url
-        bot.keep_cf_clearance = not egress_changed
-        bot.set_credential(resolved.email, resolved.password)
-        page = _login_and_reach_appointment_page(bot, url)
+    try:
+        # ---- login phase: retried, IP rotated ------------------------------
+        while True:
+            attempt += 1
+            chrome = ChromeProcess(port=settings().retry.cdp_port, url=url,
+                                   proxy=proxy_url, profile_key=resolved.email)
+            try:
+                chrome.start()
+                # Set ON THE BOT as well as in the config: a concurrent slot
+                # check launches its own Chrome, and the shared config key
+                # would leave both bots attached to whichever started last.
+                set_config_value("browser", "cdp_url", chrome.cdp_url)
+                egress_changed = bool(getattr(chrome, "egress_changed", False))
+                set_config_value("browser", "keep_cf_clearance",
+                                 "false" if egress_changed else "true")
+
+                bot = get_vfs_bot(source, dest)
+                bot.cdp_url = chrome.cdp_url
+                bot.keep_cf_clearance = not egress_changed
+                bot.set_credential(resolved.email, resolved.password)
+                page = _login_and_reach_appointment_page(bot, url)
+                logged_in = True
+                break
+            except _ACCOUNT_ERRORS as e:
+                account_fault = True
+                logging.error(f"Login failed — account problem, not retried: {e}")
+                _journal_login_failure(plan, route, account, str(e), results)
+                return results
+            except (_IP_ERRORS + (RetryableError,)) as e:
+                where = proxy_pool.label(proxy_url) if proxy_url else "local IP"
+                logging.warning(f"Login attempt {attempt}/{tries} failed on "
+                                f"{where}: {e}")
+                if attempt >= tries:
+                    _journal_login_failure(plan, route, account, str(e), results)
+                    return results
+                # Tear this browser down before the next one starts; the
+                # finally below handles only the LAST one.
+                shutdown(bot, chrome)
+                bot, chrome = None, None
+                newp = None
+                if isinstance(e, _IP_ERRORS) and not proxy_forced:
+                    newp = _next_proxy(route, resolved.email, tried)
+                if newp:
+                    tried.add(newp)
+                    proxy_url = newp
+                    logging.warning(
+                        f"Rotating to a different IP {proxy_pool.label(newp)} "
+                        f"for attempt {attempt + 1} (same account "
+                        f"{resolved.masked}).")
+                else:
+                    logging.warning(
+                        "No alternate IP available — retrying on the same "
+                        f"egress for attempt {attempt + 1}.")
+                time.sleep(max(0, int(settings().retry.backoff_seconds or 0)))
 
         checkbox = waitlist_config.checkbox_selector(route)
 
+        # Clients finished in THIS run: registered, submit in flight, or (in a
+        # rehearsal) walked to the commit boundary. Their remaining combos are
+        # lower preferences and are dropped without touching the browser —
+        # the guard would refuse them anyway, but only after navigating the
+        # account back to Appointment Details and selecting the combination.
+        finished = {}
+
         for person, combo_label in plan:
+            if person.id in finished:
+                logging.info(
+                    f"--- {person.label()} · {combo_label} --- not tried: "
+                    f"'{finished[person.id]}' is a higher preference and "
+                    "already done in this run.")
+                continue
             logging.info(f"--- {person.label()} · {combo_label} ---")
             try:
+                # A combination that failed part-way leaves the browser on a
+                # later page (Your Details, Review). Every combination starts
+                # from Appointment Details, so go back there first — otherwise
+                # one failure cascades into "dropdown not present" for every
+                # combination after it.
+                page = _ensure_appointment_page(bot, page, url)
                 parts = _combo_parts(combo_label, route)
                 _select_combo(page, parts, combo_label)
 
@@ -511,11 +728,9 @@ def _run_registration_locked(*, route, source, dest, plan, url, resolved,
                 if not detect.is_offered(page, checkbox):
                     logging.info(
                         f"'{combo_label}': no slots and no waitlist offered.")
-                    results.append(WaitlistResult(
-                        route=route, combo=combo_label, registrant_id=person.id,
-                        status=Status.SKIPPED, account=account,
-                        reason="no waitlist offered for this combination",
-                    ).finish(Status.SKIPPED))
+                    results.append(_skipped(
+                        route, combo_label, person.id, account,
+                        "no waitlist offered for this combination"))
                     continue
 
                 # How many clients one account may carry — and whether it may
@@ -525,10 +740,8 @@ def _run_registration_locked(*, route, source, dest, plan, url, resolved,
                     resolved, person, route, combo_label)
                 if not allowed:
                     logging.warning(f"'{combo_label}': {why}")
-                    results.append(WaitlistResult(
-                        route=route, combo=combo_label, registrant_id=person.id,
-                        status=Status.SKIPPED, account=account, reason=why,
-                    ).finish(Status.SKIPPED))
+                    results.append(_skipped(route, combo_label, person.id,
+                                            account, why))
                     continue
 
                 result = register_mod.register(
@@ -540,13 +753,20 @@ def _run_registration_locked(*, route, source, dest, plan, url, resolved,
                 results.append(result)
                 if result.committed:
                     committed_this_run += 1
-                notify.notify_registered(result, login_url=url)
+                if result.committed or result.status == Status.DRY_RUN:
+                    finished[person.id] = combo_label
+                try:
+                    notify.notify_registered(result, login_url=url)
+                except Exception as e:                        # noqa: BLE001
+                    # A notifier failure must never end the run for the
+                    # clients still in the plan — the journal already holds
+                    # the outcome.
+                    logging.warning(f"Could not send the registration "
+                                    f"notification: {e}")
 
             except WaitlistNotOfferedError as e:
-                results.append(WaitlistResult(
-                    route=route, combo=combo_label, registrant_id=person.id,
-                    status=Status.SKIPPED, account=account, reason=str(e),
-                ).finish(Status.SKIPPED))
+                results.append(_skipped(route, combo_label, person.id,
+                                        account, str(e)))
             except WaitlistCommittedError:
                 # Already journalled as 'unknown' and alerted by register().
                 # STOP the whole run: with an ambiguous submit outstanding, the
@@ -557,10 +777,15 @@ def _run_registration_locked(*, route, source, dest, plan, url, resolved,
                 raise
             except WaitlistConfigError as e:
                 logging.error(f"'{combo_label}': {e}")
-                results.append(WaitlistResult(
+                failed = WaitlistResult(
                     route=route, combo=combo_label, registrant_id=person.id,
-                    status=Status.FAILED, account=account, reason=str(e),
-                ).finish(Status.FAILED))
+                    status=Status.FAILED, account=account,
+                ).finish(Status.FAILED, str(e))
+                try:
+                    journal.update_status(failed)
+                except Exception as je:                       # noqa: BLE001
+                    logging.warning(f"Could not journal the failure: {je}")
+                results.append(failed)
 
     finally:
         if keep_open:
@@ -574,16 +799,23 @@ def _run_registration_locked(*, route, source, dest, plan, url, resolved,
         # Feed the shared circuit breaker. "Reached the portal" is the signal,
         # NOT "every client registered": a combination with no waitlist on offer
         # is a perfectly healthy run, and striking the account for it would bench
-        # it for a VFS state that has nothing to do with the account. `bot` is
-        # only bound once _login_and_reach_appointment_page() has returned, so it
-        # is exactly the "did we get in?" flag — and it stays None when login
-        # threw, which is the case worth counting.
-        _record_account_outcome(
-            resolved.email, route, ok=bot is not None,
-            reason="waitlist run failed before reaching the portal")
+        # it for a VFS state that has nothing to do with the account.
+        #
+        # `logged_in` is set only after _login_and_reach_appointment_page()
+        # returned. (It used to be `bot is not None`, but `bot` is bound BEFORE
+        # login, so a failed login cleared the account's strikes instead of
+        # counting one.) An IP-side failure is nobody's strike: it is neither
+        # a success nor the account's fault, so nothing is recorded.
+        if logged_in:
+            _record_account_outcome(resolved.email, route, ok=True)
+        elif account_fault:
+            _record_account_outcome(
+                resolved.email, route, ok=False,
+                reason="waitlist run: VFS refused the account at login")
         _report_usage(bot, proxy_url, "run")
         _record_usage(proxy_url)
-        shutdown(bot, chrome)
+        if chrome is not None:
+            shutdown(bot, chrome)
 
     return results
 

@@ -362,3 +362,49 @@ def test_each_tenant_is_journalled_independently(monkeypatch):
     assert [p.id for p in waiting] == ["tenant-b"], (
         "one tenant's existing registration blocked another tenant")
     assert calls == ["tenant-a", "tenant-b"]
+
+
+# --------------------------------------------------------------------------
+# Preference order and one entry per route (live run 2026-10-20)
+# --------------------------------------------------------------------------
+
+def test_a_client_registered_on_another_combo_is_not_waiting(monkeypatch):
+    monkeypatch.setattr("src.waitlist.registrant.for_route",
+                        lambda *a, **k: [_FakePerson("x", ["Abu Dhabi - SCHENGEN",
+                                                           "Dubai - SCHENGEN"])])
+    monkeypatch.setattr("src.waitlist.journal.blocking_entry", lambda *a, **k: None)
+    monkeypatch.setattr("src.waitlist.journal.blocking_entry_for_route",
+                        lambda *a, **k: {"status": "success",
+                                         "combo": "Abu Dhabi - SCHENGEN"})
+    assert autotrigger.find_waiting_clients("AE-CHE", "Dubai - SCHENGEN") == []
+
+
+def test_a_higher_preference_open_in_the_same_tick_wins(monkeypatch):
+    person = _FakePerson("x", ["Abu Dhabi - SCHENGEN", "Dubai - SCHENGEN"])
+    monkeypatch.setattr("src.waitlist.registrant.for_route", lambda *a, **k: [person])
+    monkeypatch.setattr("src.waitlist.journal.blocking_entry", lambda *a, **k: None)
+    monkeypatch.setattr("src.waitlist.journal.blocking_entry_for_route",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(autotrigger, "_opened_this_tick",
+                        {"abu dhabi - schengen", "dubai - schengen"})
+    # The lower preference is left to the higher one ...
+    assert autotrigger.find_waiting_clients("AE-CHE", "Dubai - SCHENGEN") == []
+    # ... which still finds the client.
+    assert autotrigger.find_waiting_clients("AE-CHE", "Abu Dhabi - SCHENGEN") == [person]
+
+
+def test_a_lower_preference_runs_when_the_higher_one_is_not_open(monkeypatch):
+    person = _FakePerson("x", ["Abu Dhabi - SCHENGEN", "Dubai - SCHENGEN"])
+    monkeypatch.setattr("src.waitlist.registrant.for_route", lambda *a, **k: [person])
+    monkeypatch.setattr("src.waitlist.journal.blocking_entry", lambda *a, **k: None)
+    monkeypatch.setattr("src.waitlist.journal.blocking_entry_for_route",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(autotrigger, "_opened_this_tick", {"dubai - schengen"})
+    assert autotrigger.find_waiting_clients("AE-CHE", "Dubai - SCHENGEN") == [person]
+
+
+def test_the_open_set_is_cleared_after_each_call(monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setattr(autotrigger, "_handle_one", lambda route, label: None)
+    autotrigger.handle_waitlist_opened("AE-CHE", ["Dubai - SCHENGEN"])
+    assert autotrigger._opened_this_tick == set()

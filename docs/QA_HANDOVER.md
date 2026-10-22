@@ -68,6 +68,17 @@ Tests: **2210 passed, 8 failed, 2 skipped**. All 8 failures are config drift (se
 - `test_every_mandatory_gateway_field_has_a_client_source`: client `u10432-che` lacks city, country code, postcode.
 - Five ITA tests and one route-fields test: the ITA waitlist config was changed from upload-based to typed fields on Oct 14, and the tests were not updated.
 
-## 6. Stale documentation
+## 6. Changed on 2026-10-20 (after this review)
+
+- **Waitlist login retried on a different IP, same account.** Up to `login_ip_tries` (default 2). Account faults (wrong password, locked) are never retried. Only login is retried; nothing after it is ever re-submitted.
+- **Every failed login now writes a `failed` journal row** with the reason, so it shows in the client timeline and the API. Failed logins no longer clear the account's strike counter.
+- **Per-client daily failure cap** (`max_failures_per_client_per_day`, default 3). Guard, runner and auto-trigger all honour it, so a client is no longer retried on every trigger forever.
+- **Reference pattern accepts 3-letter prefixes** (DEU, NEU, ITD), so success rows carry the reference.
+- **Paid bookings are classified `booked`.** The classifier now trusts the gateway's success row and no longer requires the walk's payment step to be "ok".
+- **Appointment-confirmation emails are consumed.** `src/booking/confirmations.py` marks the matching invitation or booking request `booked` with the VFS reference and answers the unanswered payment. Exact name match only; anything else is filed `unmatched` or `ambiguous` for a human.
+- **The inbox watcher runs inside the API** every 120 s (`[inbox] background_watch`), watches every pool account with a mailbox password (`watch_all_accounts`), and reports through `GET /v1/inbox/status`, `GET /v1/inbox/stream` (SSE), `GET /v1/inbox/confirmations`, `POST /v1/inbox/pass`. The supervisor's own pass runs only when that heartbeat is stale. See [API_SWITCHES_AND_INBOX.md](API_SWITCHES_AND_INBOX.md).
+- **Not changed:** `invite_booking` is still off. Turn it on with `PATCH /v1/switches {"invite_booking": true}` when you are ready for real bookings from invitations.
+
+## 7. Stale documentation
 
 README and ARCHITECTURE still say "never books anything"; `run_task.ps1` says :29/:59 (it is :00/:30); ARCHITECTURE says the wrapper holds the mutex (it no longer does). The country status table in `config/PROGRSS.md` is accurate and is the best starting point.

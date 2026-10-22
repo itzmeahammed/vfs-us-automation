@@ -207,6 +207,24 @@ def count_since(iso_timestamp: str) -> int:
     )
 
 
+def failures_since(route: str, combo: str, registrant_id: str,
+                   iso_timestamp: str) -> int:
+    """How many FAILED rows this (route, combo, client) has at/after a time.
+
+    Used for the per-client daily failure cap. Only 'failed' counts: a failed
+    login or a pre-submit page error. Skips and dry runs never touched VFS,
+    and anything committed is handled by blocking_entry instead.
+    """
+    want = _key(route, combo, registrant_id)
+    return sum(
+        1 for row in entries()
+        if row.get("status") == Status.FAILED
+        and (row.get("started_at") or "") >= iso_timestamp
+        and _key(row.get("route"), row.get("combo"),
+                 row.get("registrant_id")) == want
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Write                                                                        #
 # --------------------------------------------------------------------------- #
@@ -394,15 +412,47 @@ def summarise_by_client() -> Dict[str, dict]:
         row = out.setdefault(rid, {
             "last_status": None, "last_run_at": None,
             "vfs_reference": None, "run_count": 0,
+            "holding_status": None, "holding_combo": None,
+            "_latest_per_combo": {},
         })
+        status = entry.get("status")
+
+        # Latest row per (route, combo): what the client HOLDS on the portal.
+        # Read before the skip filter below — a skip never changes a holding,
+        # but it must not be mistaken for one either.
+        combo_key = (_normalise(entry.get("route")).upper(),
+                     _normalise(entry.get("combo")))
+        row["_latest_per_combo"][combo_key] = entry
+
+        # A SKIP is not an attempt: nothing touched VFS. Counting it as the
+        # latest outcome made a registered client read as 'waiting' the moment
+        # a later run skipped their lower-preference combos ("already holds an
+        # entry"). Skips stay in the journal and the timeline; they just do
+        # not drive the rollup.
+        if status == Status.SKIPPED:
+            continue
         row["run_count"] += 1
 
         # The journal is append-ordered, but timestamps are the honest key —
         # an entry written out of order must not look like the latest.
         if row["last_run_at"] is None or when >= (row["last_run_at"] or ""):
             row["last_run_at"] = when or None
-            row["last_status"] = entry.get("status")
+            row["last_status"] = status
 
-        if entry.get("status") == "success" and entry.get("vfs_reference"):
+        if status == "success" and entry.get("vfs_reference"):
             row["vfs_reference"] = entry["vfs_reference"]
+
+    # The entry each client holds, if any: the committed state (success,
+    # pending, unknown) among the latest row per combo. A human-resolved
+    # 'failed' on that combo correctly frees it.
+    rank = {Status.UNKNOWN: 3, Status.PENDING: 2, Status.SUCCESS: 1}
+    for row in out.values():
+        held = [r for r in row.pop("_latest_per_combo").values()
+                if r.get("status") in Status.COMMITTED_STATES]
+        if held:
+            top = max(held, key=lambda r: rank.get(r.get("status"), 0))
+            row["holding_status"] = top.get("status")
+            row["holding_combo"] = top.get("combo")
+            if top.get("status") == Status.SUCCESS and top.get("vfs_reference"):
+                row["vfs_reference"] = top["vfs_reference"]
     return out

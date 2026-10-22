@@ -594,9 +594,18 @@ def _probe_exit_code(result) -> int:
     matters because a wrapper or a supervisor reads these: "the human pressed
     Ctrl-C" must never look like "the run failed and should be retried" — and
     on a --commit run a retry is a second booking and a second charge.
+
+    A walk that stopped on a failed step is a failure too. ProbeResult.ok only
+    covers the dashboard read, so a commit that never booked anything exited 0
+    and the API listed it as "succeeded" (2026-10-22, c8c76e4fa3dab8e8). A dry
+    run that reaches the commit boundary marks that step ok, so it stays 0.
+    Never 2: the job manager reads 2 as SLOTS_AVAILABLE.
     """
     if getattr(result, "interrupted", False):
         return 130
+    walk = getattr(result, "walk", None)
+    if walk is not None and not walk.ok:
+        return 1
     return 0 if result.ok else 1
 
 

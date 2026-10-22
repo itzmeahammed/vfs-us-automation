@@ -466,3 +466,30 @@ def test_an_unknown_entry_mode_is_refused(config_dir):
     write(config_dir, "AE-XXX", minimal())
     with pytest.raises(BookingConfigError, match="Unknown entry mode"):
         booking_config.steps_for("AE-XXX", "sideways")
+
+
+# --------------------------------------------------------------------------- #
+# Per-entry enabling (2026-10-20): invitations on, live slots off              #
+# --------------------------------------------------------------------------- #
+
+def test_entries_enabled_overrides_the_route_flag_per_entry(monkeypatch):
+    from src.booking import config as bc
+    monkeypatch.setattr(bc, "get", lambda route: {
+        "enabled": False, "entries_enabled": {"waitlist": True}})
+    assert bc.is_enabled("AE-X", bc.ENTRY_WAITLIST) is True
+    assert bc.is_enabled("AE-X", bc.ENTRY_NEW) is False      # falls back to enabled
+    assert bc.is_enabled("AE-X") is False                     # route-wide answer
+
+
+def test_without_entries_enabled_the_route_flag_decides(monkeypatch):
+    from src.booking import config as bc
+    monkeypatch.setattr(bc, "get", lambda route: {"enabled": True})
+    assert bc.is_enabled("AE-X", bc.ENTRY_WAITLIST) is True
+    assert bc.is_enabled("AE-X", bc.ENTRY_NEW) is True
+
+
+def test_nld_books_from_invitations_but_never_from_live_slots():
+    from src.booking import autobook, config as bc, invites
+    assert bc.is_enabled("AE-NLD", bc.ENTRY_WAITLIST) is True
+    assert bc.is_enabled("AE-NLD", bc.ENTRY_NEW) is False
+    assert invites.route_problem("AE-NLD") == ""

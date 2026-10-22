@@ -193,7 +193,34 @@ def check(route: str, combo: str, registrant,
             "raise [waitlist] max_per_day to allow more",
         )
 
+    # 9 — per-client daily failure cap. A client whose attempts keep failing
+    # (login, Turnstile, a page that will not fill) is not retried on every
+    # trigger forever: after N failed rows today they rest until tomorrow, and
+    # the rows say why. 0 disables the cap.
+    capped = failure_cap_problem(route, combo, registrant.id)
+    if capped:
+        return GuardVerdict(False, capped)
+
     return ALLOW
+
+
+def failure_cap_problem(route: str, combo: str, registrant_id: str) -> str:
+    """'' when this client may be tried again today, else the reason not to.
+
+    Shared by the guard (inside a run), the runner (before Chrome starts) and
+    the auto-trigger (before a run is even spawned), so a capped client costs
+    no login anywhere.
+    """
+    cap = int(settings().waitlist.max_failures_per_client_per_day or 0)
+    if cap <= 0:
+        return ""
+    failed = journal.failures_since(route, combo, registrant_id, _today_iso())
+    if failed < cap:
+        return ""
+    return (f"{registrant_id} has failed {failed} time(s) today on '{combo}' "
+            f"(cap {cap}, [waitlist] max_failures_per_client_per_day). Not "
+            "retrying until tomorrow — read the failed rows in the journal "
+            "for why.")
 
 
 def startup_check() -> Optional[str]:

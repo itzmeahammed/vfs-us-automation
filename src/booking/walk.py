@@ -58,6 +58,15 @@ ENABLE_TIMEOUT_MS = 20000
 #: the first month reports "no slots" while the portal is showing plenty.
 DEFAULT_MAX_MONTHS_AHEAD = 4
 
+#: How long a month must show NO available day before it is believed empty.
+#: VFS draws the FullCalendar grid first and adds `date-availiable` to the day
+#: cells only when its availability call returns. Reading on arrival counted 0
+#: in November while the slot checker had seen 04-11 and 16-11 two minutes
+#: earlier (AE-HUN, 2026-10-22, c8c76e4fa3dab8e8). The wait ends the moment a
+#: date appears, so it only costs time on months that really are empty.
+#: Per route: "availability_wait_ms" on the slot step.
+DEFAULT_AVAILABILITY_WAIT_MS = 10000
+
 #: How to choose among the dates and times on offer.
 #:
 #:   earliest  the soonest appointment. The default, and right for a waitlist
@@ -389,6 +398,35 @@ def available_dates(page, calendar: Dict[str, Any]) -> List[str]:
     except Exception as e:
         log.debug(f"Could not read available dates: {e}")
     return sorted(dates)
+
+
+def read_month_dates(page, calendar: Dict[str, Any],
+                     wait_ms: int = DEFAULT_AVAILABILITY_WAIT_MS) -> List[str]:
+    """available_dates, once the month has actually LOADED.
+
+    Waits for the ngx-ui-loader overlay to clear and for the grid's day cells
+    to exist, then re-reads until a date shows up or `wait_ms` passes. An
+    empty answer from this means the month stayed empty for that long — not
+    that it was read before VFS had filled it in.
+    """
+    from src.vfs_bot import turnstile
+
+    deadline = time.monotonic() + max(wait_ms, 0) / 1000
+    turnstile.wait_for_loader(page, timeout=max(wait_ms, 1000))
+    day = calendar.get("day_cell", "td.fc-daygrid-day[data-date]")
+    try:
+        page.locator(day).first.wait_for(
+            state="attached",
+            timeout=max(int((deadline - time.monotonic()) * 1000), 1000))
+    except Exception as e:                                  # noqa: BLE001
+        log.debug(f"Calendar day cells did not appear: {e}")
+
+    while True:
+        found = available_dates(page, calendar)
+        if found or time.monotonic() >= deadline:
+            return found
+        page.wait_for_timeout(500)
+        turnstile.wait_for_loader(page, timeout=1000)
 
 
 #: Pause between deliberate actions. Not anti-detection theatre: VFS's own
@@ -978,8 +1016,12 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                 except Exception as slot_err:
                     # If the step has pre_submit_js, force past the empty
                     # calendar — used to walk remaining pages for DOM capture
-                    # when no slots are available.
-                    if step.get("pre_submit_js"):
+                    # when no slots are available. DRY RUNS ONLY: on a commit
+                    # this walked an AE-HUN booking with NO date picked through
+                    # services and review-pay to the Pay click (2026-10-22,
+                    # c8c76e4fa3dab8e8). Only VFS expiring the session kept it
+                    # from reaching the gateway. No slot is a hard stop.
+                    if step.get("pre_submit_js") and dry_run:
                         log.warning(f"  slot pick failed ({slot_err}); "
                                     "using pre_submit_js to force past it.")
                         page.evaluate(step["pre_submit_js"])
@@ -1519,9 +1561,11 @@ def _do_slot_pick(page, step: Dict[str, Any], report: StepReport,
     #                       while the agent's window sat one page ahead. So it
     #                       keeps paging until it finds a date that is actually
     #                       usable — or runs out of months.
+    wait_ms = int(step.get("availability_wait_ms")
+                  or DEFAULT_AVAILABILITY_WAIT_MS)
     for attempt in range(max_months):
+        found = read_month_dates(page, calendar, wait_ms)
         month = current_month(page, calendar)
-        found = available_dates(page, calendar)
         usable = (dates_in_window(found, window_from, window_to)
                   if strategy == STRATEGY_IN_RANGE else found)
 

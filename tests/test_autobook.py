@@ -197,6 +197,29 @@ def test_gateway_success_is_booked_with_the_appointment():
     assert out.details["requestrefno"] == "R-77"
 
 
+def test_a_paid_booking_is_booked_even_though_the_walk_marks_payment_not_ok():
+    """THE live shape. walk.py marks the payment step ok=False on EVERY submit
+    (so it is never retried) — success included. The classifier used to demand
+    walk.ok as well, so a paid booking could only ever land in needs_attention."""
+    walk = _Walk(PRE + [_Step("payment", ok=False)], stopped_at="payment",
+                 reason="The payment was submitted. Outcome page: ...")
+    rows = [SUBMITTING, {"event": "payment_result", "outcome": "success",
+                         "requestrefno": "R-78"}]
+    out = autobook.classify(_Result(walk=walk), "payment", rows)
+    assert out.status == store.BOOKED
+    assert out.details["requestrefno"] == "R-78"
+
+
+def test_a_paid_booking_whose_earlier_page_failed_is_still_not_booked():
+    """A success row with a broken page BEFORE payment is not a clean booking;
+    a human must look."""
+    walk = _Walk(PRE[:2] + [_Step("select_slot", ok=False), _Step("payment", ok=False)],
+                 stopped_at="payment")
+    rows = [SUBMITTING, {"event": "payment_result", "outcome": "success"}]
+    out = autobook.classify(_Result(walk=walk), "payment", rows)
+    assert out.status == store.NEEDS_ATTENTION
+
+
 @pytest.mark.parametrize("rows", [
     [SUBMITTING],                                                   # never answered
     [SUBMITTING, {"event": "payment_result", "outcome": "unknown"}],

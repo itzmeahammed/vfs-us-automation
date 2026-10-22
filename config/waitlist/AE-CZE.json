@@ -156,7 +156,7 @@
       "waitlisted"
     ],
     "_comment_success_text": "TODO — deliberately left at _default's loose match until the real headline is seen, then tighten it the way AE-CHE did ('your appointment is waitlisted'). A bare 'waitlist' also appears in the page disclaimer and in 'notified once your waitlist status is updated', and matching those would report success on a page that merely mentions waitlists.",
-    "reference_pattern": "\\b([A-Z]{4}\\d{9,})\\b",
-    "_comment_reference": "Inherited: four letters + 9-plus digits, e.g. Switzerland's SWDB79918334684. TODO — check the Czech reference has the same shape. If nothing matches the run still SUCCEEDS (the reference is journalled as null); success_text is what decides the outcome."
+    "reference_pattern": "\\b([A-Z]{3,4}\\d{9,})\\b",
+    "_comment_reference": "Inherited: three or four letters + 9-plus digits, e.g. Switzerland's SWDB79918334684 or Germany's DEU73214173427. TODO — check the Czech reference has the same shape. If nothing matches the run still SUCCEEDS (the reference is journalled as null); success_text is what decides the outcome."
   }
 }

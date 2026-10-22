@@ -160,10 +160,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.single_flight,
     )
     log.info("Job command: %s", " ".join(settings.job_command))
+
+    # The inbox watcher lives in this process (src/inbox/background.py): it
+    # reads the VFS mailboxes every [inbox] poll_seconds and, while
+    # [switches] invite_booking is on, books from the invitations it finds.
+    # GET /v1/inbox/status shows it working. A failure to start it must not
+    # stop the API: the supervisor still runs a pass per slot check.
+    try:
+        from src.inbox import background as inbox_background
+        inbox_background.start()
+    except Exception:                              # noqa: BLE001
+        log.exception("Could not start the inbox watcher thread — the "
+                      "supervisor's per-run pass is the only watcher.")
+
     try:
         yield
     finally:
         log.info("Shutting down — terminating any running jobs.")
+        try:
+            from src.inbox import background as inbox_background
+            inbox_background.stop()
+        except Exception:                          # noqa: BLE001
+            log.exception("Inbox watcher thread did not stop cleanly.")
         await job_manager.shutdown()
 
 

@@ -121,6 +121,25 @@ def resolve_combo_label(route: str, result_label: str) -> Optional[str]:
     return None
 
 
+#: Combinations (normalised) whose waitlist opened in the slot check being
+#: handled right now. Set by handle_waitlist_opened for the duration of one
+#: call; empty otherwise, so a direct plan_for() call behaves as before.
+_opened_this_tick: set = set()
+
+
+def _higher_preference_open(person: Any, combo: str) -> Optional[str]:
+    """The client's highest-preference combo that ALSO opened this tick and
+    ranks above `combo`, or None."""
+    if not _opened_this_tick:
+        return None
+    for preferred in person.combos:
+        if _normalise(preferred) == _normalise(combo):
+            return None
+        if _normalise(preferred) in _opened_this_tick:
+            return preferred
+    return None
+
+
 def find_waiting_clients(route: str, combo: str) -> List[Any]:
     """Enabled clients on this (route, combo) with no blocking journal entry.
 
@@ -150,6 +169,34 @@ def find_waiting_clients(route: str, combo: str) -> List[Any]:
         if blocking is not None:
             log.info("Client %s already has a %s entry for '%s' — skipping.",
                      person.id, blocking.get("status"), combo)
+            continue
+        # ONE ENTRY PER CLIENT PER ROUTE. A client registered (or with a submit
+        # outstanding) on ANOTHER combination of this route is finished: their
+        # combos are a preference order, not a list to register for all of.
+        held = journal.blocking_entry_for_route(route, person.id)
+        if held is not None:
+            log.info("Client %s already holds a %s entry on %s ('%s') — "
+                     "not waiting on '%s'.", person.id, held.get("status"),
+                     route, held.get("combo"), combo)
+            continue
+        # PREFERENCE ORDER within one tick: when a HIGHER-preference combo of
+        # this client opened in the same slot check, this one is left to it.
+        # Without this, whichever combo the route lists first would win.
+        better = _higher_preference_open(person, combo)
+        if better:
+            log.info("Client %s prefers '%s', also open now — not triggering "
+                     "for '%s'.", person.id, better, combo)
+            continue
+        # A client who has already failed N times today rests until tomorrow,
+        # and costs no login in the meantime.
+        try:
+            from src.waitlist import guards
+            capped = guards.failure_cap_problem(route, combo, person.id)
+        except Exception as exc:                   # noqa: BLE001
+            log.debug("Could not read the failure cap: %s", exc)
+            capped = ""
+        if capped:
+            log.info("Not triggering %s: %s", person.id, capped)
             continue
         waiting.append(person)
     return waiting
@@ -258,14 +305,22 @@ def handle_waitlist_opened(route: str, result_labels: List[str]) -> List[Trigger
                      "([waitlist] auto_trigger_enabled = false).", route)
             return plans
 
-        for label in result_labels or []:
-            try:
-                plan = _handle_one(route, label)
-                if plan is not None:
-                    plans.append(plan)
-            except Exception as exc:               # noqa: BLE001
-                log.exception("Auto-trigger failed for %s / %s: %s",
-                              route, label, exc)
+        global _opened_this_tick
+        _opened_this_tick = {
+            _normalise(c) for c in
+            (resolve_combo_label(route, lbl) for lbl in result_labels or [])
+            if c}
+        try:
+            for label in result_labels or []:
+                try:
+                    plan = _handle_one(route, label)
+                    if plan is not None:
+                        plans.append(plan)
+                except Exception as exc:           # noqa: BLE001
+                    log.exception("Auto-trigger failed for %s / %s: %s",
+                                  route, label, exc)
+        finally:
+            _opened_this_tick = set()
     except Exception as exc:                       # noqa: BLE001
         log.exception("Auto-trigger aborted for %s: %s", route, exc)
     return plans

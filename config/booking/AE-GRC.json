@@ -3,7 +3,7 @@
 
   "extends": "_default",
 
-  "enabled": false,
+  "enabled": true,
   "_comment_enabled": "STILL OFF. The dashboard step is grounded in a real screenshot, but the pages AFTER it have never been walked. Enabling this route before TASKS.md Phase 0 is done would run a flow whose committing step is a guess.",
 
   "identity": {

@@ -95,11 +95,13 @@ def waitlist_status(summary: Dict[str, Any], invite_state: str = "") -> str:
         return "needs_attention"
     if invite_state in ("pending", "booking"):
         return "invited" if invite_state == "pending" else "booking"
-    last = (summary or {}).get("last_status")
-    if last == "success":
-        return "registered"
-    if last in ("pending", "unknown"):
+    # What the client HOLDS on the portal decides, not the latest row: a later
+    # skip, dry run or failure on another combo does not undo a registration.
+    held = (summary or {}).get("holding_status")
+    if held in ("pending", "unknown"):
         return "needs_attention"
+    if held == "success":
+        return "registered"
     return "waiting"
 
 
@@ -156,6 +158,7 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
                 "created_at": str(data.get("created_at") or ""),
                 "updated_at": str(data.get("updated_at") or ""),
                 "vfs_reference": (history.get(cid) or {}).get("vfs_reference"),
+                "registered_combo": (history.get(cid) or {}).get("holding_combo"),
                 "last_status": (history.get(cid) or {}).get("last_status"),
                 "last_run_at": (history.get(cid) or {}).get("last_run_at"),
                 "run_count": int((history.get(cid) or {}).get("run_count") or 0),

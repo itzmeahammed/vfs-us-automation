@@ -751,13 +751,23 @@ def run_all_routes() -> bool:
     # Once per run, after every route: read the waitlist mailboxes, record
     # new invitations, and book (or escalate) each open one. Off unless
     # [switches] invite_booking; never allowed to fail the slot-check run.
+    #
+    # The API process normally runs this watcher continuously
+    # (src/inbox/background.py, every [inbox] poll_seconds). While its
+    # heartbeat is fresh this pass is skipped: the supervisor is the FALLBACK
+    # for when the API is down, not a second reader of the same mailboxes.
     try:
         from src.settings import settings as _settings
         if _settings().switches.invite_booking:
-            from src.booking import invites
-            from src.inbox import watcher as inbox_watcher
-            inbox_watcher.run_pass()
-            invites.process_pending()
+            from src.inbox import heartbeat as inbox_heartbeat
+            from src.inbox import service as inbox_service
+            if inbox_heartbeat.is_live():
+                age = inbox_heartbeat.age_seconds()
+                logging.info(
+                    "Inbox watcher in the API is live (heartbeat "
+                    f"{int(age or 0)}s old) — skipping the supervisor's pass.")
+            else:
+                inbox_service.run_cycle("supervisor")
     except Exception as e:
         logging.exception(f"Invite booking pass failed (non-fatal): {e}")
 

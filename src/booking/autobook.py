@@ -168,8 +168,9 @@ def classify(result: Any, commit_step: str,
     """Turn a ProbeResult into what happens to the request next.
 
     `payment_rows` are the payment-journal rows written DURING this attempt.
-    They, not the walk, decide "booked": the walk marks its payment step ok as
-    soon as the click happened, and the gateway's answer lives in the journal.
+    They, not the walk, decide "booked": the walk marks its payment step NOT
+    ok on every submit (so it is never retried), and the gateway's answer
+    lives in the journal.
     """
     walk = getattr(result, "walk", None)
     steps = [s.name for s in (getattr(walk, "steps", None) or [])]
@@ -206,7 +207,15 @@ def classify(result: Any, commit_step: str,
 
     if reached:
         answered = [r for r in payment_rows if r.get("event") == "payment_result"]
-        if walk.ok and any(r.get("outcome") == "success" for r in answered):
+        # THE GATEWAY'S ANSWER DECIDES, not the walk's flag on the payment step.
+        # walk.py marks the payment step not-ok on EVERY submit (success
+        # included) so that it is never retried, which made `walk.ok` false
+        # on the one path that mattered: a paid booking was filed as
+        # needs_attention and never reached this branch. Only the pages
+        # BEFORE payment have to be clean; the payment step's own verdict is
+        # the journal row.
+        pre_payment_ok = all(s.ok for s in walk.steps if s.name != commit_step)
+        if pre_payment_ok and any(r.get("outcome") == "success" for r in answered):
             return Outcome(store.BOOKED, "booked", "booked and paid",
                            booked_details)
         why = ("payment submitted but the gateway's answer was "
@@ -282,8 +291,8 @@ def gate_problem(route: str, test: bool = False) -> str:
         return "test booking is switched off ([switches] test_booking = false)"
     if not test and not switches.live_booking:
         return "live booking is switched off ([switches] live_booking = false)"
-    if not booking_config.is_enabled(route):
-        return f"booking is disabled in config/booking/{route}.json"
+    if not booking_config.is_enabled(route, booking_config.ENTRY_NEW):
+        return f"live booking is disabled in config/booking/{route}.json"
     from src.utils import route_pause
     paused = route_pause.problem(route, route_pause.LIVE)
     if paused:

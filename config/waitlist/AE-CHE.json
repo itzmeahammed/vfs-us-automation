@@ -400,7 +400,7 @@
       "your appointment is waitlisted"
     ],
     "_comment_success_text": "Matched case-insensitively against the page body; ALL entries must be present. Deliberately the specific headline rather than the bare word 'waitlist', which also appears in the disclaimer at the top of the page and in the 'notified once your waitlist status is updated' sentence — matching those would report success on a page that merely mentions waitlists.",
-    "reference_pattern": "\\b([A-Z]{4}\\d{9,})\\b",
+    "reference_pattern": "\\b([A-Z]{3,4}\\d{9,})\\b",
     "_comment_reference": "The booking reference shown top-right, e.g. SWDB79918334684. Captured into the journal so a registration can be found again on the portal. If nothing matches, the run still succeeds — the reference is recorded as null and the success_text match is what decides the outcome."
   }
 }

@@ -89,6 +89,11 @@ HISTORY_LIMIT = 50
 #: (config/payment/CYBERSOURCE.json), so a missing value has one right answer.
 DEFAULT_COUNTRY_CODE = "AE"
 
+#: The select's option values are ISO 3166 alpha-2. Anything else ("0000",
+#: "971", "UAE") matches no option and only fails on the live gateway — after
+#: the slot is taken.
+_COUNTRY_CODE_RE = re.compile(r"^[A-Z]{2}$")
+
 
 class RequestError(ValueError):
     """Base class for store errors."""
@@ -252,7 +257,7 @@ def route_problems(route: str) -> List[Any]:
             "route", f"{route} books only from a waitlist invitation, not "
                      "from a live slot.",
             hint="Use POST /clients to put this client on the waitlist.")]
-    if not booking_config.is_enabled(route):
+    if not booking_config.is_enabled(route, booking_config.ENTRY_NEW):
         return [_problem(
             "route", f"Booking is switched off for {route} "
                      f"(config/booking/{route}.json \"enabled\": false).")]
@@ -286,8 +291,8 @@ def normalise(data: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("date_from", "date_to"):
         if isinstance(out.get(key), str):
             out[key] = out[key].strip()
-    if not str(out.get("country_code") or "").strip():
-        out["country_code"] = DEFAULT_COUNTRY_CODE
+    country = str(out.get("country_code") or "").strip().upper()
+    out["country_code"] = country or DEFAULT_COUNTRY_CODE
     return out
 
 
@@ -410,6 +415,13 @@ def _check_billing(data: Dict[str, Any]) -> List[Any]:
             problems.append(_problem(
                 key, f"Required for payment: {key}.",
                 hint="The card payment page asks for it after the slot is taken."))
+
+    country = str(data.get("country_code") or "").strip().upper()
+    if country and not _COUNTRY_CODE_RE.match(country):
+        problems.append(_problem(
+            "country_code", "country_code must be a 2-letter ISO code.",
+            hint=f"Use {DEFAULT_COUNTRY_CODE} for the UAE — the payment page's "
+                 "country list matches nothing else."))
     return problems
 
 

@@ -491,12 +491,28 @@ def identity_policy(route: str) -> Dict[str, Any]:
     return policy
 
 
-def is_enabled(route: str) -> bool:
-    """Whether this route may run at all. Absent = disabled."""
+def is_enabled(route: str, entry: Optional[str] = None) -> bool:
+    """Whether this route may run — for one entry mode when `entry` is given.
+
+    "enabled" is the route-wide default. "entries_enabled" overrides it per
+    entry mode, because the two ways in carry different risks and are proven
+    separately:
+
+        "enabled": false,
+        "entries_enabled": {"waitlist": true}
+
+    books from VFS invitations while never booking a live slot. That is the
+    shape a waitlist-only country needs: before this split, switching off live
+    automation silently switched off invitation booking too. Absent = disabled.
+    """
     try:
-        return bool(get(route).get("enabled"))
+        cfg = get(route)
     except BookingConfigError:
         return False
+    per_entry = cfg.get("entries_enabled") or {}
+    if entry and isinstance(per_entry, dict) and entry in per_entry:
+        return bool(per_entry[entry])
+    return bool(cfg.get("enabled"))
 
 
 def configured_routes() -> List[str]:

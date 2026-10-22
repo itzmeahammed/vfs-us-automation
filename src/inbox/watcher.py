@@ -137,6 +137,17 @@ class PassResult:
         """
         return [o for o in self.observations if o.match.is_expired]
 
+    def appointments(self) -> List[Observation]:
+        """VFS confirming a BOOKED appointment — the end of the journey.
+
+        Matched by matcher NAME: the inbox config classifies it 'other'
+        because it is not a waitlist confirmation. src/booking/confirmations.py
+        consumes these to mark invitations and booking requests booked and to
+        answer the payment journal.
+        """
+        return [o for o in self.observations
+                if o.match.matcher_name == "appointment_confirmed"]
+
 
 # --------------------------------------------------------------------------- #
 # IMAP                                                                         #
@@ -455,57 +466,88 @@ def _extra_mailboxes() -> Dict[str, str]:
 def mailbox_accounts() -> List[Tuple[str, str]]:
     """(email, password) for every mailbox to watch, de-duplicated.
 
-    Two sources, in priority order:
+    ONLY ACCOUNTS THAT HOLD A REGISTRATION are watched. VFS mails the account
+    that created the waitlist entry — the invitation, the "Successfully Added
+    to Waitlist" confirmation, the appointment confirmation — so an account
+    nobody is registered under has nothing to say, and reading it every pass
+    is wasted IMAP work and wasted risk of a mailbox lockout.
 
-      1. [inbox] mailboxes   explicit, for accounts with no client file
-      2. client files        every config/registrants/*.json's waitlist account
+    Sources, in priority order:
 
-    Several clients may share one account, so the same mailbox would otherwise
-    be opened once per client. Explicit entries win on a collision — someone who
-    has named a mailbox and its password in the config means that password.
+      1. [inbox] mailboxes     explicit, always watched (a shared inbox, a trial)
+      2. registered clients    every client file whose journal shows an entry
+                               HELD on its route (success, or a submit still
+                               awaiting an answer — the confirmation email is
+                               what settles those)
+      3. [inbox] watch_all_accounts = true   opt-in: every credentials-pool
+                               account with a mailbox password
 
-    Order is stable so runs are reproducible.
+    The mailbox password is the account's `email_password` — from the client
+    file's account, else the credentials pool entry for the same address.
+    *** Never the VFS portal password. *** An account with neither is skipped,
+    loudly. Explicit entries win on a collision. Order is stable.
     """
     from src.waitlist import accounts as waitlist_accounts
+    from src.waitlist import journal
     from src.waitlist import registrant as registrant_mod
 
     found: Dict[str, str] = dict(_extra_mailboxes())
     if found:
         log.debug(f"{len(found)} mailbox(es) from [inbox] mailboxes.")
 
+    try:
+        from src.settings import settings
+        watch_all = bool(settings().inbox.watch_all_accounts)
+    except Exception:                                       # noqa: BLE001
+        watch_all = False
+    if watch_all:
+        try:
+            from src.utils import credentials as cred_mod
+            for _section, email, _pwd, mailbox_pw, _routes in cred_mod._pool_sections():
+                if email and mailbox_pw:
+                    found.setdefault(email, mailbox_pw)
+        except Exception as e:                              # noqa: BLE001
+            log.warning(f"Could not read the credentials pool for mailboxes: {e}")
+
+    try:
+        held = {rid for rid, row in journal.summarise_by_client().items()
+                if row.get("holding_status")}
+    except Exception as e:                                  # noqa: BLE001
+        # Fail OPEN to "watch the registered clients we can see": an
+        # unreadable journal must not silently stop invitations being read.
+        log.warning(f"Could not read the waitlist journal for mailboxes: {e}")
+        held = None
+
     for client in registrant_mod.load_all(skip_invalid=True):
+        if held is not None and client.id not in held:
+            continue
         try:
             account = waitlist_accounts.resolve(client)
         except Exception as e:
             log.debug(f"No account resolved for client {client.id}: {e}")
             continue
-        # THE MAILBOX PASSWORD. This dict feeds imap.login(), not a VFS form —
-        # account.password is the PORTAL credential and the two diverged when
-        # the webmail password was rotated on 2026-10-16. The property falls
-        # back to the portal one when no email_password is configured.
-        # THE MAILBOX PASSWORD, which is NOT account.password — this dict
-        # feeds imap.login(), and the two credentials diverged when the
-        # webmail password was rotated on 2026-10-16.
-        #
-        # An account without one is SKIPPED, loudly, rather than attempted
-        # with the portal password: a wrong password on a mail server is how
-        # a mailbox gets rate-limited or locked, and silently reading nothing
-        # is indistinguishable from "no invitations arrived".
-        #
-        # getattr because resolve() is monkeypatched with stubs in several
-        # tests and a watcher must not hard-require a newly added field.
-        if not (account and account.email):
+        if not (account and account.email) or account.email in found:
             continue
-        mailbox_pw = getattr(account, "email_password", "")
+        mailbox_pw = getattr(account, "email_password", "") or _pool_mailbox_pw(account.email)
         if not mailbox_pw:
             log.warning(
-                f"Mailbox for {account.email} is NOT being watched: no "
-                "'email_password' is configured for it. The IMAP password is "
-                "not assumed to equal the VFS portal password. "
+                f"Mailbox for {account.email} is NOT being watched: client "
+                f"{client.id} is registered under it, but no 'email_password' "
+                "is configured for it. The IMAP password is not assumed to "
+                "equal the VFS portal password. "
                 "Run: python -m src.utils.credentials check")
             continue
-        found.setdefault(account.email, mailbox_pw)
+        found[account.email] = mailbox_pw
     return sorted(found.items())
+
+
+def _pool_mailbox_pw(email: str) -> str:
+    """The credentials-pool `email_password` for this address, or ''."""
+    try:
+        from src.utils import credentials as cred_mod
+        return cred_mod.email_password_for(email, required=False) or ""
+    except Exception:                                       # noqa: BLE001
+        return ""
 
 
 def run_pass(state: Optional[seen_state.SeenState] = None,
@@ -599,6 +641,15 @@ def run_pass(state: Optional[seen_state.SeenState] = None,
             invites.record(result.invitations())
         except Exception as e:                              # noqa: BLE001
             log.error(f"Could not record invitations for booking: {e}")
+        # The other end of the pipeline: VFS confirming a booked appointment.
+        # Settles invitations, booking requests and unanswered payments from
+        # the account's own mail, which is the confirmation the browser never
+        # reads.
+        try:
+            from src.booking import confirmations
+            confirmations.record(result.appointments())
+        except Exception as e:                              # noqa: BLE001
+            log.error(f"Could not record appointment confirmations: {e}")
 
     return result
 

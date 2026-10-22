@@ -186,13 +186,39 @@ def _fill_mat_select(page, spec, value, timeout_ms):
             # so they are matched globally by role, exactly as slot_check does.
             page.wait_for_timeout(200)
             turnstile.wait_for_loader(page)
-            option = page.get_by_role(
-                "option", name=str(value), exact=bool(spec.get("exact"))).first
-            option.wait_for(state="visible", timeout=timeout_ms)
+            any_option = page.get_by_role("option").first
+            any_option.wait_for(state="visible", timeout=timeout_ms)
+
+            # READ the list, then choose. Waiting for one exact name used to
+            # burn 3 x 15s on a value the list simply does not contain (a client
+            # file saying "Indian" against VFS's "INDIA"), and then failed
+            # without saying what WAS offered.
+            texts = [t.strip() for t in
+                     page.get_by_role("option").all_inner_texts()]
+            chosen = best_option(str(value), texts,
+                                 exact_only=bool(spec.get("exact")))
+            if chosen is None:
+                raise _NoSuchOption(str(value), texts)
+            if _norm_option(chosen) != _norm_option(str(value)):
+                logging.info(f"  '{value}' matched option '{chosen}' "
+                             f"in {described}")
+            option = page.get_by_role("option", name=chosen, exact=True).first
             option.scroll_into_view_if_needed(timeout=5000)
             option.click(timeout=10000)
             page.wait_for_timeout(500)
             return
+        except _NoSuchOption as e:
+            # Not transient: retrying reads the same list. Fail now, and name
+            # the closest choices so the client record can be corrected.
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            raise WaitlistStepError(
+                f"'{value}' is not an option in dropdown {described}. "
+                f"Closest offered: {', '.join(e.nearest()) or 'none'}. "
+                "Fix the value in the client record."
+            ) from None
         except Exception as e:
             logging.warning(
                 f"Attempt {attempt}/{attempts}: could not select a value in "
@@ -210,6 +236,95 @@ def _fill_mat_select(page, spec, value, timeout_ms):
     raise WaitlistStepError(
         f"Could not select '{value}' in dropdown {described}."
     )
+
+
+class _NoSuchOption(Exception):
+    """The dropdown opened and listed its options; the wanted value is not
+    among them. Distinct from a timeout so it is never retried."""
+
+    def __init__(self, value: str, options: List[str]):
+        self.value = value
+        self.options = options
+        super().__init__(f"{value!r} not in {len(options)} option(s)")
+
+    def nearest(self, n: int = 5) -> List[str]:
+        import difflib
+        want = _norm_option(self.value)
+        by_norm = {_norm_option(o): o for o in self.options if o}
+        close = difflib.get_close_matches(want, list(by_norm), n=n, cutoff=0.5)
+        if not close:
+            close = [k for k in by_norm if k[:1] == want[:1]][:n]
+        return [by_norm[c] for c in close]
+
+
+#: Nationality as a person says it -> the country name VFS lists. VFS's
+#: "Current Nationality" dropdowns list COUNTRIES (e.g. "INDIA"), while client
+#: records and web forms often hold the demonym ("Indian"). Only the forms
+#: actually seen in client data or common for this market are listed; anything
+#: else still matches by name or prefix below.
+NATIONALITY_ALIASES = {
+    "INDIAN": "INDIA", "PAKISTANI": "PAKISTAN", "BANGLADESHI": "BANGLADESH",
+    "SRI LANKAN": "SRI LANKA", "NEPALI": "NEPAL", "NEPALESE": "NEPAL",
+    "FILIPINO": "PHILIPPINES", "FILIPINA": "PHILIPPINES",
+    "EMIRATI": "UNITED ARAB EMIRATES", "UAE": "UNITED ARAB EMIRATES",
+    "SAUDI": "SAUDI ARABIA", "OMANI": "OMAN", "QATARI": "QATAR",
+    "KUWAITI": "KUWAIT", "BAHRAINI": "BAHRAIN", "YEMENI": "YEMEN",
+    "JORDANIAN": "JORDAN", "LEBANESE": "LEBANON", "SYRIAN": "SYRIA",
+    "IRAQI": "IRAQ", "IRANIAN": "IRAN", "EGYPTIAN": "EGYPT",
+    "SUDANESE": "SUDAN", "MOROCCAN": "MOROCCO", "TUNISIAN": "TUNISIA",
+    "ALGERIAN": "ALGERIA", "NIGERIAN": "NIGERIA", "KENYAN": "KENYA",
+    "ETHIOPIAN": "ETHIOPIA", "UGANDAN": "UGANDA", "GHANAIAN": "GHANA",
+    "SOUTH AFRICAN": "SOUTH AFRICA", "AFGHAN": "AFGHANISTAN",
+    "CHINESE": "CHINA", "RUSSIAN": "RUSSIA", "UKRAINIAN": "UKRAINE",
+    "TURKISH": "TURKEY", "UZBEK": "UZBEKISTAN", "KAZAKH": "KAZAKHSTAN",
+    "INDONESIAN": "INDONESIA", "MALAYSIAN": "MALAYSIA", "THAI": "THAILAND",
+    "VIETNAMESE": "VIETNAM", "BRITISH": "UNITED KINGDOM",
+    "AMERICAN": "UNITED STATES", "CANADIAN": "CANADA",
+}
+
+
+def _norm_option(text: str) -> str:
+    return " ".join(str(text or "").replace(" ", " ").upper().split())
+
+
+def best_option(value: str, options: List[str],
+                exact_only: bool = False) -> Optional[str]:
+    """Which of `options` the caller means by `value`, or None. PURE.
+
+    In order, the first rule giving exactly ONE option wins:
+      1. equal, ignoring case and spacing
+      2. equal via NATIONALITY_ALIASES ("Indian" -> "INDIA")
+      3. (unless exact_only) the one option starting with the value
+      4. (unless exact_only) the one option the value starts with
+         ("INDIAN" starts with "INDIA")
+    Two or more candidates at a step is a refusal (None), never a guess:
+    "UNITED" must not pick between UNITED KINGDOM and UNITED STATES.
+    """
+    want = _norm_option(value)
+    if not want:
+        return None
+    normed = [(o, _norm_option(o)) for o in options if _norm_option(o)]
+
+    def one(cands):
+        uniq = {o for o, _ in cands}
+        return next(iter(uniq)) if len(uniq) == 1 else None
+
+    rules = [
+        lambda: [(o, n) for o, n in normed if n == want],
+        lambda: [(o, n) for o, n in normed
+                 if NATIONALITY_ALIASES.get(want) == n],
+    ]
+    if not exact_only:
+        rules += [
+            lambda: [(o, n) for o, n in normed if n.startswith(want)],
+            lambda: [(o, n) for o, n in normed
+                     if want.startswith(n) and len(n) >= 4],
+        ]
+    for rule in rules:
+        cands = rule()
+        if cands:
+            return one(cands)
+    return None
 
 
 def _fill_native_select(page, spec, value, timeout_ms):

@@ -765,6 +765,10 @@ def test_client_mailboxes_are_still_included(monkeypatch, inbox_config_value):
 
     monkeypatch.setattr(reg, "load_all", lambda skip_invalid=True: [FakeClient()])
     monkeypatch.setattr(acc, "resolve", lambda c: FakeAccount())
+    # Registered: only accounts holding a waitlist entry are watched.
+    from src.waitlist import journal as _j
+    monkeypatch.setattr(_j, "summarise_by_client",
+                        lambda: {"c1": {"holding_status": "success"}})
 
     found = dict(mailbox_accounts())
     assert set(found) == {"extra@x.com", "client@x.com"}
@@ -797,8 +801,81 @@ def test_a_client_without_a_mailbox_password_is_skipped_not_guessed(
 
     monkeypatch.setattr(reg, "load_all", lambda skip_invalid=True: [FakeClient()])
     monkeypatch.setattr(acc, "resolve", lambda c: FakeAccount())
+    # Registered: only accounts holding a waitlist entry are watched.
+    from src.waitlist import journal as _j
+    monkeypatch.setattr(_j, "summarise_by_client",
+                        lambda: {"c1": {"holding_status": "success"}})
 
     found = dict(mailbox_accounts())
     assert "client@x.com" not in found
     assert "portal-pw" not in found.values()
     assert set(found) == {"extra@x.com"}
+
+
+
+# --------------------------------------------------------------------------- #
+# Only REGISTERED accounts are watched (2026-10-20)                            #
+# --------------------------------------------------------------------------- #
+
+def _clients(monkeypatch, accounts, holding):
+    """accounts: {client_id: (email, email_password)}; holding: {client_id: status}."""
+    from src.waitlist import accounts as acc
+    from src.waitlist import journal
+    from src.waitlist import registrant as reg
+
+    class C:
+        def __init__(self, cid):
+            self.id = cid
+
+    class A:
+        def __init__(self, email, pw):
+            self.email, self.password, self.email_password = email, "portal", pw
+
+    monkeypatch.setattr(reg, "load_all",
+                        lambda skip_invalid=True: [C(c) for c in accounts])
+    monkeypatch.setattr(acc, "resolve", lambda c: A(*accounts[c.id]))
+    monkeypatch.setattr(journal, "summarise_by_client",
+                        lambda: {c: {"holding_status": st} for c, st in holding.items()})
+
+
+def test_only_accounts_holding_a_registration_are_watched(monkeypatch, inbox_config_value):
+    from src.inbox.watcher import mailbox_accounts
+    inbox_config_value("")
+    _clients(monkeypatch,
+             {"reg": ("reg@x.com", "m1"), "new": ("new@x.com", "m2"),
+              "inflight": ("fly@x.com", "m3")},
+             {"reg": "success", "inflight": "pending"})
+    assert set(dict(mailbox_accounts())) == {"reg@x.com", "fly@x.com"}
+
+
+def test_the_mailbox_password_falls_back_to_the_pool_never_the_portal(
+        monkeypatch, inbox_config_value):
+    import src.inbox.watcher as watcher_mod
+    inbox_config_value("")
+    _clients(monkeypatch, {"reg": ("reg@x.com", "")}, {"reg": "success"})
+    monkeypatch.setattr(watcher_mod, "_pool_mailbox_pw",
+                        lambda email: "pool-mailbox" if email == "reg@x.com" else "")
+    found = dict(watcher_mod.mailbox_accounts())
+    assert found == {"reg@x.com": "pool-mailbox"}
+
+
+def test_watch_all_accounts_is_an_opt_in(monkeypatch, inbox_config_value):
+    from src.inbox.watcher import mailbox_accounts
+    from src.settings import settings
+    from src.utils import credentials as cred_mod
+    inbox_config_value("")
+    _clients(monkeypatch, {}, {})
+    monkeypatch.setattr(cred_mod, "_pool_sections",
+                        lambda: [("cred1", "pool@x.com", "pw", "mb", "")])
+    monkeypatch.setattr(settings().inbox, "watch_all_accounts", False)
+    assert mailbox_accounts() == []
+    monkeypatch.setattr(settings().inbox, "watch_all_accounts", True)
+    assert dict(mailbox_accounts()) == {"pool@x.com": "mb"}
+
+
+def test_shared_accounts_are_opened_once(monkeypatch, inbox_config_value):
+    from src.inbox.watcher import mailbox_accounts
+    inbox_config_value("")
+    _clients(monkeypatch, {"a": ("one@x.com", "m"), "b": ("one@x.com", "m")},
+             {"a": "success", "b": "success"})
+    assert mailbox_accounts() == [("one@x.com", "m")]

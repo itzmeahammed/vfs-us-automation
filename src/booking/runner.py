@@ -727,10 +727,11 @@ def book(page, route: str, registrant, *, account: str = "",
         values = ctx_mod.build(registrant, route=route)
 
     cfg = booking_config.get(route)
-    if not cfg.get("enabled"):
+    if not booking_config.is_enabled(route, entry):
         raise BookingDisabled(
-            f"Booking is disabled for {route}. Every route ships disabled until "
-            "its whole flow has been walked in a browser.")
+            f"Booking is disabled for {route} ({entry or 'any'} entry). Every "
+            "route ships disabled until its whole flow has been walked in a "
+            "browser.")
 
     # The deadline is checked BEFORE the browser does anything: a lapsed
     # invitation cannot be booked, and finding that out after a login wastes a

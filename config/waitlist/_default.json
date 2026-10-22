@@ -63,7 +63,7 @@
     "url_contains": "confirmation",
     "success_text": ["waitlisted"],
 
-    "reference_pattern": "\\b([A-Z]{4}\\d{9,})\\b",
-    "_comment_reference": "The booking reference shown top-right, e.g. SWDB79923880977 — captured into the journal so a registration can be found again on the portal. If nothing matches, the run still succeeds; success_text is what decides the outcome."
+    "reference_pattern": "\\b([A-Z]{3,4}\\d{9,})\\b",
+    "_comment_reference": "The booking reference shown top-right — captured into the journal so a registration can be found again on the portal. THREE or FOUR letters: Switzerland uses four (SWDB79923880977) but Germany, the Netherlands, Italy and Czechia use three (DEU73214173427, NEU128929309594, ITD128931344738), and a four-letter-only pattern recorded those successes with a null reference on 2026-10-14. If nothing matches, the run still succeeds; success_text is what decides the outcome."
   }
 }
