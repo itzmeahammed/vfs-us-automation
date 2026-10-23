@@ -30,11 +30,14 @@ FIXTURE_DIR = os.path.join("tests", "fixtures", "emails")
 
 
 def _setup_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    from src.utils.log_setup import ConsoleFormatter
+
+    handler = logging.StreamHandler()
+    # Never a traceback on the console — it is an API job's log.
+    handler.setFormatter(ConsoleFormatter(
+        "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S"))
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO,
+                        handlers=[handler])
 
 
 def _install_redaction() -> None:
@@ -344,4 +347,6 @@ def main(argv: List[str] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from src.utils import cli_guard
+
+    sys.exit(cli_guard.run(main))

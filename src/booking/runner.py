@@ -367,6 +367,75 @@ def raise_slot_gone(detail: str) -> None:
 
 
 #: Step type -> handler. The single place a new kind of page is registered.
+def _gateway_specs(ctx: "_StepContext", primary: dict) -> list:
+    """(name, spec) for the route's own processor, plus any the route's
+    payment step explicitly lists under "alternate_processors".
+
+    ONLY what the route names. Each country is pinned to the gateway its
+    config declares (AE-HUN has its own; the rest share the default), and a
+    run that lands anywhere else stops before a digit is typed.
+    """
+    from src.payment import config as payment_config
+
+    names = [ctx.step.get("processor") or payment_config.DEFAULT_PROCESSOR]
+    names += list(ctx.step.get("alternate_processors") or [])
+    out, seen = [], set()
+    for name in names:
+        key = str(name).strip().upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if key == names[0].strip().upper():
+            spec = primary
+        else:
+            try:
+                spec = payment_config.load(key)
+            except Exception as e:                          # noqa: BLE001
+                log.debug(f"  processor {key} not available: {e}")
+                continue
+        if spec.get("url_contains"):
+            out.append((key, spec))
+    return out
+
+
+def _arrive_at_gateway(page, ctx: "_StepContext", primary: dict) -> dict:
+    """Wait for ANY known gateway's URL; return the spec of the one reached.
+
+    Raises BookingStepError — nothing typed, nothing charged — when none
+    arrives. A spec without url_contains cannot be verified and is used as-is,
+    which is what the old code did.
+    """
+    candidates = _gateway_specs(ctx, primary)
+    if not candidates:
+        return primary
+
+    def landed(url) -> bool:
+        url = str(url or "").lower()
+        return any(s["url_contains"].lower() in url for _, s in candidates)
+
+    try:
+        page.wait_for_url(landed, timeout=GATEWAY_ARRIVAL_MS)
+    except Exception as e:
+        expected = " or ".join(f"'{s['url_contains']}'" for _, s in candidates)
+        raise BookingStepError(
+            f"Never reached the payment gateway — expected a URL containing "
+            f"{expected}, still on {getattr(page, 'url', '?')}: {e}. Nothing "
+            "was charged and no card details were entered."
+        ) from e
+
+    url = str(getattr(page, "url", "") or "").lower()
+    name, spec = next((n, s) for n, s in candidates
+                      if s["url_contains"].lower() in url)
+    try:
+        page.wait_for_load_state("domcontentloaded",
+                                 timeout=GATEWAY_ARRIVAL_MS)
+    except Exception as e:                                  # noqa: BLE001
+        log.debug(f"Gateway load state not confirmed: {e}")
+    log.info(f"  payment gateway reached: {getattr(page, 'url', '?')} "
+             f"({spec.get('name') or name})")
+    return spec
+
+
 def _step_payment(ctx: "_StepContext") -> None:
     """Click the VFS submit, follow it to the gateway, and pay. IRREVERSIBLE.
 
@@ -390,6 +459,7 @@ def _step_payment(ctx: "_StepContext") -> None:
     from src.payment import config as payment_config
     from src.payment import gateway
     from src.payment import journal as payment_journal
+    from src.payment import unified
 
     spec = payment_config.load(ctx.step.get("processor"))
 
@@ -454,30 +524,34 @@ def _step_payment(ctx: "_StepContext") -> None:
     #
     # Verified rather than assumed: if the URL never becomes the processor's,
     # something kept us on VFS and the card must not be typed anywhere.
-    expected = spec.get("url_contains") or ""
-    if expected:
-        try:
-            gateway_page.wait_for_url(f"**{expected}**",
-                                      timeout=GATEWAY_ARRIVAL_MS)
-        except Exception as e:
-            raise BookingStepError(
-                f"Never reached the payment gateway — expected a URL "
-                f"containing '{expected}', still on "
-                f"{getattr(gateway_page, 'url', '?')}: {e}. Nothing was "
-                "charged and no card details were entered."
-            ) from e
+    #
+    # The gateway is the one the ROUTE names: AE/HUN pays through CyberSource
+    # Unified Checkout (CYBERSOURCE_UC), every other route through Secure
+    # Acceptance (CYBERSOURCE). Learned the hard way on 2026-10-22
+    # (6ad9ecb3893138): HUN's config said CYBERSOURCE and the run sat out 60s
+    # waiting for a URL that never came.
+    spec = _arrive_at_gateway(gateway_page, ctx, spec)
 
-    try:
-        gateway_page.wait_for_load_state("domcontentloaded",
-                                         timeout=GATEWAY_ARRIVAL_MS)
-    except Exception as e:                                  # noqa: BLE001
-        log.debug(f"Gateway load state not confirmed: {e}")
+    import os
 
-    log.info(f"  payment gateway reached: {getattr(gateway_page, 'url', '?')}")
+    from src.booking.walk import capture_dir
+
+    otp_dir = os.path.join(capture_dir(ctx.route), "payment")
+    secrets = [card.number, card.cvn]
+
+    def _capture(page, label):
+        return gateway.capture_screen(page, otp_dir, label, scrub=secrets)
 
     # ── 4. THE FORM ─────────────────────────────────────────────────────────
-    gateway.fill_billing(gateway_page, spec, ctx.values)
-    gateway.fill_card(gateway_page, spec, card)
+    pay_click = None
+    if unified.is_unified(spec):
+        # Everything up to (not including) the charging click. Raises
+        # PaymentError on any miss, which is still a free stop.
+        pay_click = unified.prepare(gateway_page, spec, card,
+                                    capture=_capture)
+    else:
+        gateway.fill_billing(gateway_page, spec, ctx.values)
+        gateway.fill_card(gateway_page, spec, card)
 
     # THE ONE ARTIFACT THE PAYMENT PATH ALWAYS KEEPS. Past this line the
     # appointment is booked and the next click spends money; if the charge then
@@ -508,19 +582,12 @@ def _step_payment(ctx: "_StepContext") -> None:
     # Belt and braces, not one or the other: blanking input values already
     # removes the typed PAN, and the explicit scrub catches the PAN wherever
     # the gateway echoes it OUTSIDE an input — a data- attribute, an inline
-    # script, a hidden JSON blob. Neither alone is enough.
-    import os
-
-    from src.booking.walk import capture_dir
-
-    otp_dir = os.path.join(capture_dir(ctx.route), "payment")
-    secrets = [card.number, card.cvn]
-
-    def _capture(page, label):
-        return gateway.capture_screen(page, otp_dir, label, scrub=secrets)
-
+    # script, a hidden JSON blob. Neither alone is enough. (`_capture` is
+    # defined above, before the form, because Unified Checkout also keeps
+    # the EMPTY card form — before a digit is typed.)
     gateway.submit_payment(gateway_page, spec, journal=_journal_row,
-                           capture=_capture, otp=_otp_inbox(spec))
+                           capture=_capture, otp=_otp_inbox(spec),
+                           click=pay_click)
 
 
 def _otp_inbox(spec: dict):

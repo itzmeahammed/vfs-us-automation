@@ -557,7 +557,8 @@ def test_the_walk_honours_the_portals_stated_dwell(monkeypatch):
 # A slot is not held while the walk is on this page, so that was pure exposure.
 
 
-def _run_multi_month(monkeypatch, strategy, months, max_months=4, values=None):
+def _run_multi_month(monkeypatch, strategy, months, max_months=4, values=None,
+                     labels=None):
     """Drive _do_slot_pick over a calendar whose months hold different dates.
 
     `months` is a list of date-lists, one per month, read in order as the search
@@ -583,7 +584,8 @@ def _run_multi_month(monkeypatch, strategy, months, max_months=4, values=None):
                         lambda p, c: list(months[state["index"]]))
     monkeypatch.setattr(walk_mod, "available_times", lambda p, s: list(times))
     monkeypatch.setattr(walk_mod, "current_month",
-                        lambda p, c: f"month {state['index']}")
+                        lambda p, c: (labels[state["index"]] if labels
+                                      else f"month {state['index']}"))
     monkeypatch.setattr(walk_mod, "_settle", lambda p, why="": None)
 
     def advance(p, calendar, timeout_ms=0):
@@ -1514,6 +1516,35 @@ def test_in_range_stops_once_the_calendar_is_past_the_window(monkeypatch):
     # read. The message names only the one month that was.
     assert "month 0(1)" in str(caught.value)
     assert "month 1" not in str(caught.value)
+
+
+def test_in_range_stops_at_the_month_the_window_ends_even_when_empty(
+        monkeypatch):
+    """Job 9989e42c (2026-10-23): window 16..30 Nov, November EMPTY, and the
+    walk still read December and January. The window ends in November, so
+    nothing after it can be booked — stop there."""
+    from src.waitlist.errors import WaitlistStepError
+
+    with pytest.raises(WaitlistStepError) as caught:
+        _run_multi_month(
+            monkeypatch, "in_range",
+            [["2026-10-05"], [], [], []],
+            labels=["October 2026", "November 2026", "December 2026",
+                    "January 2027"],
+            values=_window("2026-11-16", "2026-11-30"))
+
+    message = str(caught.value)
+    assert "October 2026(1), November 2026(0)" in message
+    assert "December" not in message and "January" not in message
+
+
+def test_month_last_day_reads_the_calendar_title():
+    from src.booking import walk as walk_mod
+
+    assert walk_mod.month_last_day("November 2026") == _date(2026, 11, 30)
+    assert walk_mod.month_last_day(" February  2028 ") == _date(2028, 2, 29)
+    assert walk_mod.month_last_day("month 1") is None
+    assert walk_mod.month_last_day("") is None
 
 
 def test_in_range_takes_the_earliest_date_inside_the_window(monkeypatch):

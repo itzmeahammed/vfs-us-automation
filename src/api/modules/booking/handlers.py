@@ -177,6 +177,6 @@ async def trigger_booking(
             if replayed else
             f"Booking run started in the background (mode={payload.mode.value})."
         ),
-        job=JobResponse(**record.to_dict()),
+        job=JobResponse(**record.to_public()),
         replayed=replayed,
     )

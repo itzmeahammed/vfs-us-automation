@@ -119,6 +119,14 @@ class ProxyResolutionTests(unittest.TestCase):
     its own stable mapping or the IP would shift as the pool changes.
     """
 
+    def setUp(self):
+        # Every pool entry is healthy unless a test says otherwise — no test
+        # may probe a real proxy.
+        patcher = mock.patch("src.utils.proxy_pool._geo_cached",
+                             side_effect=lambda url: ("203.0.113.1", "AE"))
+        self.geo = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _settings(self, proxy_enabled=True):
         stub = mock.MagicMock()
         stub.proxy.enabled = proxy_enabled
@@ -208,6 +216,38 @@ class ProxyResolutionTests(unittest.TestCase):
             b = accounts.resolve_proxy(account, "AE-CHE")[0]
         self.assertEqual(a, b)
         self.assertIn(a, entries)
+
+
+    def test_a_dead_pinned_entry_fails_over_to_the_next_healthy_one(self):
+        """2026-10-22: port 10002 was down; the slot checker skipped it, the
+        booking run used it and died on ERR_TUNNEL_CONNECTION_FAILED."""
+        entries = ["http://1.1.1.1:80", "http://2.2.2.2:80"]
+        self.geo.side_effect = lambda url: ((None, None) if "1.1.1.1" in url
+                                            else ("203.0.113.2", "AE"))
+        with self._settings(), self._pool(entries),                 _config(accounts="first@x.com"):
+            url, how = accounts.resolve_proxy(
+                accounts.Account("first@x.com", "p", "t"), "AE-NOR")
+        self.assertIn("2.2.2.2", url)
+        self.assertIn("pinned entry 1 skipped", how)
+
+    def test_an_exit_outside_the_uae_is_skipped(self):
+        entries = ["http://1.1.1.1:80", "http://2.2.2.2:80"]
+        self.geo.side_effect = lambda url: (("203.0.113.1", "DE")
+                                            if "1.1.1.1" in url
+                                            else ("203.0.113.2", "AE"))
+        with self._settings(), self._pool(entries),                 _config(accounts="first@x.com"):
+            url, how = accounts.resolve_proxy(
+                accounts.Account("first@x.com", "p", "t"), "AE-NOR")
+        self.assertIn("2.2.2.2", url)
+        self.assertIn("exits in DE", how)
+
+    def test_every_proxy_dead_means_local_ip_with_the_reason(self):
+        self.geo.side_effect = lambda url: (None, None)
+        with self._settings(), self._pool(["http://1.1.1.1:80"]), _config():
+            url, how = accounts.resolve_proxy(
+                accounts.Account("a@x.com", "p", "t"), "AE-NOR")
+        self.assertEqual(url, "")
+        self.assertIn("failed their health check", how)
 
 
 class CapacityTests(unittest.TestCase):
@@ -326,3 +366,22 @@ class CapacityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetworkErrorExplanationTests(unittest.TestCase):
+    def test_tunnel_failure_names_the_proxy_not_vfs(self):
+        from src.booking.probe import _explain_failure
+
+        reason, known = _explain_failure(Exception(
+            "Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://x\nCall log:"))
+        self.assertTrue(known)
+        self.assertIn("PROXY refused", reason)
+        self.assertIn("nothing was clicked or booked", reason)
+
+    def test_probe_errors_are_translated(self):
+        from src.utils.proxy_pool import explain_probe_error
+
+        self.assertIn("rejected the login",
+                      explain_probe_error(OSError("407 Proxy Authentication Required")))
+        self.assertIn("refused to open a tunnel",
+                      explain_probe_error(OSError("Tunnel connection failed: 502")))

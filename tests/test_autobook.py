@@ -712,8 +712,8 @@ def test_a_manual_walk_changes_no_status_and_uses_no_attempt(request_dir, monkey
     assert req.data["history"][-1]["event"] == "manual_walk_passed"
 
 
-@pytest.mark.parametrize("status", [store.BOOKED, store.NEEDS_ATTENTION,
-                                    store.BOOKING, store.EXPIRED])
+@pytest.mark.parametrize("status", [store.BOOKED, store.BOOKING,
+                                    store.EXPIRED])
 def test_a_manual_commit_is_refused_unless_waiting(request_dir, monkeypatch, status):
     store.create("r1", _request())
     store.record_event("r1", "set", status=status)
@@ -721,6 +721,59 @@ def test_a_manual_commit_is_refused_unless_waiting(request_dir, monkeypatch, sta
     with pytest.raises(autobook.ManualRunRefused):
         autobook.manual_run("r1", commit=True, run=lambda: ran.append(1))
     assert not ran
+
+
+def _stuck(monkeypatch, journal_rows):
+    """A needs_attention request whose last attempt started at 12:00."""
+    from src.payment import journal as payment_journal
+
+    monkeypatch.setattr(payment_journal, "read_all", lambda: journal_rows)
+    req = _mk("r1", status=store.NEEDS_ATTENTION)
+    req.data["history"] = [
+        {"at": "2026-10-22T12:00:00Z", "event": "attempt_started"},
+        {"at": "2026-10-22T12:03:00Z", "event": "needs_attention",
+         "detail": "Never reached the payment gateway"}]
+    return req
+
+
+def test_a_stuck_request_with_no_card_submit_can_be_rerun_by_hand(
+        monkeypatch, request_dir):
+    """Operator decision 2026-10-23: no payment row since the attempt means
+    no charge was possible, so a manual Book-and-pay is allowed."""
+    assert autobook.manual_refusal(_stuck(monkeypatch, []), commit=True) == ""
+
+
+def test_an_older_submit_does_not_block_a_later_attempt(monkeypatch, request_dir):
+    old = {"event": "payment_submitting", "at": "2026-10-21T09:00:00Z",
+           "route": "AE-NOR"}
+    assert autobook.manual_refusal(_stuck(monkeypatch, [old]),
+                                   commit=True) == ""
+
+
+def test_a_stuck_request_whose_card_was_submitted_still_needs_a_human(
+        monkeypatch, request_dir):
+    row = {"event": "payment_submitting", "at": "2026-10-22T12:02:30Z",
+           "route": "AE-NOR"}
+    why = autobook.manual_refusal(_stuck(monkeypatch, [row]), commit=True)
+    assert "charge the card twice" in why
+
+
+def test_an_unreadable_payment_journal_refuses(monkeypatch, request_dir):
+    from src.payment import journal as payment_journal
+
+    req = _stuck(monkeypatch, [])
+
+    def broken():
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(payment_journal, "read_all", broken)
+    assert autobook.manual_refusal(req, commit=True)
+
+
+def test_auto_book_still_never_retries_a_stuck_request():
+    """Manual only: needs_attention stays a finished state for the bot."""
+    outcome = autobook.Outcome(store.NEEDS_ATTENTION, "needs_attention", "", {})
+    assert outcome.status not in (store.WAITING, store.BOOKING)
 
 
 def test_a_manual_walk_is_refused_only_while_another_run_books(request_dir):

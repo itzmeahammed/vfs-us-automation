@@ -204,6 +204,12 @@ def classify(result: Any, commit_step: str,
     if getattr(walk, "blocked", False):
         return Outcome(store.NEEDS_ATTENTION, "needs_attention",
                        f"VFS blocked the account: {walk.reason}", booked_details)
+    if getattr(walk, "test_stopped", False):
+        # Test mode: the bank never got the code, so nothing was charged. Back
+        # to waiting — the journal row is answered with outcome test_stopped.
+        return Outcome(store.WAITING, "test_stopped",
+                       f"test mode: {walk.reason} VFS holds the appointment "
+                       "unpaid until it expires.", booked_details)
 
     if reached:
         answered = [r for r in payment_rows if r.get("event") == "payment_result"]
@@ -377,7 +383,8 @@ def spawn(route: str, matches: List[Match]) -> str:
         proc = subprocess.Popen(argv, cwd=REPO_ROOT, stdout=out,
                                 stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL,
-                                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                                env={**os.environ, "PYTHONUNBUFFERED": "1",
+                                     "PYTHONIOENCODING": "utf-8:replace"},
                                 **kwargs)
     log.warning("Auto-book %s: booking process started (pid %s), log %s",
                 route, proc.pid, log_path)
@@ -592,6 +599,38 @@ class ManualRunRefused(Exception):
     """A manual run on a request that must not run now. Nothing was started."""
 
 
+def payment_submitted_since_last_attempt(req: store.BookingRequest) -> str:
+    """When the payment journal shows a card submit for this request's route
+    since its last attempt started: that row's time. "" when there is none.
+
+    The journal row is fsync'd BEFORE the click that charges the card
+    (src/payment/journal.py), so no row means no charge was possible. Rows
+    are matched by route and time rather than by request id, which errs
+    towards finding one — i.e. towards refusing. An unreadable journal is
+    reported as a submit for the same reason.
+    """
+    started = ""
+    for entry in reversed(req.data.get("history") or []):
+        if entry.get("event") == "attempt_started":
+            started = str(entry.get("at") or "")
+            break
+    try:
+        from src.payment import journal as payment_journal
+
+        rows = payment_journal.read_all()
+    except Exception as e:                                  # noqa: BLE001
+        return f"payment journal unreadable: {e}"
+    route = str(req.data.get("route") or "").upper()
+    for row in reversed(rows):
+        if row.get("event") != "payment_submitting":
+            continue
+        if str(row.get("at") or "") < started:
+            continue
+        if str(row.get("route") or route).upper() == route:
+            return str(row.get("at") or "time unknown")
+    return ""
+
+
 def manual_refusal(req: store.BookingRequest, commit: bool) -> str:
     """Why this request cannot take a manual run, or "". PURE.
 
@@ -609,10 +648,19 @@ def manual_refusal(req: store.BookingRequest, commit: bool) -> str:
         return (f"{req.request_id} is already BOOKED — a commit would book and "
                 "charge a second time.")
     if req.status == store.NEEDS_ATTENTION:
-        return (f"{req.request_id} needs a human first: "
-                f"{req.data.get('last_error') or 'the last attempt is unresolved'}. "
-                f"Check VFS and the card, then POST /v1/clients/"
-                f"{req.request_id}/resolve.")
+        # MANUAL ONLY, and only when no card can have been charged (operator
+        # decision 2026-10-23). Most needs_attention runs stopped AFTER Pay
+        # Online but BEFORE the card was submitted — gateway never reached,
+        # card form failed, VFS ended the session — and re-running those risks
+        # a held slot, not money. Auto-book still leaves them alone.
+        submitted = payment_submitted_since_last_attempt(req)
+        if submitted:
+            return (f"{req.request_id} needs a human first: a payment was "
+                    f"submitted on its last attempt ({submitted}) and VFS has "
+                    "not confirmed the result. Running it again could charge "
+                    "the card twice. Check VFS and the card, then POST "
+                    f"/v1/clients/{req.request_id}/resolve.")
+        return ""
     if req.status == store.EXPIRED:
         return f"{req.request_id} has expired (its window has passed)."
     if req.status != store.WAITING:

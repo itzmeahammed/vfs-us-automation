@@ -36,6 +36,12 @@ _GEO_URL = "http://ip-api.com/json/?fields=status,countryCode,query"
 _geo_cache = {}
 _GEO_TTL_S = 300
 
+# Why the last probe of each proxy failed, in words an operator can act on.
+# probe_geo() used to log the reason at DEBUG and return (None, None), so every
+# caller could only say "no exit" — and a booking run that skipped the check
+# entirely surfaced it as Chrome's net::ERR_TUNNEL_CONNECTION_FAILED.
+_last_error = {}
+
 
 def _as_url(s: str) -> str:
     s = s.strip()
@@ -165,6 +171,7 @@ def probe_geo(proxy_url: str, timeout: int = 15):
         try:
             data = _json.loads(_open_via(lp, _GEO_URL, timeout))
             if str(data.get("status", "")).lower() == "success":
+                _last_error.pop(proxy_url, None)
                 return ((data.get("query") or "").strip(),
                         (data.get("countryCode") or "").strip().upper())
         except Exception as e:
@@ -172,12 +179,42 @@ def probe_geo(proxy_url: str, timeout: int = 15):
         # Geo service unreachable: fall back to a plain liveness probe so a
         # working exit with an unknown region stays usable (region '').
         try:
-            return _open_via(lp, _PROBE_URL, timeout), ""
+            ip = _open_via(lp, _PROBE_URL, timeout)
+            _last_error.pop(proxy_url, None)
+            return ip, ""
         except Exception as e:
             logging.debug(f"proxy probe failed for {label(proxy_url)}: {e}")
+            _last_error[proxy_url] = explain_probe_error(e)
             return None, None
+    except Exception as e:
+        _last_error[proxy_url] = explain_probe_error(e)
+        return None, None
     finally:
         fwd.stop()
+
+
+def explain_probe_error(error) -> str:
+    """A probe failure in operator terms. The raw text stays on the end."""
+    text = str(error)
+    low = text.lower()
+    if "407" in low or "proxy authentication" in low:
+        why = "the proxy rejected the login (407) — check the user/password in config/proxylist.txt"
+    elif "403" in low or "tunnel" in low or "502" in low or "503" in low:
+        why = "the proxy refused to open a tunnel — this port is down or not active on the provider's side"
+    elif "timed out" in low or "timeout" in low:
+        why = "the proxy did not answer in time"
+    elif "refused" in low or "10061" in low:
+        why = "nothing is listening on that host:port"
+    elif "reset" in low or "10054" in low:
+        why = "the proxy dropped the connection"
+    else:
+        why = "the proxy could not reach the internet"
+    return f"{why} ({text[:120]})"
+
+
+def failure_reason(proxy_url: str) -> str:
+    """Why `proxy_url` last failed a probe, or a generic answer."""
+    return _last_error.get(proxy_url) or "no working exit"
 
 
 def probe(proxy_url: str, timeout: int = 15) -> str:
@@ -251,7 +288,8 @@ def pick_for_run(route: str, email: str = None, exclude=None):
         # geo-block. Skipping both here attacks those failures at the source.
         ip, cc = _geo_cached(proxy)
         if not ip:
-            logging.warning(f"{route}: {who} proxy {label(proxy)} no exit — trying next.")
+            logging.warning(f"{route}: {who} proxy {label(proxy)} no exit "
+                            f"({failure_reason(proxy)}) — trying next.")
             continue
         if require_cc and cc and cc != require_cc:
             logging.warning(f"{route}: {who} proxy {label(proxy)} exits in {cc}, "

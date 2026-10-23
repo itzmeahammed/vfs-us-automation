@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from src.api.modules.jobs.manager import JobStatus, TERMINAL_STATUSES, read_log_tail
 from src.api.modules.jobs.runtime import job_manager
 from src.api.modules.jobs.schemas import JobLogResponse, JobResponse
+from src.utils.public_errors import public_log_lines
 
 import logging
 
@@ -55,7 +56,7 @@ async def get_job(job_id: str) -> JobResponse:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No job with id {job_id!r}.",
         )
-    return JobResponse(**record.to_dict())
+    return JobResponse(**record.to_public())
 
 
 def get_job_logs(
@@ -98,6 +99,9 @@ def get_job_logs(
             truncated=False, log_available=False,
         )
 
+    # The web app gets progress plus one sentence per VFS problem — never a
+    # traceback or a Playwright call log. The raw file is untouched on disk.
+    tail = public_log_lines(tail)
     return JobLogResponse(
         job_id=job_id,
         lines=tail,
@@ -187,14 +191,13 @@ async def stream_job_log(
                     chunk = raw.decode("utf-8", errors="replace")
             except OSError as exc:
                 yield _sse("end", {"job_id": job_id,
-                                   "reason": f"log unreadable: {exc}"})
+                                   "reason": "The run's log is not available."})
                 return
 
             if chunk:
                 idle_ticks = 0
-                for line in chunk.splitlines():
-                    if line.strip():
-                        yield _sse("log", {"line": line})
+                for line in public_log_lines(chunk.splitlines()):
+                    yield _sse("log", {"line": line})
             else:
                 idle_ticks += 1
 
@@ -215,15 +218,16 @@ async def stream_job_log(
                         with open(path, "rb") as handle:
                             handle.seek(offset)
                             tail = handle.read(STREAM_CHUNK_BYTES)
-                        for line in tail.decode("utf-8", errors="replace").splitlines():
-                            if line.strip():
-                                yield _sse("log", {"line": line})
+                        for line in public_log_lines(
+                                tail.decode("utf-8", errors="replace").splitlines()):
+                            yield _sse("log", {"line": line})
                 except OSError:
                     pass
                 yield _sse("end", {
                     "job_id": job_id,
                     "run_id": current.run_id or job_id,
                     "status": current.status.value,
+                    "detail": current.to_public().get("detail") or "",
                     "exit_code": current.exit_code,
                     "outcome": current.outcome,
                     "needs_attention": current.needs_attention,
@@ -264,5 +268,5 @@ async def cancel_job(job_id: str) -> JobResponse:
             detail=f"Job {job_id} is not running (status={record.status.value}).",
         )
     await job_manager.cancel(job_id)
-    return JobResponse(**record.to_dict())
+    return JobResponse(**record.to_public())
 

@@ -320,7 +320,11 @@ def test_stream_replays_a_finished_jobs_log_and_ends_by_itself(client, tmp_path)
     from src.api.modules.jobs.runtime import job_manager
 
     log_file = tmp_path / "job.log"
-    log_file.write_text("first line\nsecond line\n", encoding="utf-8")
+    # Real job logs are timestamped; untimestamped lines (tracebacks,
+    # Playwright call logs) are deliberately not streamed to the web app.
+    log_file.write_text("10:00:00 | INFO     | first line\n"
+                        "Traceback (most recent call last):\n"
+                        "10:00:01 | INFO     | second line\n", encoding="utf-8")
 
     record = JobRecord(
         job_id="streamtest", run_id="streamtest", command=["x"],
@@ -340,6 +344,7 @@ def test_stream_replays_a_finished_jobs_log_and_ends_by_itself(client, tmp_path)
         job_manager._jobs.pop("streamtest", None)
 
     assert "first line" in body and "second line" in body
+    assert "Traceback" not in body
     assert "event: end" in body, "the stream must terminate itself"
     assert '"run_id": "streamtest"' in body
 

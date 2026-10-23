@@ -827,4 +827,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from src.utils import cli_guard
+
+    sys.exit(cli_guard.run(main))

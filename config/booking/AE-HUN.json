@@ -226,7 +226,8 @@
       "name": "payment",
       "type": "payment",
       "after": "review_pay",
-      "processor": "CYBERSOURCE",
+      "processor": "CYBERSOURCE_UC",
+      "_comment_processor": "Hungary pays through CyberSource UNIFIED CHECKOUT on online.vfsglobal.com/PG-Component/Payment/CyberSourceNew, not Norway's secureacceptance page — observed on run 6ad9ecb3893138 (2026-10-22) and in the operator's capture (docs/hungary_payment.txt/payment_selector.txt). Selectors: config/payment/CYBERSOURCE_UC.json. HUN ONLY — every other route stays on CYBERSOURCE.",
       "commits": true,
       "submit": {
         "selector": "button#trigger"

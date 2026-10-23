@@ -126,8 +126,13 @@ def test_the_files_still_get_the_traceback():
     assert "Traceback" in logging.Formatter("%(message)s").format(record)
 
 
-def test_an_unexpected_failure_keeps_its_traceback_on_the_console():
-    assert "Traceback" in ConsoleFormatter("%(message)s").format(_record(quiet=False))
+def test_no_traceback_reaches_the_console_even_unmarked():
+    """Operator rule, 2026-10-23: the console (an API job's log) never shows
+    a traceback. The files keep it."""
+    record = _record(quiet=False)
+    assert ConsoleFormatter("%(message)s").format(record) == \
+        "Probe failed: browser closed"
+    assert "Traceback" in logging.Formatter("%(message)s").format(record)
 
 
 def test_probe_explains_the_failures_it_understands():

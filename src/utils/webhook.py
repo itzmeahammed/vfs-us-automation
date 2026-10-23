@@ -315,6 +315,7 @@ def notify_registration(result: Dict[str, Any]) -> DeliveryResult:
     a human to check the VFS account.
     """
     status = str(result.get("status", "")).lower()
+    result = _public_result(result, "reason")
     if status in ("pending", "unknown"):
         event = EVENT_REGISTRATION_NEEDS_ATTENTION
     elif status == "success":
@@ -335,7 +336,17 @@ def notify_booking(result: Dict[str, Any]) -> DeliveryResult:
     event = (EVENT_BOOKING_SUCCEEDED
              if str(result.get("status", "")).lower() == "booked"
              else EVENT_BOOKING_NEEDS_ATTENTION)
-    return send(event, result)
+    return send(event, _public_result(result, "detail"))
+
+
+def _public_result(result: Dict[str, Any], key: str) -> Dict[str, Any]:
+    """`result` with its error text as the one sentence the web app shows."""
+    from src.utils import public_errors
+
+    if not result.get(key):
+        return result
+    return {**result, key: public_errors.public_reason(result[key],
+                                                       result.get("status"))}
 
 
 def send_test_ping() -> DeliveryResult:

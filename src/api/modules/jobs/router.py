@@ -51,7 +51,7 @@ def list_jobs(page: PageParams = Depends(),
             continue
         if needs_attention and not record.needs_attention:
             continue
-        row = JobResponse(**record.to_dict()).model_dump()
+        row = JobResponse(**record.to_public()).model_dump()
         if not search.matches(_haystack(row), needle, _SEARCHABLE):
             continue
         rows.append(row)
@@ -86,7 +86,7 @@ def _haystack(row: Dict[str, Any]) -> Dict[str, Any]:
 def active() -> Dict[str, Any]:
     from src.api.modules.jobs.schemas import JobResponse
 
-    return {lane: JobResponse(**rec.to_dict()).model_dump()
+    return {lane: JobResponse(**rec.to_public()).model_dump()
             for lane, rec in _manager().active_jobs().items()}
 
 

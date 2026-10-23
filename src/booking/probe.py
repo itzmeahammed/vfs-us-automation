@@ -371,7 +371,50 @@ def _explain_failure(e: Exception) -> "tuple[str, bool]":
         return str(e), True
     if type(e).__module__ == "src.vfs_bot.errors":
         return f"{name}: {e}", True
+    network = _explain_network_error(str(e))
+    if network:
+        return network, True
     return str(e), False
+
+
+#: Chrome's own network errors, in operator terms. Without these the job log
+#: and the request status said only "net::ERR_TUNNEL_CONNECTION_FAILED", which
+#: names neither the cause (a dead proxy port) nor the fix — job
+#: 5a8aa9708825ffb1, AE-NOR, 2026-10-22.
+_NETWORK_ERRORS = (
+    ("ERR_TUNNEL_CONNECTION_FAILED",
+     "The PROXY refused to open a connection to VFS — that proxy port is down "
+     "or not active with the provider. VFS was never reached; nothing was "
+     "clicked or booked. The 'Egress:' line above names the proxy. Runs now "
+     "health-check the proxy first and skip a dead one; if this still "
+     "appears, every proxy in config/proxylist.txt failed or a fixed proxy "
+     "is set (client file 'proxy', [waitlist] proxy, --proxy-url)."),
+    ("ERR_PROXY_CONNECTION_FAILED",
+     "Could not reach the PROXY itself (wrong host/port, or the local proxy "
+     "forwarder died). VFS was never reached; nothing was booked."),
+    ("ERR_PROXY_AUTH",
+     "The PROXY rejected its username/password — check config/proxylist.txt. "
+     "Nothing was booked."),
+    ("ERR_TIMED_OUT",
+     "VFS did not answer in time through this connection (slow or "
+     "overloaded proxy, or VFS itself). Nothing was booked."),
+    ("ERR_CONNECTION_RESET",
+     "The connection was cut mid-load (proxy dropped it, or VFS/Cloudflare "
+     "reset it). Nothing was booked."),
+    ("ERR_NAME_NOT_RESOLVED",
+     "DNS failed — this PC could not look up the site (internet down?). "
+     "Nothing was booked."),
+    ("ERR_INTERNET_DISCONNECTED",
+     "This PC has no internet connection. Nothing was booked."),
+)
+
+
+def _explain_network_error(text: str) -> str:
+    for code, meaning in _NETWORK_ERRORS:
+        if code in text:
+            first = text.splitlines()[0] if text else code
+            return f"{meaning} [{first}]"
+    return ""
 
 
 def _assert_account_healthy(email: str, route: str) -> None:

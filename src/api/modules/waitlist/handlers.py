@@ -58,7 +58,7 @@ async def trigger_waitlist(
             "new was spawned."
             if replayed else "Job started in the background."
         ),
-        job=JobResponse(**record.to_dict()),
+        job=JobResponse(**record.to_public()),
         replayed=replayed,
     )
 

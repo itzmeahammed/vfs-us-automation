@@ -28,6 +28,7 @@ from fastapi import Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.modules.clients.waitlist import _public_view
+from src.utils import public_errors
 from src.api.core.security import require_token
 
 log = logging.getLogger("vfs.api.booking_requests")
@@ -115,6 +116,11 @@ def _view(req) -> Dict[str, Any]:
     out = _public_view(req.request_id, req.data)
     out.pop("client_id", None)
     out["request_id"] = req.request_id
+    # One sentence per error; the raw text stays in the file and the logs.
+    if out.get("last_error"):
+        out["last_error"] = public_errors.public_message(out["last_error"])
+    if out.get("history"):
+        out["history"] = public_errors.public_history(out["history"])
     return out
 
 

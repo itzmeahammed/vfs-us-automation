@@ -87,7 +87,8 @@ def _challenge_frames(page, spec: Dict[str, Any]) -> List[Any]:
     GUARD 1. A frame whose URL matches no marker is not looked at, which is
     what keeps every selector here away from the checkout form.
     """
-    markers = _markers(spec)
+    from src.payment import gateway
+
     out: List[Any] = []
     try:
         frames = list(getattr(page, "frames", None) or [])
@@ -102,8 +103,10 @@ def _challenge_frames(page, spec: Dict[str, Any]) -> List[Any]:
         if not url or url == "about:blank":
             continue
         # The device-fingerprinting iframe matches markers too and holds no
-        # field, so it costs one wasted lookup and nothing else.
-        if any(marker in url for marker in markers):
+        # field, so it costs one wasted lookup and nothing else. Matching goes
+        # through the processor's mode, so Unified Checkout's random URL
+        # tokens can never make its card form look like a challenge frame.
+        if gateway.url_matches_marker(url, spec):
             out.append(frame)
     return out
 

@@ -66,12 +66,14 @@ def test_a_refused_login_is_one_line_and_a_result_block(console, capsys):
                               "message": NOT_REGISTERED}
 
 
-def test_an_unexpected_failure_keeps_its_traceback(console, capsys):
+def test_an_unexpected_failure_shows_no_traceback(console, capsys):
+    """Operator rule, 2026-10-23: never a traceback on the console (the job
+    log). It is kept in logs/app.jsonl."""
     exc = _raised(KeyError("selector"))
 
     cli._report_failure(argparse.Namespace(json_output=True), exc)
 
-    assert "Traceback (most recent call last)" in console.getvalue()
+    assert "Traceback" not in console.getvalue()
     assert _block(capsys.readouterr().out)["error"]["code"] == "unexpected_error"
 
 

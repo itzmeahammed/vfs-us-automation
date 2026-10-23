@@ -151,6 +151,32 @@ class JobAlreadyRunningError(JobStartError):
     """
 
 
+def _booking_failure(record: "JobRecord") -> str:
+    """The failure a booking job recorded on its request, or "".
+
+    Booking runs write no result block; their reason is the request's own
+    history entry for this run (attempt_failed / needs_attention / ...),
+    so the newest error entry at or after the job's start is the one.
+    """
+    request_id = (record.payload or {}).get("request_id")
+    if not request_id:
+        return ""
+    try:
+        from src.booking import requests as req_store
+        from src.utils.public_errors import ERROR_EVENTS
+
+        started = record.started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        for entry in reversed(req_store.get(request_id).data.get("history")
+                              or []):
+            if str(entry.get("at", "")) < started:
+                break
+            if str(entry.get("event", "")).lower() in ERROR_EVENTS:
+                return str(entry.get("detail") or "")
+    except Exception:                                       # noqa: BLE001
+        pass
+    return ""
+
+
 @dataclass
 class JobRecord:
     """Everything we know about one triggered job."""
@@ -209,6 +235,40 @@ class JobRecord:
             "results": self.results,
             "needs_attention": self.needs_attention,
         }
+
+    def to_public(self) -> Dict[str, Any]:
+        """What the web app sees: every error as ONE sentence.
+
+        to_dict() stays raw — it is what gets persisted, and operators read
+        the raw text in the log. A failed booking job's own detail was only
+        "Process exited with code 1"; the actual reason lives in the booking
+        request's history, so it is fetched from there.
+        """
+        from src.utils import public_errors as pe
+
+        out = self.to_dict()
+        failed = self.status.value not in pe.OK_STATUSES and \
+            self.status.value != JobStatus.SUCCEEDED.value
+        # A crash the code did not foresee is "problem not identified", not
+        # the proxy fallback: nothing says the proxy was at fault.
+        fallback = (pe.UNIDENTIFIED
+                    if (self.error or {}).get("code") == "unexpected_error"
+                    else pe.FALLBACK)
+        if failed:
+            raw = (self.error or {}).get("message") or \
+                _booking_failure(self) or self.detail
+            out["detail"] = pe.public_message(raw, fallback=fallback)
+        elif self.detail:
+            out["detail"] = pe.one_line(self.detail)
+        if self.error:
+            out["error"] = {**self.error,
+                            "message": pe.public_message(
+                                self.error.get("message"), fallback=fallback)}
+        out["results"] = [
+            {**r, "reason": pe.public_reason(r.get("reason"), r.get("status"))}
+            if isinstance(r, dict) and r.get("reason") else r
+            for r in (self.results or [])]
+        return out
 
     def to_record(self) -> Dict[str, Any]:
         """Full persistence view — to_dict plus the fields only we need back."""
@@ -593,6 +653,8 @@ class JobManager:
             # you can tail a running job.
             child_env = os.environ.copy()
             child_env["PYTHONUNBUFFERED"] = "1"
+            # UTF-8 console: a VFS page's "✓" must not crash a print().
+            child_env["PYTHONIOENCODING"] = "utf-8:replace"
             child_env["VFS_TRIGGERED_BY"] = "webhook-api"
             # The correlation key. src/utils/run_context.run_id() reads this,
             # so the child adopts our id instead of minting its own — which is

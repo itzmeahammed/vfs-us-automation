@@ -212,4 +212,6 @@ def main(argv: List[str] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from src.utils import cli_guard
+
+    sys.exit(cli_guard.run(main))

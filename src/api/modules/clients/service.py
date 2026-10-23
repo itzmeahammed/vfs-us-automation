@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from src.api.core.errors import ApiError
 from src.api.core import search
+from src.utils import public_errors
 
 WAITLIST = "waitlist"
 LIVE = "live"
@@ -397,7 +398,9 @@ def timeline(client_id: str) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
 
     if flow == LIVE:
-        for entry in req_store.get(cid).data.get("history") or []:
+        history = public_errors.public_history(
+            req_store.get(cid).data.get("history") or [])
+        for entry in history:
             events.append({"at": entry.get("at", ""), "source": "booking_request",
                            **{k: v for k, v in entry.items() if k != "at"}})
     else:
@@ -407,6 +410,7 @@ def timeline(client_id: str) -> List[Dict[str, Any]]:
                            "source": "waitlist_journal", "event": row.status,
                            "detail": f"{row.route} / {row.combo}"
                                      + (f": {row.reason}" if row.reason else ""),
+                           # row.reason is already public (get_client_journal).
                            "vfs_reference": row.vfs_reference})
         for item in invites.list_all():
             mentioned = cid in (item.get("clients") or {}) or any(

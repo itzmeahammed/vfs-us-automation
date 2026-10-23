@@ -396,6 +396,21 @@ def precheck(request_id: str, data: Dict[str, Any],
     return problems
 
 
+def _route_processor(route: str) -> str:
+    """The processor named on the route's payment step, or ""."""
+    if not route:
+        return ""
+    try:
+        from src.booking import config as booking_config
+
+        for step in booking_config.steps_for(route, booking_config.ENTRY_NEW):
+            if step.get("type") == "payment":
+                return str(step.get("processor") or "")
+    except Exception:                                       # noqa: BLE001
+        pass
+    return ""
+
+
 def _check_billing(data: Dict[str, Any]) -> List[Any]:
     """The payment page's required billing fields, read from its own config.
 
@@ -405,6 +420,12 @@ def _check_billing(data: Dict[str, Any]) -> List[Any]:
     try:
         from src.payment import config as payment_config
         spec = payment_config.load()
+        # The route's own processor too (AE-HUN: CYBERSOURCE_UC). Its config
+        # failing to load is otherwise discovered on the gateway page, with
+        # the appointment already taken.
+        processor = _route_processor(str(data.get("route") or ""))
+        if processor:
+            payment_config.load(processor)
     except Exception as exc:                                # noqa: BLE001
         return [_problem("", f"Payment config is unreadable: {exc}")]
 

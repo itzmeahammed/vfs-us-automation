@@ -37,6 +37,7 @@ from fastapi import (
 )
 
 from src.api.core.schemas import ProblemModel
+from src.utils import public_errors
 from src.api.modules.catalog.schemas import RouteReadinessResponse
 from src.api.modules.clients.schemas import ClientCreateRequest, ClientDetailResponse, ClientJournalResponse, ClientListResponse, ClientPatchRequest, ClientSummary, ClientWriteResponse, JournalRow
 from src.api.core.security import require_token
@@ -657,7 +658,8 @@ def get_client_journal(client_id: str) -> ClientJournalResponse:
             status=str(row.get("status", "")),
             vfs_reference=row.get("vfs_reference"),
             account=row.get("account"),
-            reason=str(row.get("reason") or ""),
+            reason=public_errors.public_reason(row.get("reason"),
+                                               row.get("status")),
             started_at=str(row.get("started_at") or ""),
             finished_at=str(row.get("finished_at") or ""),
         ))

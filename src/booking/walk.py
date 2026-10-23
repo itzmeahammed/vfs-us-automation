@@ -361,6 +361,10 @@ class WalkResult:
     downstream may retry a payment that may have taken money. The outcome, if
     there is one, is the journal row — not this flag."""
 
+    test_stopped: bool = False
+    """TEST MODE (--stop-before-otp-submit) stopped at the 3-D Secure screen:
+    the code was not typed and the bank's submit was not clicked."""
+
     blocked: bool = False
     """VFS refused on ACCOUNT STATE — a booking already in flight — not on a
     selector or a page. Distinct from an ordinary stop because the remedy is to
@@ -398,6 +402,32 @@ def available_dates(page, calendar: Dict[str, Any]) -> List[str]:
     except Exception as e:
         log.debug(f"Could not read available dates: {e}")
     return sorted(dates)
+
+
+def _vfs_page_cause(page) -> str:
+    """What VFS did to the session, if the page shows VFS ended it. "" if not.
+
+    Uses page_guard, the same classifier the slot checker trusts: an error
+    route (page-not-found, session expired), 403 Permission Issues, 403201 IP
+    block, 429 account locks. Never raises — this runs inside a failure path.
+    """
+    url = getattr(page, "url", "")
+    url = url.lower() if isinstance(url, str) else ""
+    landed = ""
+    if "page-not-found" in url or "pagenotfound" in url:
+        landed = "VFS redirected to its 'page not found' page"
+    try:
+        from src.vfs_bot import page_guard
+
+        page_guard.assert_alive(page, "a step had failed", deep=True)
+    except Exception as e:                                  # noqa: BLE001
+        # Only VFS's own verdicts count. Anything else is the check itself
+        # failing, which says nothing about VFS.
+        if type(e).__module__ != "src.vfs_bot.errors":
+            return landed
+        what = f"VFS ended the session — {type(e).__name__}: {e}".rstrip(". ")
+        return f"{what}; {landed}" if landed else what
+    return landed
 
 
 def read_month_dates(page, calendar: Dict[str, Any],
@@ -451,6 +481,18 @@ def current_month(page, calendar: Dict[str, Any]) -> str:
     except Exception as e:                                  # noqa: BLE001
         log.debug(f"Could not read the calendar month: {e}")
         return ""
+
+
+def month_last_day(label: str) -> Optional[date]:
+    """The last day of a calendar title like "November 2026". None if unreadable."""
+    import calendar as _cal
+    from datetime import datetime
+
+    try:
+        first = datetime.strptime(" ".join(str(label or "").split()), "%B %Y").date()
+    except ValueError:
+        return None
+    return first.replace(day=_cal.monthrange(first.year, first.month)[1])
 
 
 def _page_month(page, calendar: Dict[str, Any], key: str, default: str,
@@ -955,7 +997,8 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
     case is not simply dropped.
     """
     from src.booking import config as booking_config
-    from src.payment.gateway import PaymentDeclined, PaymentSubmitted
+    from src.payment.gateway import (PaymentDeclined, PaymentSubmitted,
+                                     StoppedForTesting)
     from src.vfs_bot.turnstile import BlockingDialogError
     from src.waitlist.register import _await_page, _click
 
@@ -1125,6 +1168,22 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             report.ok = True
             report.detail = f"completed; now at {page.url}"
 
+        except StoppedForTesting as e:
+            # TEST MODE reached the 3-D Secure screen and stopped there, as
+            # asked. A screenshot only — never the gateway's DOM (card form).
+            log.warning(f"TEST STOP at '{name}': {e}")
+            report.ok = True
+            report.detail = str(e)
+            report.url = page.url
+            if capture != CAPTURE_OFF:
+                report.image_path = _capture_shot(page, f"{name}_TEST_STOP",
+                                                  route)
+            result.steps.append(report)
+            result.stopped_at = name
+            result.reason = str(e)
+            result.test_stopped = True
+            return result
+
         except PaymentDeclined as e:
             # THE GATEWAY ANSWERED, AND THE ANSWER WAS NO — but the click
             # happened, so this is not an ordinary step failure and must never
@@ -1197,8 +1256,19 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             return result
 
         except Exception as e:
+            # ASK VFS'S PAGE FIRST. A step's own message describes what the
+            # STEP saw, which after VFS has killed the session is a wrong
+            # diagnosis: on 2026-10-22 (5be1dfd4299ec338, AE-HUN) VFS blocked
+            # the session (403 Permission Issues) and redirected to
+            # page-not-found, and the run reported "the slot may have been
+            # taken". When the page says VFS ended it, that is the reason.
+            vfs_cause = _vfs_page_cause(page)
+            reason = (f"{vfs_cause} (step '{name}' could not continue: {e})"
+                      if vfs_cause else str(e))
+            if vfs_cause:
+                log.warning(f"  {name}: {vfs_cause}")
             report.ok = False
-            report.detail = str(e)
+            report.detail = reason
             report.url = page.url
             report.page_text = _page_text(page)
             # The page that BROKE the walk is the one worth keeping. A PNG
@@ -1215,7 +1285,7 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                         page, f"{name}_FAILED", route)
             result.steps.append(report)
             result.stopped_at = name
-            result.reason = str(e)
+            result.reason = reason
             return result
 
         result.steps.append(report)
@@ -1588,6 +1658,17 @@ def _do_slot_pick(page, step: Dict[str, Any], report: StepReport,
                 log.info(f"{month or 'calendar'} already offers "
                          f"{earliest_here}, past the end of the window "
                          f"({window_to}) — no later month can match.")
+                break
+
+        # THE WINDOW ENDS IN THIS MONTH — stop even when the month is empty.
+        # The rule above needs an offered date to compare; an empty November
+        # holding the whole window would otherwise page on through December and
+        # January (2026-10-23, job 9989e42c), reading months nobody asked for.
+        if strategy == STRATEGY_IN_RANGE and window_to is not None:
+            last_day = month_last_day(month)
+            if last_day and last_day >= window_to:
+                log.info(f"{month} is the last month of the window "
+                         f"(ends {window_to}) — not searching further.")
                 break
 
         if attempt == max_months - 1:

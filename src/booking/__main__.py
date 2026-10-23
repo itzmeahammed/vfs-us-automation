@@ -316,6 +316,20 @@ def cmd_probe(args) -> int:
               "  pages, or drop --commit to keep this run read-only.")
         return 1
 
+    if getattr(args, "stop_before_otp_submit", False):
+        if not getattr(args, "commit", False):
+            print("--stop-before-otp-submit needs --walk --commit: it is the "
+                  "full payment flow, stopped at the bank's 3-D Secure screen.")
+            return 1
+        # In-process flag only — API jobs never set it (see gateway.py).
+        from src.payment import gateway
+        gateway.TEST_STOP_BEFORE_OTP_SUBMIT = True
+        logging.getLogger(__name__).warning(
+            "TEST MODE: the run will stop before the last payment button "
+            "(OTP submit). The VFS Pay click still happens and the "
+            "appointment is held unpaid; if the bank shows no 3-D Secure "
+            "screen, that click completes the payment.")
+
     if getattr(args, "commit", False) and not _confirm_commit(args):
         return 1
 
@@ -694,6 +708,14 @@ def main(argv: List[str] = None) -> int:
              "Requires the route AND the payment processor to be enabled, and "
              "asks for confirmation unless --yes is given.")
     probe.add_argument(
+        "--stop-before-otp-submit", dest="stop_before_otp_submit",
+        action="store_true",
+        help="TEST MODE, CLI only. With --walk --commit: run the whole "
+             "payment flow, but at the bank's 3-D Secure screen read the SMS "
+             "code (logged masked), do NOT type it and do NOT click the "
+             "bank's submit. Logs 'Stopping before last payment button (OTP "
+             "submit) for testing'.")
+    probe.add_argument(
         "--yes", action="store_true",
         help="skip the --commit confirmation prompt (for scheduled runs)")
     probe.add_argument(
@@ -752,4 +774,6 @@ def main(argv: List[str] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from src.utils import cli_guard
+
+    sys.exit(cli_guard.run(main))

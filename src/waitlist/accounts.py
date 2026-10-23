@@ -346,7 +346,48 @@ def resolve_proxy(account: Account, route: str,
         return "", "no proxies configured"
 
     index = _pool_index(account.email, len(entries))
-    return entries[index], f"pinned to pool entry {index + 1}/{len(entries)}"
+    return _healthy_pool_entry(entries, index, route)
+
+
+def _healthy_pool_entry(entries, index: int, route: str):
+    """The pinned pool entry if its exit works, else the next one that does.
+
+    The slot checker has always probed before use (proxy_pool.pick_for_run)
+    and this path never did. So on 2026-10-22, with port 10002 down, the slot
+    checker logged "no exit — trying next" 24 times and kept working, while
+    every booking for the account pinned to that entry died in 3 seconds on
+    net::ERR_TUNNEL_CONNECTION_FAILED (job 5a8aa9708825ffb1, AE-NOR).
+
+    Same walk as the slot checker: pinned entry first, then the pool in order,
+    skipping dead exits and exits outside [proxy] require_country. Every skip
+    is logged WITH ITS REASON. Nothing healthy at all -> the local IP, which
+    is also what the slot checker does, said loudly.
+    """
+    from src.utils import proxy_pool
+
+    size = len(entries)
+    need = proxy_pool._require_country()
+    skipped = []
+    for k in range(size):
+        i = (index + k) % size
+        proxy = entries[i]
+        ip, country = proxy_pool._geo_cached(proxy)
+        if not ip:
+            why = proxy_pool.failure_reason(proxy)
+        elif need and country and country != need:
+            why = f"exits in {country}, VFS needs {need}"
+        else:
+            if skipped:
+                return proxy, (f"pool entry {i + 1}/{size} — pinned entry "
+                               f"{index + 1} skipped: {skipped[0]}")
+            return proxy, f"pinned to pool entry {i + 1}/{size}"
+        line = f"entry {i + 1} {proxy_pool.label(proxy)}: {why}"
+        logging.warning(f"{route}: proxy {line} — trying the next one.")
+        skipped.append(line)
+
+    logging.error(f"{route}: none of the {size} proxies works "
+                  f"({'; '.join(skipped)}) — using the LOCAL IP.")
+    return "", f"local IP — all {size} proxies failed their health check"
 
 
 def _pool_index(email: str, size: int) -> int:

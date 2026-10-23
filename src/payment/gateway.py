@@ -60,7 +60,8 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +106,27 @@ class PaymentSubmitted(Exception):
     the caller treats as failure. The card may have been charged. Check the
     gateway or the bank before doing anything else; do not resubmit.
     """
+
+    def __init__(self, message: str, journal_path: str = ""):
+        super().__init__(message)
+        self.journal_path = journal_path
+
+
+#: CLI-only TEST MODE: `python -m src.booking probe ... --stop-before-otp-submit`.
+#: At the 3-D Secure screen the SMS code is read and logged MASKED, never typed,
+#: and the bank's submit is never clicked — so the bank never authorises the
+#: charge. A module flag, not an environment variable, on purpose: API jobs are
+#: separate processes that copy os.environ, and must never inherit it.
+TEST_STOP_BEFORE_OTP_SUBMIT = False
+TEST_STOP_MESSAGE = "Stopping before last payment button (OTP submit) for testing"
+#: The journal outcome test mode writes, so the submit is not left "unanswered".
+OUTCOME_TEST_STOPPED = "test_stopped"
+
+
+class StoppedForTesting(Exception):
+    """Test mode stopped at the 3-D Secure screen. The code was NOT typed and
+    the bank's submit was NOT clicked. VFS holds the appointment unpaid until
+    it expires."""
 
     def __init__(self, message: str, journal_path: str = ""):
         super().__init__(message)
@@ -316,14 +338,37 @@ def _challenge_markers(spec: Dict[str, Any]) -> List[str]:
     return spec.get("challenge_markers") or list(_DEFAULT_CHALLENGE_MARKERS)
 
 
+_URL_TOKEN = re.compile(r"[/.?=&#:-]+")
+
+
+def url_matches_marker(url: str, spec: Dict[str, Any]) -> bool:
+    """Does `url` carry a challenge marker, under the processor's match mode?
+
+    "substring" (the default, Norway's) matches anywhere in the URL.
+
+    "tokens" matches only the START of a host or path segment, and ignores the
+    query and fragment. Unified Checkout's frame URLs carry long random
+    base64 tokens — a fresh one every session — and "acs", "3ds" or "cca"
+    turn up inside those by chance. A false match there would point the OTP
+    auto-fill at the CARD FORM's frame.
+    """
+    url = (url or "").lower()
+    markers = [m.lower() for m in _challenge_markers(spec)]
+    if spec.get("challenge_match") != "tokens":
+        return any(marker in url for marker in markers)
+    parsed = urlparse(url)
+    tokens = [t for t in _URL_TOKEN.split(f"{parsed.hostname or ''}/"
+                                          f"{parsed.path or ''}") if t]
+    return any(t.startswith(m) for t in tokens for m in markers)
+
+
 def _looks_like_challenge(page, spec: Dict[str, Any]) -> bool:
     """Has the gateway redirected to a bank's 3-D Secure page?"""
-    markers = _challenge_markers(spec)
     try:
-        url = (page.url or "").lower()
+        url = page.url or ""
     except Exception:                                       # noqa: BLE001
         return False
-    return any(marker in url for marker in markers)
+    return url_matches_marker(url, spec)
 
 
 def _frame_urls(page) -> List[str]:
@@ -356,8 +401,7 @@ def _challenge_showing(page, spec: Dict[str, Any]) -> bool:
     """
     if _looks_like_challenge(page, spec):
         return True
-    markers = _challenge_markers(spec)
-    return any(m in url.lower() for url in _frame_urls(page) for m in markers)
+    return any(url_matches_marker(url, spec) for url in _frame_urls(page))
 
 
 def _returned_to_merchant(page, spec: Dict[str, Any]) -> bool:
@@ -368,6 +412,16 @@ def _returned_to_merchant(page, spec: Dict[str, Any]) -> bool:
         return False
     if PAYMENT_STATUS_PARAM in url:
         return True
+    # Unified Checkout hands back in TWO hops: its page script sends the
+    # browser to VFS's callback handler with ?status=..., and VFS then moves
+    # on to its own pages. PENDING_AUTHENTICATION at the first hop means a
+    # 3-D Secure check is still to come — not an outcome. So a processor that
+    # names its return host is "back" only on a final status or on that host.
+    final_host = (spec.get("return_url_contains") or "").lower()
+    if final_host:
+        if read_outcome(page).get("outcome") != OUTCOME_UNKNOWN:
+            return True
+        return final_host in url and not _looks_like_challenge(page, spec)
     gateway_host = (spec.get("url_contains") or "").lower()
     if not gateway_host or gateway_host in url:
         return False
@@ -501,6 +555,16 @@ def _await_challenge(page, spec: Dict[str, Any], journal, capture,
             except Exception as e:                          # noqa: BLE001
                 log.warning(f"  could not capture the challenge screen: {e}")
 
+        # ── TEST MODE: READ THE CODE, NEVER TYPE IT ─────────────────────────
+        # Some banks submit the moment the last digit lands, so typing the
+        # code IS the charge on those. Test mode therefore stops before typing.
+        if TEST_STOP_BEFORE_OTP_SUBMIT:
+            code = otp.poll() if otp is not None else ""
+            if code or otp is None or time.monotonic() >= deadline:
+                _stop_for_testing(page, journal, journal_path, code)
+            _pause(page, 1000)
+            continue
+
         # ── AUTO-FILL, IF ALL OF IT LINES UP ────────────────────────────────
         # Deliberately AFTER the handback check and the capture: a code typed
         # into a screen we never photographed loses the only evidence of what
@@ -548,6 +612,34 @@ def _await_challenge(page, spec: Dict[str, Any], journal, capture,
                 "is still open on it. DO NOT RESUBMIT — check the bank and "
                 "the VFS account before doing anything else.", journal_path)
         _pause(page, 1000)
+
+
+def _mask_code(code: str) -> str:
+    if not code:
+        return ""
+    if len(code) < 3:
+        return "*" * len(code)
+    return f"{code[0]}{'*' * (len(code) - 2)}{code[-1]}"
+
+
+def _stop_for_testing(page, journal, journal_path: str, code: str) -> None:
+    """End a TEST-MODE run at the 3-D Secure screen. Always raises."""
+    if code:
+        got = f"SMS code {_mask_code(code)} received, NOT typed"
+    else:
+        got = "no SMS code read (relay off, or not a typed-code challenge)"
+    log.warning("=" * 70)
+    log.warning(f"  TEST MODE: {TEST_STOP_MESSAGE}.")
+    log.warning(f"  {got}. The bank's submit was NOT clicked — nothing charged.")
+    log.warning("  VFS holds the appointment unpaid until it expires.")
+    log.warning("=" * 70)
+    _journal_quietly(journal, {
+        "event": "payment_result",
+        "outcome": OUTCOME_TEST_STOPPED,
+        "detail": f"{TEST_STOP_MESSAGE}: {got}",
+        "url": getattr(page, "url", ""),
+    })
+    raise StoppedForTesting(f"{TEST_STOP_MESSAGE}: {got}.", journal_path)
 
 
 def _journal_quietly(journal, row: Dict[str, Any]) -> None:
@@ -666,7 +758,19 @@ def capture_screen(page, directory: str, label: str,
 #: Note what that says: DECLINED AND CHARGED ARE NOT MUTUALLY EXCLUSIVE here.
 #: So this is recorded as the outcome VFS reported, never as "no money moved".
 PAYMENT_STATUS_PARAM = "paymentstatus"
-PAYMENT_REF_PARAMS = ("requestrefno", "transactionid")
+PAYMENT_REF_PARAMS = ("requestrefno", "transactionid", "requestref")
+
+#: Unified Checkout's callback (AE/HUN): VFS's page script redirects to
+#: .../UnifiedCheckoutCallBackHandlder?status=<X>&requestRef=<n>&decodeJson=...
+#: with X straight from CyberSource. PENDING_AUTHENTICATION is deliberately in
+#: neither set: it means 3-D Secure is still to come, not that it finished.
+UC_STATUS_PARAM = "status"
+UC_CALLBACK_MARKER = "callback"
+UC_SUCCESS = ("authorized", "success", "completed")
+UC_FAILED = ("declined", "failed", "invalid_request", "invalid_data",
+             "authorized_risk_declined", "authorized_pending_review_declined")
+#: Never journalled: the decoded token payload, card details and all.
+_DROP_PARAMS = ("decodejson",)
 
 OUTCOME_SUCCESS = "success"
 OUTCOME_FAILED = "failed"
@@ -681,13 +785,19 @@ def read_outcome(page) -> Dict[str, Any]:
     unreadable outcome is reported as "unknown", which is the honest answer and
     the one that keeps the journal row unanswered rather than falsely resolved.
     """
-    from urllib.parse import parse_qs, urlparse
+    from urllib.parse import parse_qsl, urlencode, urlunparse
 
     out: Dict[str, Any] = {"outcome": OUTCOME_UNKNOWN, "url": ""}
     try:
         url = getattr(page, "url", "") or ""
-        out["url"] = url
-        query = parse_qs(urlparse(url).query)
+        parsed = urlparse(url)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        kept = [(k, v) for k, v in pairs if k.lower() not in _DROP_PARAMS]
+        out["url"] = (urlunparse(parsed._replace(query=urlencode(kept)))
+                      if len(kept) != len(pairs) else url)
+        query: Dict[str, List[str]] = {}
+        for k, v in kept:
+            query.setdefault(k, []).append(v)
     except Exception:                                       # noqa: BLE001
         return out
 
@@ -699,6 +809,13 @@ def read_outcome(page) -> Dict[str, Any]:
         out["outcome"] = OUTCOME_SUCCESS
     elif token in ("false", "failed", "failure", "0", "n", "no"):
         out["outcome"] = OUTCOME_FAILED
+    elif not raw and UC_CALLBACK_MARKER in (parsed.path or "").lower():
+        raw = (lowered.get(UC_STATUS_PARAM) or [""])[0]
+        token = str(raw).strip().lower()
+        if token in UC_SUCCESS:
+            out["outcome"] = OUTCOME_SUCCESS
+        elif token in UC_FAILED:
+            out["outcome"] = OUTCOME_FAILED
     out["payment_status"] = str(raw)
 
     # The references are what a human quotes to VFS or the bank. They are the
@@ -742,7 +859,8 @@ def _otp_max_attempts(spec: Dict[str, Any]) -> int:
 
 def submit_payment(page, spec: Dict[str, Any], journal=None,
                    timeout_ms: int = SETTLE_TIMEOUT_MS, capture=None,
-                   otp_timeout_ms: Optional[int] = None, otp=None) -> str:
+                   otp_timeout_ms: Optional[int] = None, otp=None,
+                   click: Optional[Callable[[], None]] = None) -> str:
     """Submit the payment. THE IRREVERSIBLE CALL.
 
     Raises PaymentSubmitted in every case where the click has happened —
@@ -767,6 +885,11 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
     `otp` is an optional src.otp_relay.OtpInbox. It is ARMED HERE, immediately
     before the click, rather than by the caller — see the comment at the arm()
     call. Without one, the 3-D Secure path behaves exactly as it always has.
+
+    `click` replaces the default `page.locator(spec["submit"]).click()` for a
+    gateway whose pay control is not on the page itself — Unified Checkout's
+    sits in a cross-origin iframe (src/payment/unified.py). It is still called
+    HERE, after the write-ahead row, so the journal discipline is unchanged.
     """
     submit = spec.get("submit") or "input[type=submit]"
     if otp_timeout_ms is None:
@@ -817,7 +940,10 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
 
     log.warning("SUBMITTING PAYMENT — this cannot be undone.")
     try:
-        page.locator(submit).first.click(timeout=30000)
+        if click is not None:
+            click()
+        else:
+            page.locator(submit).first.click(timeout=30000)
     except Exception as e:                                  # noqa: BLE001
         # The click itself failed, so nothing was submitted. This is the one
         # post-journal path that is still safe to abandon — but the journal row
@@ -837,17 +963,35 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
     #
     # So the timeout is recorded, the screen is looked at, and only a timeout
     # with NO challenge on screen is treated as a gateway that never answered.
-    try:
-        page.wait_for_load_state("networkidle", timeout=timeout_ms)
-    except Exception as e:                                  # noqa: BLE001
-        if not _challenge_showing(page, spec):
-            raise PaymentSubmitted(
-                "The payment was submitted but the gateway did not respond in "
-                f"{timeout_ms // 1000}s. DO NOT RESUBMIT. Check the gateway or "
-                f"the bank for the outcome. ({e})", journal_path) from e
-        log.info(f"  gateway still busy after {timeout_ms // 1000}s, and a "
-                 "3-D Secure challenge is on screen — that is the challenge "
-                 "polling, not a lost response.")
+    if spec.get("settle") == "handback":
+        # UNIFIED CHECKOUT CHARGES FROM JAVASCRIPT, NOT A FORM POST. The click
+        # resolves a promise; up.complete() then talks to CyberSource and only
+        # afterwards does the page navigate. The network can go idle in
+        # between, so "idle" would read the CHECKOUT page as the outcome.
+        # Wait for the handback (or a challenge) instead.
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while not (_returned_to_merchant(page, spec)
+                   or _challenge_showing(page, spec)):
+            if time.monotonic() >= deadline:
+                raise PaymentSubmitted(
+                    "The payment was submitted but the gateway did not hand "
+                    f"back within {timeout_ms // 1000}s. DO NOT RESUBMIT. "
+                    "Check the gateway or the bank for the outcome.",
+                    journal_path)
+            _pause(page, 1000)
+    else:
+        try:
+            page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        except Exception as e:                              # noqa: BLE001
+            if not _challenge_showing(page, spec):
+                raise PaymentSubmitted(
+                    "The payment was submitted but the gateway did not "
+                    f"respond in {timeout_ms // 1000}s. DO NOT RESUBMIT. "
+                    "Check the gateway or the bank for the outcome. "
+                    f"({e})", journal_path) from e
+            log.info(f"  gateway still busy after {timeout_ms // 1000}s, "
+                     "and a 3-D Secure challenge is on screen — that is the "
+                     "challenge polling, not a lost response.")
 
     # ONE FILE SET PER DISTINCT SCREEN, no matter how many times the code
     # looks. The live run of 2026-10-14 wrote the same screen twice at BOTH
@@ -879,6 +1023,10 @@ def submit_payment(page, spec: Dict[str, Any], journal=None,
     # decided about it: whatever the gateway did with the payment, this is the
     # page that says so, and it is not reachable again.
     capture_once("submitted")
+
+    if TEST_STOP_BEFORE_OTP_SUBMIT and not _challenge_showing(page, spec):
+        log.error("TEST MODE: no 3-D Secure screen appeared — the Pay click "
+                  "itself completed the payment. Check the outcome below.")
 
     if _challenge_showing(page, spec):
         # HAND OVER, DO NOT GIVE UP. The old code journalled "unknown" and

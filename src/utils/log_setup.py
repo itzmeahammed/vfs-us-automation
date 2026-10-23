@@ -114,11 +114,15 @@ QUIET_TRACEBACK = "quiet_traceback"
 
 
 class ConsoleFormatter(logging.Formatter):
-    """The console format, minus the traceback of a record marked quiet."""
+    """The console format, never with a traceback.
+
+    Since 2026-10-23 every record is treated as quiet, marked or not: the
+    console is what an API job's log shows, and the operator asked that no
+    traceback ever appear there. The files (text log, app.jsonl) keep it.
+    QUIET_TRACEBACK is still honoured, now redundantly.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
-        if not getattr(record, QUIET_TRACEBACK, False):
-            return super().format(record)
         saved = record.exc_info, record.exc_text, record.stack_info
         record.exc_info = record.exc_text = record.stack_info = None
         try:
