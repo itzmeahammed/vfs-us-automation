@@ -79,6 +79,27 @@ def run_id() -> str:
     return _run_id
 
 
+def begin_run(value: str = "") -> str:
+    """Start a NEW run inside this process, and return its id.
+
+    For a process that serves a QUEUE of runs rather than one: the automatic
+    booker logs in once per request, and those are separate runs by every
+    measure that matters — separate log lines, separate runs/<ROUTE>/<id>/
+    captures, separate payment-journal rows, separate job records the web app
+    shows. Without this they would all share the id minted at import, and one
+    request's screenshots would land in another's folder.
+
+    Not to be confused with run_id(), which is idempotent on purpose. Call this
+    only at a real boundary between two runs.
+    """
+    global _run_id
+    candidate = str(value or "").strip()
+    _run_id = (candidate if candidate and len(candidate) <= 40
+               and candidate.isalnum() else new_run_id())
+    os.environ[ENV_VAR] = _run_id
+    return _run_id
+
+
 def is_inherited() -> bool:
     """True when the parent supplied the id (i.e. this run was API-triggered)."""
     return bool((os.environ.get(ENV_VAR) or "").strip()) and run_id() == os.environ.get(ENV_VAR)

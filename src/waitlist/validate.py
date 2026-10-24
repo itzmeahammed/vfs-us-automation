@@ -551,7 +551,6 @@ def required_fields_live(route: str) -> List[Dict[str, Any]]:
     out.extend(step_fields)
 
     try:
-        from src.booking.requests import DEFAULT_COUNTRY_CODE
         from src.payment import config as payment_config
 
         billing = payment_config.load().get("billing_fields") or []
@@ -566,9 +565,12 @@ def required_fields_live(route: str) -> List[Dict[str, Any]]:
                        "Billing detail for the card payment page.",
                        required=bool(spec.get("required")))
         if name == "country_code":
-            # normalise() fills it: the gateway offers one country per route.
-            entry["required"] = False
-            entry["notes"] += f" Defaults to {DEFAULT_COUNTRY_CODE} when omitted."
+            # NOT ADVERTISED AT ALL. The billing country is fixed to
+            # BILLING_COUNTRY by booking.requests.normalise(), so a form that
+            # renders this field can only send something that is overwritten —
+            # and three different web-app spellings of it reached the live
+            # payment page before it was fixed (2026-10-23).
+            continue
         out.append(entry)
     return out
 

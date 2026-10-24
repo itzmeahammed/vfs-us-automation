@@ -1,0 +1,10 @@
+{
+  "description": "UAE -> Austria. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
+  "mode": "slot-check",
+  "_comment_bootstrap": "CREATED 2026-10-23 TO MAKE THE FIRST LOGIN POSSIBLE — nothing in it has been seen on the Austrian portal yet. The combinations list is EMPTY on purpose rather than copied from a neighbouring country: a guessed centre name does not fail loudly, it fails as 'Could not select ...' on every scheduled run and looks like VFS being down. The real values come from the dropdowns on Appointment Details.",
+  "_comment_otp": "NOT flagged \"otp\": true. Only AE-GRC and AE-ITA email a code, so false is the right first guess; if the first login stalls on a one-time-password page, add \"otp\": true here and re-run. It is a guess either way and it is checked by the first login, not by this file.",
+  "slot_check": {
+    "_comment_labels": "Labels must be UNIQUE within a route — a waitlist client file names the combination it wants by label, and duplicates would silently resolve to whichever came first.",
+    "combinations": []
+  }
+}

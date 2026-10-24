@@ -105,13 +105,42 @@ def test_an_unmappable_label_matches_nothing():
     ("2026-10-10", True),     # first day of the window
     ("2026-10-15", True),
     ("2026-10-20", True),     # last day
-    ("2026-10-09", False),    # BEFORE the window: deliberately does not fire
+    ("2026-10-09", True),     # BEFORE it: a date inside MAY still be free
     ("2026-10-21", False),    # after: cannot contain an in-window date
 ])
-def test_fires_only_when_earliest_is_inside_the_window(seen, fires):
+def test_fires_whenever_a_date_inside_the_window_could_still_exist(seen, fires):
     earliest = {autobook._norm(COMBO): (COMBO, seen)}
     matches = autobook.find_matches(ROUTE, earliest, [_mk("r1")], today=TODAY)
     assert bool(matches) is fires
+
+
+def test_an_earliest_before_the_window_is_rate_limited():
+    """True on every tick once true at all, and each tick is a login VFS
+    counts. One attempt per before_window_retry_minutes, no more."""
+    from datetime import datetime, timezone
+
+    earliest = {autobook._norm(COMBO): (COMBO, "2026-10-09")}
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    req = _mk("r1")
+    req.data["history"] = [{"at": "2026-10-08T11:30:00Z",
+                            "event": "attempt_started"}]
+
+    # 30 minutes ago, with a 3-hour gate: not yet.
+    assert autobook.find_matches(ROUTE, earliest, [req], today=TODAY,
+                                 before_window_minutes=180, now=now) == []
+    # Four hours ago: due.
+    req.data["history"][0]["at"] = "2026-10-08T08:00:00Z"
+    assert autobook.find_matches(ROUTE, earliest, [req], today=TODAY,
+                                 before_window_minutes=180, now=now)
+    # Switched off: back to firing only inside the window.
+    assert autobook.find_matches(ROUTE, earliest, [req], today=TODAY,
+                                 before_window_minutes=0, now=now) == []
+
+
+def test_a_request_that_never_ran_fires_at_once():
+    earliest = {autobook._norm(COMBO): (COMBO, "2026-10-09")}
+    assert autobook.find_matches(ROUTE, earliest, [_mk("r1")], today=TODAY,
+                                 before_window_minutes=180)
 
 
 def test_only_armed_requests_on_this_route_and_combo_match():

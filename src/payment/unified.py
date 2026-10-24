@@ -257,6 +257,45 @@ def _field(page, spec, key: str, what: str, required: bool = True,
     return hit[1] if hit else None
 
 
+def fill_billing(page, spec: Dict[str, Any],
+                 values: Optional[Dict[str, Any]] = None) -> int:
+    """Fill the billing fields the card form itself asks for. Count filled.
+
+    Unified Checkout's card form carries its own 'First name' / 'Last name'
+    (billTo.firstName / billTo.lastName) next to the card fields. The
+    2026-10-23 AE-HUN run left both empty and an operator typed them by hand,
+    because card_fields had only a 'cardholderName' candidate, which this form
+    does not have.
+
+    A field that is NOT on the form is skipped — Unified Checkout renders a
+    different set per merchant profile. A field that IS on the form with no
+    value refuses here, which is still free: nothing has been charged.
+    """
+    values = values or {}
+    filled = 0
+    for field in spec.get("billing_fields") or []:
+        name = field.get("name", "?")
+        selectors = _as_list(field.get("selectors"))
+        if not selectors:
+            continue
+        hit = find(page, spec, selectors, OPTIONAL_FIELD_MS)
+        if hit is None:
+            log.debug(f"  billing {name} is not on this card form — skipped")
+            continue
+        value = str(values.get(field.get("value_key") or name, "") or "").strip()
+        if not value:
+            if field.get("required"):
+                raise _error(
+                    f"The card form asks for a billing {name} and the client "
+                    "record has none. Nothing was typed or charged. Add it "
+                    "to the booking request and run again.")
+            continue
+        _type(hit[1], value, int(spec.get("typing_delay_ms") or 60))
+        filled += 1
+        log.info(f"  filled billing {name}")
+    return filled
+
+
 def fill_card(page, spec: Dict[str, Any], card,
               context: Optional[Dict[str, Any]] = None) -> None:
     """Number, expiry, CVN (and name, where the form asks). Never logs a value."""
@@ -345,7 +384,8 @@ def _form_errors(page, spec) -> str:
 # --------------------------------------------------------------------------- #
 
 def prepare(page, spec: Dict[str, Any], card,
-            capture: Optional[Callable[[Any, str], Any]] = None
+            capture: Optional[Callable[[Any, str], Any]] = None,
+            values: Optional[Dict[str, Any]] = None
             ) -> Callable[[], None]:
     """Everything BEFORE the irreversible click. Returns that click.
 
@@ -378,6 +418,10 @@ def prepare(page, spec: Dict[str, Any], card,
             log.warning(f"  could not capture the empty card form: {e}")
 
     fill_card(page, spec, card, context)
+    # AFTER the card: the form asks for the billing name below the card
+    # fields, and filling in page order keeps any re-render the card inputs
+    # trigger from clearing what was typed above them.
+    fill_billing(page, spec, values)
 
     def click_card_continue() -> None:
         _click_first(page, spec, "card_submit", "card form Continue", 15000)

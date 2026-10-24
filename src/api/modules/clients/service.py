@@ -29,6 +29,7 @@ are the rules. This only dispatches, and refuses an id both stores could claim.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.api.core.errors import ApiError
@@ -124,6 +125,9 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
     call instead of a GET per client. Off by default: it is real work per
     client, and a picker does not need it. Filtering on `runnable` implies it.
 
+    Runs maintenance first, so an expired window or a booking whose process
+    died is already settled in what this returns.
+
     `q` is a free-text match over the fields a list row ALREADY carries — see
     `_SEARCHABLE`. It deliberately cannot reach a passport number, date of
     birth, email or phone: `detail()` masks those and a list row never holds
@@ -133,6 +137,7 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
     `q` is applied BEFORE the pre-flight, so searching a large fleet costs one
     cheap string match per client rather than a full validation per client.
     """
+    _maintain()
     include_problems = include_problems or runnable is not None
     from src.booking import requests as req_store
     from src.waitlist import journal, store
@@ -232,6 +237,7 @@ def detail(client_id: str) -> Dict[str, Any]:
 
     from src.booking import requests as req_store
 
+    _maintain()
     cid = client_id.strip().lower()
     flow = require_flow(cid)
     row = next((r for r in list_clients(flow=flow) if r["client_id"] == cid), {})
@@ -390,23 +396,94 @@ def delete(client_id: str) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def timeline(client_id: str) -> List[Dict[str, Any]]:
+def _utc_z(value: Any) -> str:
+    """Any timestamp as `YYYY-MM-DDTHH:MM:SSZ`.
+
+    The feed merges three sources that each spell time differently: the
+    request history already uses this form, job records use an ISO string with
+    a +00:00 offset, and journal rows carry whatever was written. A web app
+    sorting or formatting a mixture of those gets the order wrong, and a reader
+    comparing them to the bot's logs — which are LOCAL time — is out by the
+    offset. One shape, always UTC, so the web app converts once.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text                      # unparseable: pass it through as-is
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _maintain() -> None:
+    """Expire dead windows and unstick dead runs before answering a read.
+
+    The bot only did this inside a slot check, so with the scheduler off a
+    crashed booking stayed 'booking' and an expired window stayed 'waiting' —
+    and the web app showed both as live. Rate-limited inside maintain() to one
+    pass a minute, so a list endpoint does not rescan on every call.
+    """
+    try:
+        from src.booking import autobook
+        autobook.maintain()
+    except Exception:                                       # noqa: BLE001
+        pass
+
+
+def timeline(client_id: str, since: int = 0) -> List[Dict[str, Any]]:
+    """Everything that happened to one client, newest first.
+
+    Every entry carries `id`, stable for the life of the client, so a web app
+    can render a feed without showing the same thing twice. For a live client
+    the id is `req:<seq>`, where seq is the request's own monotonic counter —
+    pass the highest one you have seen as `since` and only newer entries come
+    back. `at` cannot be that cursor: it has second resolution, so two events
+    in the same second are indistinguishable.
+
+    Entries from the other sources — the job records, the waitlist journal,
+    invitations — have no such counter, so `since` filters them by time
+    instead: anything at or before the moment of the `since` entry is dropped.
+    Their ids (`job:<job_id>`) remain what a web app de-duplicates them by,
+    because a job record is rewritten when the job finishes and so legitimately
+    appears twice.
+    """
     from src.booking import invites, requests as req_store
 
+    _maintain()
     cid = client_id.strip().lower()
     flow = require_flow(cid)
     events: List[Dict[str, Any]] = []
+    #: The moment the caller has already seen up to, for the sources that have
+    #: no sequence of their own.
+    cutoff_at = ""
 
     if flow == LIVE:
         history = public_errors.public_history(
             req_store.get(cid).data.get("history") or [])
-        for entry in history:
-            events.append({"at": entry.get("at", ""), "source": "booking_request",
+        if since:
+            for index, entry in enumerate(history, start=1):
+                if int(entry.get("seq") or index) == int(since):
+                    cutoff_at = str(entry.get("at") or "")
+                    break
+        for index, entry in enumerate(history, start=1):
+            seq = entry.get("seq")
+            if seq is None:
+                # Written before seq existed. Position is the best id there
+                # is, and it is stable as long as the history is not trimmed.
+                seq = index
+            if since and int(seq) <= int(since):
+                continue
+            events.append({"id": f"req:{seq}", "at": entry.get("at", ""),
+                           "source": "booking_request",
                            **{k: v for k, v in entry.items() if k != "at"}})
     else:
         from src.api.modules.clients import waitlist as waitlist
         for row in waitlist.get_client_journal(cid).rows:
-            events.append({"at": row.finished_at or row.started_at or "",
+            events.append({"id": f"journal:{row.started_at or ''}:{row.combo}",
+                           "at": row.finished_at or row.started_at or "",
                            "source": "waitlist_journal", "event": row.status,
                            "detail": f"{row.route} / {row.combo}"
                                      + (f": {row.reason}" if row.reason else ""),
@@ -418,7 +495,8 @@ def timeline(client_id: str) -> List[Dict[str, Any]]:
             if not mentioned:
                 continue
             for entry in item.get("history") or []:
-                events.append({"at": entry.get("at", ""), "source": "invitation",
+                events.append({"id": f"invite:{item['key']}:{entry.get('at', '')}",
+                               "at": entry.get("at", ""), "source": "invitation",
                                "invitation": item["key"],
                                **{k: v for k, v in entry.items() if k != "at"}})
 
@@ -427,12 +505,31 @@ def timeline(client_id: str) -> List[Dict[str, Any]]:
         for record in job_manager.recent(500):
             p = record.payload or {}
             if cid in (p.get("registrant"), p.get("request_id")):
-                events.append({"at": record.started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                               "source": "job", "event": record.status.value,
-                               "job_id": record.job_id,
-                               "detail": f"{p.get('lane', '')} {p.get('mode', '')}".strip()})
+                public = record.to_public()
+                events.append({
+                    "id": f"job:{record.job_id}",
+                    "at": record.started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "source": "job", "event": record.status.value,
+                    "job_id": record.job_id, "run_id": record.run_id,
+                    "finished_at": public.get("finished_at"),
+                    # Where the web app reads what this attempt printed:
+                    # GET /v1/jobs/{job_id}/logs
+                    "logs_url": f"/v1/jobs/{record.job_id}/logs",
+                    "started_by": p.get("started_by", ""),
+                    "detail": public.get("detail")
+                    or f"{p.get('lane', '')} {p.get('mode', '')}".strip()})
     except Exception:                                       # noqa: BLE001
         pass
+
+    if cutoff_at:
+        events = [e for e in events
+                  if e.get("source") == "booking_request"
+                  or str(e.get("at") or "") > cutoff_at]
+
+    for event in events:
+        event["at"] = _utc_z(event.get("at"))
+        if event.get("finished_at"):
+            event["finished_at"] = _utc_z(event["finished_at"])
 
     # Newest first. Timestamps are per second, so two events in one second
     # tie — the order they were recorded in breaks the tie, otherwise "edited"

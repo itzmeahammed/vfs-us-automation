@@ -42,7 +42,13 @@ log = logging.getLogger("vfs.api.booking_requests")
 class BookingRequestFields(BaseModel):
     """The fields a sales agent supplies. EXTRA KEYS ARE ALLOWED: they are the
     applicant's form data, and which ones are required depends on the route's
-    booking pages — the 422 names exactly the missing ones."""
+    booking pages — the 422 names exactly the missing ones.
+
+    `country_code` is NOT one of them. The payment page's billing country is
+    fixed to booking.requests.BILLING_COUNTRY, and anything sent under that key
+    is overwritten. GET /v1/routes/{route}/readiness no longer lists it, so a
+    form built from that list will not ask for it.
+    """
 
     model_config = ConfigDict(extra="allow", json_schema_extra={"example": {
         "route": "AE-NOR",
@@ -55,7 +61,7 @@ class BookingRequestFields(BaseModel):
         "email": "ahmed@example.com",
         "address_line_1": "FLAT 101, AL BARSHA TOWER",
         "address_line_2": "SHEIKH ZAYED ROAD", "city": "Dubai",
-        "postcode": "00000", "country_code": "AE",
+        "postcode": "00000",
     }})
 
     route: str = Field(description="Route id, e.g. AE-NOR.")

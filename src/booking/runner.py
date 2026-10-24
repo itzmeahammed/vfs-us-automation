@@ -548,7 +548,7 @@ def _step_payment(ctx: "_StepContext") -> None:
         # Everything up to (not including) the charging click. Raises
         # PaymentError on any miss, which is still a free stop.
         pay_click = unified.prepare(gateway_page, spec, card,
-                                    capture=_capture)
+                                    capture=_capture, values=ctx.values)
     else:
         gateway.fill_billing(gateway_page, spec, ctx.values)
         gateway.fill_card(gateway_page, spec, card)

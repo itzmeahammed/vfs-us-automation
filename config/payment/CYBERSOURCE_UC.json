@@ -5,84 +5,75 @@
   "flow": "unified_checkout",
   "_comment_enabled": "ARMED 2026-10-23 for AE-HUN. The page, the launcher, the review step and the callback are READ OFF A REAL CAPTURE (docs/hungary_payment.txt/payment_selector.txt, operator, 2026-10-22). The card-entry fields are NOT: that capture ended before the card form. See _comment_card_fields.",
   "_comment_what": "Hungary's Pay Online does not go to secureacceptance.cybersource.com (Norway's CYBERSOURCE.json). It lands on a VFS page that runs CyberSource Unified Checkout: the payment buttons and the card form are cross-origin iframes from up.cybersource.com, and the charge happens in the page's JavaScript (up.complete), not in a form post. src/payment/unified.py drives it; gateway.submit_payment still owns the journal, the 3-D Secure wait, the OTP auto-fill and the outcome.",
-
   "url_contains": "online.vfsglobal.com/PG-Component/Payment/CyberSourceNew",
   "_comment_url_contains": "OBSERVED twice: https://online.vfsglobal.com/PG-Component/Payment/CyberSourceNew?initiateResult=... — the run 6ad9ecb3893138 stopped here waiting for Norway's URL. Used ONLY by routes whose payment step names \"processor\": \"CYBERSOURCE_UC\" — today that is AE-HUN alone. Every other route stays on CYBERSOURCE.json.",
-
   "capture_context": "input#captureContext",
   "_comment_capture_context": "OBSERVED. A JWT holding the checkout's own settings. unified.py decodes it (unverified — read for caution, never for trust) for: showConfirmationStep (true on HUN, which decides that the REVIEW continue is the charging click), billingType (NONE on HUN — no billing fields exist), allowedCardNetworks (VISA, MASTERCARD, AMEX, JCB, DISCOVER), amount (115.66 AED).",
-
-  "frame_hosts": ["up.cybersource.com", "flex.cybersource.com"],
+  "frame_hosts": [
+    "up.cybersource.com",
+    "flex.cybersource.com"
+  ],
   "_comment_frame_hosts": "Card fields and buttons are only ever looked for inside frames on these hosts. up.cybersource.com is OBSERVED (buttonlist.html, mce.html). flex.cybersource.com is where Microform puts the number and CVN iframes, per CyberSource's docs and the capture context's own flx.origin.",
-
-  "accepted_networks": ["VISA", "MASTERCARD", "AMEX", "JCB", "DISCOVER"],
+  "accepted_networks": [
+    "VISA",
+    "MASTERCARD",
+    "AMEX",
+    "JCB",
+    "DISCOVER"
+  ],
   "_comment_accepted_networks": "Fallback only. The capture context's allowedCardNetworks, read live, wins.",
-
   "launcher": [
     "button[data-testid='launcher-mce-and-ctp']",
     "button[aria-label='Checkout with card']"
   ],
   "_comment_launcher": "OBSERVED: <button class='v-button ... launcher-mce-and-ctp' data-testid='launcher-mce-and-ctp' aria-label='Checkout with card'>. The black button above it is Google Pay — never clicked. Skipped when the card form is already showing.",
-
   "card_fields": {
     "number": [
-      "input#number",
-      "input[name='number']",
+      "input[name='paymentInformation.card.number']",
       "input[autocomplete='cc-number']",
-      "input[aria-label*='card number' i]",
-      "input[placeholder*='card number' i]"
+      "input#number",
+      "input[name='number']"
     ],
     "expiry": [
       "input[autocomplete='cc-exp']",
-      "input[name='expirationDate']",
-      "input#expirationDate",
-      "input[aria-label*='expir' i]",
-      "input[placeholder*='MM' i]"
+      "input[name='expirationDate']"
     ],
     "expiry_month": [
-      "select[name='expirationMonth']",
-      "select#expirationMonth",
-      "select[autocomplete='cc-exp-month']"
+      "select[name='paymentInformation.card.expirationMonth']",
+      "select[data-testid='expiry-month']",
+      "select[name='expirationMonth']"
     ],
     "expiry_year": [
-      "select[name='expirationYear']",
-      "select#expirationYear",
-      "select[autocomplete='cc-exp-year']"
+      "select[name='paymentInformation.card.expirationYear']",
+      "select[data-testid='expiry-year']",
+      "select[name='expirationYear']"
     ],
     "cvn": [
-      "input#securityCode",
-      "input[name='securityCode']",
+      "input[name='paymentInformation.card.securityCode']",
       "input[autocomplete='cc-csc']",
-      "input[aria-label*='security code' i]",
-      "input[aria-label*='cvv' i]",
-      "input[placeholder*='CVV' i]"
+      "input#securityCode",
+      "input[name='securityCode']"
     ],
     "name": [
       "input[autocomplete='cc-name']",
-      "input[name='cardholderName']",
-      "input[aria-label*='name on card' i]"
+      "input[name='cardholderName']"
     ]
   },
-  "_comment_card_fields": "*** CANDIDATES, NOT OBSERVATIONS. *** The operator's capture stops at the review step, so the card form's inner DOM has never been seen. Ranked: CyberSource Microform's own ids/names first (#number, #securityCode), then the HTML autocomplete standard every card form uses, then labels. Expiry is either one MM/YY field or two selects — whichever is found. A miss STOPS THE RUN BEFORE ANYTHING IS CHARGED, and the empty form is captured first (runs/<route>/payment/*_uc_card_form_empty*.html, safe — no digit typed yet). After the first live run, replace these with what that file shows and move this note to _comment_*_observed.",
-
+  "_comment_card_fields": "OBSERVED on the live AE-HUN form, run 6adb1aa3d6b455 (2026-10-23): runs/AE-HUN/6adb1aa3d6b455/payment/20261023_123042_uc_card_form_empty_frame7.html. Unified Checkout names its inputs with the REST field path ('paymentInformation.card.number'), not the short names the old candidates guessed. Later entries are fallbacks for a form that renders differently.",
   "typing_delay_ms": 60,
   "_comment_typing": "Typed key by key, not fill(): Microform formats the number as you type ('4111 1111 ...'), and the number field is read back and compared digit-for-digit before going on.",
-
   "card_submit": [
     "button[data-testid*='continue' i]",
     "button[data-testid*='submit' i]",
     "button[type='submit']"
   ],
   "_comment_card_submit": "CANDIDATES. The card form's own button. With showConfirmationStep=true (HUN) it only tokenizes — nothing is charged — and the run moves to the review step. If the capture context says false or cannot be read, unified.py routes THIS click through submit_payment's write-ahead journal instead, as the charging click.",
-
   "review_submit": [
     "button[data-testid='step-review-continue-btn']"
   ],
   "_comment_review_submit": "OBSERVED: <div class='step-review' data-testid='review'><p class='review-text'>Please review and confirm your payment information before you continue.</p>... <button class='v-button static-button-styles' data-testid='step-review-continue-btn' type='submit'>. THE IRREVERSIBLE CLICK on HUN: after it the page script calls up.complete(), which CAPTURES the payment.",
-
   "submit": "button[data-testid='step-review-continue-btn']",
   "_comment_submit": "Kept equal to review_submit for one reason: src/payment/otp.py refuses to click any control matching `submit` while typing a 3-D Secure code, so the pay button can never be pressed twice.",
-
   "error_selectors": [
     "[role='alert']",
     "[data-testid*='error' i]",
@@ -90,11 +81,9 @@
     ".v-error"
   ],
   "_comment_error_selectors": "Read only when the card form fails to reach the review step, to put the form's own complaint in the log. Candidates.",
-
   "settle": "handback",
   "return_url_contains": "visa.vfsglobal.com",
   "_comment_settle": "OBSERVED IN THE PAGE SCRIPT: after the charge it sets window.location to https://online.vfsglobal.com/PG-Component/Payment/UnifiedCheckoutCallBackHandlder?status=<X>&requestRef=<n>&decodeJson=<payload>. AUTHORIZED/SUCCESS and DECLINED/FAILED/INVALID_* are final; PENDING_AUTHENTICATION means 3-D Secure is next, so the run keeps waiting until a final status or until VFS (visa.vfsglobal.com) has the browser back. decodeJson is dropped before anything is journalled.",
-
   "challenge_match": "tokens",
   "_comment_challenge_match": "Markers are matched against the start of host/path segments only. Unified Checkout's frame URLs carry long random base64 tokens that change every session; substring matching could find 'acs' or '3ds' inside one and mistake the CARD FORM for a bank challenge.",
   "challenge_markers": [
@@ -112,7 +101,6 @@
     "centinel"
   ],
   "_comment_challenge_markers": "Norway's list minus 'cca' (only ever a query-string coincidence). 'stepup' covers Unified Checkout's own /stepup/stepup.html frame, named in the capture context's iframes map; 'cardinalcommerce'/'centinel' cover the Cardinal frames its consumerAuthentication uses.",
-
   "otp_auto": true,
   "otp_field": [
     "input#CredentialValidateInput",
@@ -136,5 +124,26 @@
   "otp_clock_grace_seconds": 90,
   "otp_poll_seconds": 5,
   "otp_timeout_seconds": 600,
-  "_comment_otp": "The company card is the same one Norway pays with, so its issuer's 3-D Secure screens are too — copied from CYBERSOURCE.json, where every value is explained. Keep the two in step."
+  "_comment_otp": "The company card is the same one Norway pays with, so its issuer's 3-D Secure screens are too — copied from CYBERSOURCE.json, where every value is explained. Keep the two in step.",
+  "billing_fields": [
+    {
+      "name": "first_name",
+      "value_key": "first_name",
+      "selectors": [
+        "input[name='billTo.firstName']",
+        "input[autocomplete='billing given-name']"
+      ],
+      "required": true
+    },
+    {
+      "name": "last_name",
+      "value_key": "last_name",
+      "selectors": [
+        "input[name='billTo.lastName']",
+        "input[autocomplete='billing family-name']"
+      ],
+      "required": true
+    }
+  ],
+  "_comment_billing_fields": "The card form ALSO asks for a billing first and last name (labels 'First name' / 'Last name'). The 2026-10-23 run left both empty and they had to be typed by hand. A field that is not on the form is skipped; one that IS on the form with no value refuses BEFORE anything is charged. Same value_keys as CYBERSOURCE billing_fields."
 }

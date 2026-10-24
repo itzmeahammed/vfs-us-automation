@@ -414,6 +414,8 @@ class JobManager:
         self._store = JobStore(self._settings.job_history_file)
         # Idempotency-Key -> (job_id, monotonic timestamp).
         self._idempotency: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
+        #: (mtime_ns, size) of the history file at the last external sync.
+        self._external_stamp: Optional[Tuple[int, int]] = None
 
     # -- Startup -------------------------------------------------------------
 
@@ -505,6 +507,10 @@ class JobManager:
         outcome instead of a 404 that reads as "this never happened".
         """
         record = self._jobs.get(job_id)
+        if record is not None and job_id in self._processes:
+            return record           # ours and running: memory is authoritative
+        self.sync_external()
+        record = self._jobs.get(job_id)
         if record is not None:
             return record
         data = self._store.get(job_id)
@@ -514,7 +520,53 @@ class JobManager:
 
     def recent(self, limit: int = 20) -> List[JobRecord]:
         """Most-recent-first list of tracked jobs."""
+        self.sync_external()
         return list(reversed(self._jobs.values()))[:limit]
+
+    def sync_external(self) -> int:
+        """Pick up job records written by a process this API did not spawn.
+
+        The SCHEDULER's automatic booker is one: it runs detached, writes its
+        own records to the same history file (src/booking/attempt_job.py), and
+        would otherwise be invisible until the next restart — which is exactly
+        the run nobody is watching.
+
+        Cheap: the file's size and mtime are checked first, so the common case
+        (nothing new) is one stat. Records this process owns are never
+        overwritten — its own in-memory state is newer than anything on disk.
+        """
+        try:
+            stat = os.stat(self._store.path)
+            stamp = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return 0
+        if stamp == getattr(self, "_external_stamp", None):
+            return 0
+        self._external_stamp = stamp
+
+        added = 0
+        try:
+            records = self._store.load_all()
+        except Exception as exc:                            # noqa: BLE001
+            log.debug("Could not re-read the job history: %s", exc)
+            return 0
+        for job_id, data in records.items():
+            if job_id in self._processes or job_id in self._tasks:
+                continue                    # ours, and running: memory wins
+            known = self._jobs.get(job_id)
+            if known is not None and known.status.value == str(
+                    data.get("status", "")):
+                continue
+            job = JobRecord.from_record(data)
+            if job is None:
+                continue
+            self._jobs[job.job_id] = job
+            added += 1
+        if added:
+            self._trim_memory()
+            log.debug("Picked up %d job record(s) from outside this process.",
+                      added)
+        return added
 
     # -- Execution -----------------------------------------------------------
 

@@ -373,6 +373,18 @@ class Booking(_Section):
     # Bookings the auto-booker may START per calendar day, across all runs.
     # A backstop against a bug that keeps matching: each one is a real charge.
     max_per_day: int = Field(default=5, ge=0)
+    # THE SECOND TRIGGER. The first is "VFS's earliest date is inside the
+    # client's window" — unambiguous, but it misses the commonest case of all:
+    # the earliest date is BEFORE the window (a slot next week, a client who
+    # asked for next month), and dates inside the window are sitting there
+    # unbooked because nothing looked. Calendars run forward, so an earliest
+    # date at or before date_to means a usable date MAY exist; the walk then
+    # pages to the window and books only inside it, or books nothing.
+    #
+    # Rate-limited per request, because this is true on every tick once it is
+    # true at all, and each attempt is a login VFS counts. 0 disables it and
+    # restores the single-trigger behaviour.
+    before_window_retry_minutes: int = Field(default=180, ge=0)
     # Failed attempts before a request stops retrying and asks for a human.
     # Only PRE-commit failures count — anything past the payment click is
     # needs_attention on the first occurrence, never retried.

@@ -122,7 +122,8 @@ class Page(Frame):
 
 
 def _uc_page(spec, show_confirmation=True, number_present=True,
-             networks=("VISA", "MASTERCARD")):
+             networks=("VISA", "MASTERCARD"),
+             billing_on_form=("first_name", "last_name")):
     log = []
     jwt = _jwt({"captureMandate": {"showConfirmationStep": show_confirmation,
                                    "billingType": "NONE"},
@@ -136,6 +137,9 @@ def _uc_page(spec, show_confirmation=True, number_present=True,
     def open_form():
         if number_present:
             mce.elements[fields["number"][0]] = El(log, "number")
+        for field in spec.get("billing_fields") or []:
+            if field["name"] in billing_on_form:
+                mce.elements[field["selectors"][0]] = El(log, field["name"])
         mce.elements[fields["expiry"][0]] = El(log, "expiry", mask=True)
         mce.elements[fields["cvn"][0]] = El(log, "cvn")
         mce.elements[spec["card_submit"][0]] = El(
@@ -297,7 +301,7 @@ def test_prepare_opens_types_tokenizes_and_returns_the_review_click():
     page, log = _uc_page(spec)
     captures = []
 
-    click = unified.prepare(page, spec, _card(),
+    click = unified.prepare(page, spec, _card(), values=VALUES,
                             capture=lambda p, label: captures.append(
                                 (label, list(log))))
 
@@ -313,7 +317,7 @@ def test_without_a_confirmation_step_the_card_button_is_the_charge():
     spec = _spec()
     page, log = _uc_page(spec, show_confirmation=False)
 
-    click = unified.prepare(page, spec, _card())
+    click = unified.prepare(page, spec, _card(), values=VALUES)
 
     assert ("click", "card_submit") not in log        # held for the journal
     click()
@@ -342,7 +346,7 @@ def test_a_card_network_the_checkout_refuses_is_caught_before_typing():
 def test_expiry_is_typed_as_digits_into_a_masked_field():
     spec = _spec()
     page, _ = _uc_page(spec)
-    unified.prepare(page, spec, _card())
+    unified.prepare(page, spec, _card(), values=VALUES)
 
     expiry = page.frames[2].elements[spec["card_fields"]["expiry"][0]]
     assert expiry.value == "11/29"
@@ -453,3 +457,71 @@ def test_no_gateway_at_all_is_a_clean_stop():
         runner._arrive_at_gateway(
             ArrivingPage("https://visa.vfsglobal.com/are/en/hun/page-not-found"),
             Ctx("CYBERSOURCE_UC"), payment_config.load("CYBERSOURCE_UC"))
+
+
+# --------------------------------------------------------------------------- #
+# The billing name the card form asks for                                      #
+# --------------------------------------------------------------------------- #
+#
+# THE 2026-10-23 BUG. Run 6adb1aa3d6b455 filled card number, expiry and CVN
+# and left 'First name' / 'Last name' empty — an operator typed them by hand
+# mid-payment. card_fields only had a 'cardholderName' candidate; this form
+# has two separate billTo fields instead.
+
+VALUES = {"first_name": "AHMED", "last_name": "TRAVNOOK", "city": "Dubai"}
+
+
+def test_the_billing_first_and_last_name_are_filled():
+    spec = _spec()
+    page, log = _uc_page(spec)
+    unified.prepare(page, spec, _card(), values=VALUES)
+
+    typed = [name for what, name in log if what == "type"]
+    assert "first_name" in typed and "last_name" in typed
+
+
+def test_a_name_the_form_asks_for_and_the_client_lacks_refuses_before_paying():
+    """Free stop: the review Continue is never clicked, so nothing is charged."""
+    spec = _spec()
+    page, log = _uc_page(spec)
+
+    with pytest.raises(gateway.PaymentError, match="billing first_name"):
+        unified.prepare(page, spec, _card(), values={"last_name": "X"})
+
+    assert not [n for w, n in log if w == "click" and n == "review_submit"]
+
+
+def test_a_form_without_the_name_fields_is_not_blocked():
+    """Unified Checkout renders a different set per merchant profile."""
+    spec = _spec()
+    page, _ = _uc_page(spec, billing_on_form=())
+    assert unified.prepare(page, spec, _card(), values={}) is not None
+
+
+def test_the_configured_selectors_are_the_ones_on_the_live_form():
+    """Regression against the DOM the live AE-HUN run captured. These were
+    GUESSES until 2026-10-23 and three of the four guesses were wrong."""
+    path = os.path.join(
+        ROOT, "runs", "AE-HUN", "6adb1aa3d6b455", "payment",
+        "20261023_123042_uc_card_form_empty_frame7.html")
+    if not os.path.isfile(path):
+        pytest.skip("the live card-form capture is not on this machine")
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        html = fh.read()
+
+    spec = _spec()
+    for key in ("number", "cvn", "expiry_month", "expiry_year"):
+        name = re.search(r"\[name='([^']+)'\]", spec["card_fields"][key][0])
+        assert name and f'name="{name.group(1)}"' in html, key
+    for field in spec["billing_fields"]:
+        name = re.search(r"\[name='([^']+)'\]", field["selectors"][0])
+        assert name and f'name="{name.group(1)}"' in html, field["name"]
+
+
+def test_the_runner_hands_the_client_record_to_unified():
+    import inspect
+
+    from src.booking import runner
+
+    source = inspect.getsource(runner._step_payment)
+    assert "values=ctx.values" in source

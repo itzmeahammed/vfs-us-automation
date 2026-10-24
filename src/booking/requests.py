@@ -47,6 +47,7 @@ write is atomic and 0600, via the same helper the client store uses.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -54,6 +55,8 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.waitlist.store import _atomic_write
+
+log = logging.getLogger(__name__)
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 REQUEST_DIR = os.path.join(REPO_ROOT, "config", "booking_requests")
@@ -77,22 +80,35 @@ EDITABLE = frozenset({WAITING, EXPIRED})
 # handed to the booking walk.
 STATE_KEYS = frozenset({
     "status", "history", "attempts", "created_at", "updated_at",
-    "status_changed_at", "booked", "last_error",
+    "status_changed_at", "booked", "last_error", "event_seq",
+    "last_event_at", "consecutive_failures", "last_attempt_trigger",
 })
 #: Transport/meta keys that are not applicant data either.
 META_KEYS = frozenset({"request_id", "route", "combo", "enabled",
                        "account", "account_password", "date_from", "date_to"})
 
-HISTORY_LIMIT = 50
+#: How many ORDINARY history entries to keep. A request that retries for weeks
+#: would otherwise push its own beginning out of the file.
+HISTORY_LIMIT = 200
 
-#: The payment gateway's country select offers exactly one option per route
-#: (config/payment/CYBERSOURCE.json), so a missing value has one right answer.
-DEFAULT_COUNTRY_CODE = "AE"
+#: Entries that are NEVER trimmed, however old. Each one is either money or a
+#: decision a person made, and "when did this become needs_attention?" must
+#: stay answerable after a hundred routine ticks.
+KEEP_FOREVER_EVENTS = frozenset({
+    "created", "booked", "needs_attention", "resolved", "test_stopped",
+    "expired", "confirmed_by_email",
+})
 
-#: The select's option values are ISO 3166 alpha-2. Anything else ("0000",
-#: "971", "UAE") matches no option and only fails on the live gateway — after
-#: the slot is taken.
-_COUNTRY_CODE_RE = re.compile(r"^[A-Z]{2}$")
+#: THE BILLING COUNTRY, FIXED. Every applicant this system books for is
+#: resident in the UAE and the gateway's country select offers one usable
+#: option, so this is not a field a caller supplies — normalise() overwrites
+#: whatever arrives. Callers sent "United Arab Emirates", a name their field
+#: cut to "United A", and the dialling code "971"; each matched no option and
+#: only failed on the live payment page, with the slot already taken.
+BILLING_COUNTRY = "AE"
+
+#: Old name, kept because other modules and the API docs import it.
+DEFAULT_COUNTRY_CODE = BILLING_COUNTRY
 
 
 class RequestError(ValueError):
@@ -196,6 +212,9 @@ class BookingRequest:
 
         fields = {k: v for k, v in self.data.items() if k not in STATE_KEYS}
         fields.pop("request_id", None)
+        # Records written before the country was fixed still hold "United
+        # Arab Emirates" or "971", and this is what the payment page reads.
+        fields["country_code"] = BILLING_COUNTRY
         fields["combos"] = [self.combo]
         fields["enabled"] = True
         return Registrant(self.request_id, fields)
@@ -291,10 +310,15 @@ def normalise(data: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("date_from", "date_to"):
         if isinstance(out.get(key), str):
             out[key] = out[key].strip()
-    country = str(out.get("country_code") or "").strip().upper()
-    out["country_code"] = country or DEFAULT_COUNTRY_CODE
+    # THE BILLING COUNTRY IS NOT THE CALLER'S TO SET. Every applicant this
+    # system books for is resident in the UAE, the gateway's country select
+    # offers one usable option, and whatever the web app sent was wrong in
+    # three different ways on 2026-10-23 ("United Arab Emirates", a name its
+    # field cut to "United A", and the dialling code "971") — each discovered
+    # on the payment page, with the slot already taken. Overwritten, not
+    # validated.
+    out["country_code"] = BILLING_COUNTRY
     return out
-
 
 def precheck(request_id: str, data: Dict[str, Any],
              today: Optional[date] = None) -> List[Any]:
@@ -432,17 +456,15 @@ def _check_billing(data: Dict[str, Any]) -> List[Any]:
     problems = []
     for field in spec.get("billing_fields") or []:
         key = field.get("value_key") or field.get("name")
+        if key == "country_code":
+            continue
         if field.get("required") and not str(data.get(key) or "").strip():
             problems.append(_problem(
                 key, f"Required for payment: {key}.",
                 hint="The card payment page asks for it after the slot is taken."))
 
-    country = str(data.get("country_code") or "").strip().upper()
-    if country and not _COUNTRY_CODE_RE.match(country):
-        problems.append(_problem(
-            "country_code", "country_code must be a 2-letter ISO code.",
-            hint=f"Use {DEFAULT_COUNTRY_CODE} for the UAE — the payment page's "
-                 "country list matches nothing else."))
+    # No country check. normalise() sets it to BILLING_COUNTRY, so there is
+    # nothing a caller can get wrong and nothing for an agent to fix.
     return problems
 
 
@@ -477,11 +499,14 @@ def create(request_id: str, data: Dict[str, Any]) -> BookingRequest:
     record.pop("request_id", None)
     stamp = _now()
     record.update({"status": WAITING, "attempts": 0, "created_at": stamp,
-                   "status_changed_at": stamp,
-                   "history": [{"at": stamp, "event": "created",
+                   "status_changed_at": stamp, "event_seq": 1,
+                   "last_event_at": stamp, "consecutive_failures": 0,
+                   "history": [{"seq": 1, "at": stamp, "event": "created",
                                 "detail": "enabled" if record.get("enabled") else "parked"}]})
     _write(rid, record)
-    return BookingRequest(rid, record)
+    req = BookingRequest(rid, record)
+    notify_update(req, record["history"][0])
+    return req
 
 
 def list_all(route: Optional[str] = None,
@@ -507,7 +532,7 @@ def list_all(route: Optional[str] = None,
 
 
 @_locked_record
-def replace_fields(request_id: str, data: Dict[str, Any]) -> BookingRequest:
+def _replace_fields(request_id: str, data: Dict[str, Any]) -> tuple:
     """Swap the caller-owned fields, keeping state. Only when EDITABLE."""
     req = get(request_id)
     if req.status not in EDITABLE:
@@ -521,20 +546,42 @@ def replace_fields(request_id: str, data: Dict[str, Any]) -> BookingRequest:
         # New dates on an expired request are a new chance to book.
         record["status"] = WAITING
         record["status_changed_at"] = _now()
-    _append(record, "edited", ", ".join(sorted(k for k in data if k not in STATE_KEYS)))
+    entry = _append(record, "edited",
+                    ", ".join(sorted(k for k in data if k not in STATE_KEYS)))
+    record["last_event_at"] = entry["at"]
+    # New dates, or a corrected field, are a new situation: the automatic
+    # retry budget starts again rather than staying spent on the old one.
+    record["consecutive_failures"] = 0
     _write(req.request_id, record)
-    return BookingRequest(req.request_id, record)
+    return BookingRequest(req.request_id, record), entry
+
+
+def replace_fields(request_id: str, data: Dict[str, Any]) -> BookingRequest:
+    """Swap the caller-owned fields, keeping state. Only when EDITABLE."""
+    req, entry = _replace_fields(request_id, data)
+    notify_update(req, entry)
+    return req
 
 
 @_locked_record
-def set_enabled(request_id: str, enabled: bool) -> BookingRequest:
+def _set_enabled(request_id: str, enabled: bool) -> tuple:
     req = get(request_id)
     if req.status == BOOKING:
         raise RequestLockedError(
             f"Request {req.request_id} is being booked right now.")
     req.data["enabled"] = bool(enabled)
-    _append(req.data, "enabled" if enabled else "disabled")
+    entry = _append(req.data, "enabled" if enabled else "disabled")
+    req.data["last_event_at"] = entry["at"]
+    if enabled:
+        req.data["consecutive_failures"] = 0
     _write(req.request_id, req.data)
+    return req, entry
+
+
+def set_enabled(request_id: str, enabled: bool) -> BookingRequest:
+    """Arm or park a request, and tell the web app."""
+    req, entry = _set_enabled(request_id, enabled)
+    notify_update(req, entry)
     return req
 
 
@@ -548,43 +595,169 @@ def delete(request_id: str) -> None:
 
 
 def _append(record: Dict[str, Any], event: str, detail: str = "",
-            **extra: Any) -> None:
-    entry = {"at": _now(), "event": event}
+            **extra: Any) -> Dict[str, Any]:
+    """Add one history entry and return it.
+
+    Every entry carries `seq`, a per-request counter that only ever goes up.
+    `at` cannot do that job: it has second resolution, so two events in the
+    same second are indistinguishable, and a web app polling "what is new"
+    would either repeat one or miss one. The counter lives on the record
+    (`event_seq`) rather than being len(history), because history is trimmed
+    to HISTORY_LIMIT and a length-based id would then be reused.
+    """
+    history_now = list(record.get("history") or [])
+    if "event_seq" not in record:
+        # A record written before seq existed. Number its entries in the order
+        # they are already in, so the counter continues past them instead of
+        # restarting at 1 and colliding with history a web app has seen.
+        for index, old_entry in enumerate(history_now, start=1):
+            old_entry.setdefault("seq", index)
+        record["event_seq"] = len(history_now)
+        record["history"] = history_now
+    seq = int(record.get("event_seq") or 0) + 1
+    record["event_seq"] = seq
+    entry = {"seq": seq, "at": _now(), "event": event}
     if detail:
         entry["detail"] = detail
     entry.update({k: v for k, v in extra.items() if v not in (None, "", {}, [])})
-    history = list(record.get("history") or [])
-    history.append(entry)
-    record["history"] = history[-HISTORY_LIMIT:]
+    history_now.append(entry)
+    record["history"] = _trim(history_now)
+    return entry
+
+
+def _trim(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The last HISTORY_LIMIT entries, plus every entry worth keeping forever.
+
+    A plain tail would drop the 'booked' that says a card was charged while
+    keeping fifty 'skipped' ticks that say nothing happened.
+    """
+    if len(history) <= HISTORY_LIMIT:
+        return history
+    recent = history[-HISTORY_LIMIT:]
+    recent_seqs = {id(e) for e in recent}
+    kept = [e for e in history[:-HISTORY_LIMIT]
+            if e.get("event") in KEEP_FOREVER_EVENTS and id(e) not in recent_seqs]
+    return kept + recent
+
+
+def notify_update(req: "BookingRequest", entry: Dict[str, Any]) -> None:
+    """Push one history entry to the web app. Never raises, never blocks long.
+
+    Called with the record's lock RELEASED. A webhook has retries measured in
+    seconds, and holding a cross-process file lock across them would make the
+    next attempt on this request wait on an HTTP call to someone else's server.
+    """
+    try:
+        from src.utils import webhook
+        if not webhook.is_configured():
+            return
+        webhook.notify_booking_update({
+            "request_id": req.request_id,
+            "route": req.route,
+            "combo": req.combo,
+            "status": req.status,
+            "enabled": req.enabled,
+            "attempts": int(req.data.get("attempts") or 0),
+            "seq": entry.get("seq"),
+            "at": entry.get("at"),
+            "event": entry.get("event"),
+            "detail": entry.get("detail", ""),
+            **{k: v for k, v in entry.items()
+               if k not in ("seq", "at", "event", "detail")},
+        })
+    except Exception as exc:                                # noqa: BLE001
+        # Freshness, not correctness: GET /v1/clients/{id}/timeline?since=
+        # still returns this entry.
+        log.debug("Could not push the booking update webhook: %s", exc)
 
 
 @_locked_record
-def record_event(request_id: str, event: str, detail: str = "", *,
-                 status: Optional[str] = None, **extra: Any) -> BookingRequest:
+def _record_event(request_id: str, event: str, detail: str = "", *,
+                  status: Optional[str] = None, **extra: Any) -> tuple:
     """Append a history entry and, optionally, move the status. Re-reads the
     file first, so a concurrent enable/disable from the API is not lost."""
     req = get(request_id)
-    _append(req.data, event, detail, **extra)
+    entry = _append(req.data, event, detail, **extra)
+    # ALWAYS, unlike status_changed_at: two failures in a row leave the status
+    # at 'waiting', so a web app sorting by "last activity" saw nothing move.
+    req.data["last_event_at"] = entry["at"]
     if status and status != req.status:
         req.data["status"] = status
         req.data["status_changed_at"] = _now()
     if event == "attempt_started":
         req.data["attempts"] = int(req.data.get("attempts") or 0) + 1
+        # WHOSE attempt this is decides whether its failure counts against the
+        # automatic retry budget. A human testing a request used to spend it.
+        req.data["last_attempt_trigger"] = str(extra.get("trigger") or "auto")
     if event in ("attempt_failed", "needs_attention"):
         req.data["last_error"] = detail
+        if req.data.get("last_attempt_trigger", "auto") == "auto":
+            req.data["consecutive_failures"] = int(
+                req.data.get("consecutive_failures") or 0) + 1
+    # ANY of these means the situation changed, so the budget starts again:
+    # a booking worked, a human looked, or the request itself was edited.
+    if event in ("booked", "resolved", "edited", "enabled", "created"):
+        req.data["consecutive_failures"] = 0
     if event == "booked":
         req.data["booked"] = {k: v for k, v in extra.items()}
         req.data.pop("last_error", None)
     _write(req.request_id, req.data)
+    return req, entry
+
+
+def record_event(request_id: str, event: str, detail: str = "", *,
+                 status: Optional[str] = None, **extra: Any) -> BookingRequest:
+    """Append a history entry, move the status, and tell the web app."""
+    req, entry = _record_event(request_id, event, detail, status=status, **extra)
+    notify_update(req, entry)
     return req
 
 
 STALE_SECONDS = 3 * 3600
 
+#: Grace before a 'booking' whose process is GONE is declared dead. Short,
+#: because the process is the evidence: it covers only the seconds between the
+#: child writing its last record and the parent noticing.
+DEAD_PROCESS_GRACE_SECONDS = 120
+
+
+def _attempt_pid(req: "BookingRequest") -> Optional[int]:
+    """The pid of the run that put this request into 'booking', if known."""
+    for entry in reversed(req.data.get("history") or []):
+        if entry.get("event") == "attempt_started":
+            run_id = str(entry.get("run_id") or "")
+            if not run_id:
+                return None
+            try:
+                from src.booking import attempt_job
+                record = attempt_job.find(run_id)
+            except Exception:                               # noqa: BLE001
+                return None
+            # A finished record means the child got far enough to report, so
+            # the request is not stuck on a dead process.
+            if not record or record.get("status") != "running":
+                return None
+            return record.get("pid")
+        if entry.get("event") in ("booked", "needs_attention", "resolved"):
+            return None
+    return None
+
 
 def flag_stale(now: Optional[float] = None) -> List[str]:
-    """'booking' for over 3h means the run died. Never reset to waiting: it
-    may have paid. Moved to needs_attention for a human."""
+    """Requests stuck in 'booking'. Never reset to waiting: one may have paid.
+
+    Two ways to be stuck, and the first is the one that matters:
+
+      the process is GONE      a crash, a kill, a reboot. Known within a
+                               couple of minutes, because the attempt's job
+                               record names the pid.
+      nothing for STALE_SECONDS  a process still alive but wedged — a browser
+                               waiting on a dialog nobody will answer.
+
+    Before the pid check this took three hours either way, during which the
+    request was not armed, nothing retried, and the web app showed a booking
+    that had already died.
+    """
     import time as _time
 
     now = now or _time.time()
@@ -596,10 +769,24 @@ def flag_stale(now: Optional[float] = None) -> List[str]:
         except ValueError:
             continue
         age = now - changed.replace(tzinfo=timezone.utc).timestamp()
+        reason = ""
         if age > STALE_SECONDS:
-            record_event(req.request_id, "needs_attention",
-                         "the booking process stopped reporting 3h ago (crash "
-                         "or reboot?). Whether it booked or paid is unknown.",
+            reason = ("the booking process stopped reporting 3h ago (crash or "
+                      "reboot?). Whether it booked or paid is unknown.")
+        elif age > DEAD_PROCESS_GRACE_SECONDS:
+            pid = _attempt_pid(req)
+            if pid is not None:
+                try:
+                    from src.booking import attempt_job
+                    alive = attempt_job.is_running(pid)
+                except Exception:                           # noqa: BLE001
+                    alive = True
+                if not alive:
+                    reason = ("the booking process exited without reporting "
+                              f"(pid {pid} is gone). Whether it booked or paid "
+                              "is unknown.")
+        if reason:
+            record_event(req.request_id, "needs_attention", reason,
                          status=NEEDS_ATTENTION)
             moved.append(req.request_id)
     return moved

@@ -48,7 +48,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.booking import requests as store
@@ -113,12 +113,50 @@ def earliest_by_combo(route: str, slot_results: List[Any],
     return out
 
 
+def minutes_since_last_attempt(req: store.BookingRequest,
+                               now: Optional[datetime] = None) -> float:
+    """Minutes since this request last started an attempt. inf if never."""
+    now = now or datetime.now(timezone.utc)
+    for entry in reversed(req.data.get("history") or []):
+        if entry.get("event") != "attempt_started":
+            continue
+        try:
+            when = datetime.strptime(str(entry.get("at", "")),
+                                     "%Y-%m-%dT%H:%M:%SZ").replace(
+                                         tzinfo=timezone.utc)
+        except ValueError:
+            return float("inf")
+        return (now - when).total_seconds() / 60.0
+    return float("inf")
+
+
 def find_matches(route: str, earliest: Dict[str, Tuple[str, str]],
                  requests: List[store.BookingRequest],
-                 today: Optional[date] = None) -> List[Match]:
-    """Armed requests on `route` whose window contains the seen date.
-    Oldest request first: the first sale gets the first chance."""
+                 today: Optional[date] = None,
+                 before_window_minutes: Optional[int] = None,
+                 now: Optional[datetime] = None) -> List[Match]:
+    """Armed requests on `route` that are worth a login right now.
+
+    TWO reasons to fire, and the second is why a client whose window sat one
+    page ahead of VFS's earliest date used to wait forever:
+
+      INSIDE   date_from <= earliest <= date_to. A date the client agreed to
+               is on offer. Always fires.
+
+      BEFORE   earliest < date_from. Nothing says a date inside the window is
+               free, but nothing says it is not either — the checker only ever
+               sees the FIRST date, and calendars run forward. So this fires
+               too, at most once every `before_window_retry_minutes`, and the
+               walk books inside the window or books nothing.
+
+    An earliest date AFTER date_to never fires: no later date can be inside a
+    window that has already ended.
+
+    Oldest request first: the first sale gets the first chance.
+    """
     today = today or date.today()
+    if before_window_minutes is None:
+        before_window_minutes = int(_cfg().before_window_retry_minutes)
     matches = []
     for req in sorted(requests, key=lambda r: (r.created_at, r.request_id)):
         if req.route != route or not req.is_armed():
@@ -133,7 +171,12 @@ def find_matches(route: str, earliest: Dict[str, Tuple[str, str]],
         start, end = req.window()
         if start is None or end is None:
             continue            # precheck refuses these; never book without one
-        if start <= seen_date <= end and seen_date >= today:
+        if seen_date < today or seen_date > end:
+            continue
+        if seen_date >= start:
+            matches.append(Match(req.request_id, route, req.combo, seen[1]))
+        elif before_window_minutes and minutes_since_last_attempt(
+                req, now) >= before_window_minutes:
             matches.append(Match(req.request_id, route, req.combo, seen[1]))
     return matches
 
@@ -311,6 +354,47 @@ def gate_problem(route: str, test: bool = False) -> str:
 # --------------------------------------------------------------------------- #
 
 
+#: Monotonic time of the last maintain(), so a caller that runs often (the
+#: API, on every client read) costs one comparison rather than a directory
+#: scan. Per process; every process does its own first pass.
+_LAST_MAINTENANCE: float = 0.0
+MAINTENANCE_INTERVAL_SECONDS = 60.0
+
+
+def maintain(force: bool = False) -> Dict[str, List[str]]:
+    """Expire dead windows and unstick dead runs. NEVER raises.
+
+    Used to run only inside a slot check, which meant it did not run at all
+    when the scheduled task was off, when every route was paused, or for a
+    route with no requests on it — so a crashed booking could sit in 'booking'
+    and an expired window stay 'waiting' indefinitely. Now the API calls it
+    too, on every read of a client, which is the moment someone is actually
+    looking at the answer.
+    """
+    global _LAST_MAINTENANCE
+    import time as _time
+
+    now = _time.monotonic()
+    if not force and now - _LAST_MAINTENANCE < MAINTENANCE_INTERVAL_SECONDS:
+        return {"expired": [], "stuck": []}
+    _LAST_MAINTENANCE = now
+    out: Dict[str, List[str]] = {"expired": [], "stuck": []}
+    try:
+        out["expired"] = store.expire_past()
+    except Exception as exc:                                # noqa: BLE001
+        log.warning("Could not expire past windows: %s", exc)
+    try:
+        out["stuck"] = store.flag_stale()
+    except Exception as exc:                                # noqa: BLE001
+        log.warning("Could not check for stuck bookings: %s", exc)
+    for request_id in out["stuck"]:
+        try:
+            _telegram(format_message("needs_attention", store.get(request_id)))
+        except Exception:                                   # noqa: BLE001
+            pass
+    return out
+
+
 def handle_route_checked(route: str, slot_results: List[Any]) -> List[Match]:
     """Called by the supervisor after each route. NEVER raises.
 
@@ -318,9 +402,7 @@ def handle_route_checked(route: str, slot_results: List[Any]) -> List[Match]:
     and starts a background booking process only when something matches.
     """
     try:
-        store.expire_past()
-        for request_id in store.flag_stale():
-            _telegram(format_message("needs_attention", store.get(request_id)))
+        maintain()
         requests = store.list_all(route=route)
         if not any(r.is_armed() for r in requests):
             return []
@@ -415,6 +497,9 @@ def run_queue(route: str, request_ids: List[str],
                         "slot check.", ", ".join(request_ids))
             for request_id in request_ids:
                 try:
+                    _skipped(request_id, "another booking was running on this "
+                                         "machine; it stays in the queue",
+                             seen.get(request_id, ""))
                     _telegram(format_message("busy", store.get(request_id),
                                              seen_date=seen.get(request_id, "")))
                 except Exception:                           # noqa: BLE001
@@ -453,6 +538,7 @@ def _book_one(route: str, request_id: str, seen_date: str,
         # Said on Telegram too: the supervisor already announced "triggered",
         # and a refusal that only reaches a log file reads as silence.
         log.error("Not booking %s: %s", request_id, problem)
+        _skipped(request_id, problem, seen_date)
         _alert_once(f"autobook-gate:{request_id}:{problem}",
                     format_message("blocked", req, seen_date=seen_date,
                                    reason=problem))
@@ -460,6 +546,9 @@ def _book_one(route: str, request_id: str, seen_date: str,
     if not test and committed_today(store.list_all()) >= cfg.max_per_day:
         log.error("Daily cap reached ([booking] max_per_day = %d) — %s waits "
                   "for tomorrow.", cfg.max_per_day, request_id)
+        _skipped(request_id, f"the daily booking cap ({cfg.max_per_day}) is "
+                             "reached; it will be tried again tomorrow",
+                 seen_date)
         _alert_once(f"autobook-cap:{date.today()}",
                     format_message("cap", req, seen_date=seen_date,
                                    reason=f"{cfg.max_per_day} payment(s) today"))
@@ -474,10 +563,27 @@ def _book_one(route: str, request_id: str, seen_date: str,
                            status=store.NEEDS_ATTENTION)
         return
 
+    # THE JOIN KEY, recorded before the browser starts. Without it an attempt
+    # cannot be tied to its log lines (logs/app.jsonl), its screenshots
+    # (runs/<ROUTE>/<run_id>/) or its payment rows — all of which carry the
+    # run id and none of which the web app could find from the request alone.
+    from src.booking import attempt_job
+    from src.utils import run_context
+
+    # A FRESH id per request, not per process: one spawn books a queue of them,
+    # and they are separate runs by every measure — log lines, capture folder,
+    # payment rows, and the job record the web app opens.
+    run_id = run_context.begin_run()
+    job_log = attempt_job.log_path(run_id)
+    _tee_log(job_log)
+    attempt_job.started(run_id, request_id=request_id, route=route,
+                        combo=req.combo, test=test, log_file=job_log)
+    started_at = datetime.now(timezone.utc).isoformat()
     store.record_event(request_id, "attempt_started",
                        ("TEST RUN (stops before payment) — " if test else "")
                        + f"earliest {seen_date or '?'} seen on {req.combo}",
-                       status=store.BOOKING, seen_date=seen_date)
+                       status=store.BOOKING, seen_date=seen_date,
+                       run_id=run_id, job_id=run_id, trigger="auto")
     rows_before = len(payment_journal.read_all())
     source, _, dest = route.partition("-")
 
@@ -493,24 +599,58 @@ def _book_one(route: str, request_id: str, seen_date: str,
         # assumption and a wrong one would be the expensive direction.
         result = _Failed(str(exc))
 
+    new_rows = payment_journal.read_all()[rows_before:]
     if test:
-        _finish_test(request_id, result, commit_step, seen_date,
-                     payment_journal.read_all()[rows_before:])
+        passed = _finish_test(request_id, result, commit_step, seen_date,
+                              rows_for_run(new_rows, run_id, new_rows))
+        attempt_job.finished(
+            run_id, request_id=request_id, route=route, combo=req.combo,
+            status="succeeded" if passed else "failed",
+            detail=store.get(request_id).data.get("last_error") or
+            ("test run passed" if passed else "test run failed"),
+            outcome="completed" if passed else "failed",
+            needs_attention=store.get(request_id).status == store.NEEDS_ATTENTION,
+            started_at=started_at, log_file=job_log, test=True)
+        _close_tee()
         return
 
-    payment_rows = payment_journal.read_all()[rows_before:]
+    payment_rows = rows_for_run(new_rows, run_id, new_rows)
     outcome = classify(result, commit_step, payment_rows)
 
     if outcome.status == store.WAITING:
-        attempts = int(store.get(request_id).data.get("attempts") or 0)
-        if attempts >= cfg.max_attempts:
+        # A FAILURE THAT CANNOT COME RIGHT ON ITS OWN is not worth another
+        # login: VFS blocks an account after a few, and the next five ticks
+        # would spend them reaching the same wrong password.
+        permanent = permanent_problem(outcome.detail)
+        if permanent:
             outcome = Outcome(store.NEEDS_ATTENTION, "needs_attention",
-                              f"gave up after {attempts} attempts; last: "
-                              f"{outcome.detail}", {})
+                              f"{outcome.detail} {permanent}", {})
+        else:
+            # +1 because THIS failure has not been recorded yet: it is the
+            # (failures + 1)-th in a row.
+            failures = int(store.get(request_id).data.get(
+                "consecutive_failures") or 0) + 1
+            if failures >= cfg.max_attempts:
+                outcome = Outcome(
+                    store.NEEDS_ATTENTION, "needs_attention",
+                    f"gave up after {failures} failed attempt(s) in a row; "
+                    f"last: {outcome.detail}", {})
 
     store.record_event(request_id, outcome.event, outcome.detail,
-                       status=outcome.status, **outcome.details)
+                       status=outcome.status, run_id=run_id,
+                       **outcome.details)
     log.warning("Auto-book %s -> %s: %s", request_id, outcome.status, outcome.detail)
+    attempt_job.finished(
+        run_id, request_id=request_id, route=route, combo=req.combo,
+        status="succeeded" if outcome.status == store.BOOKED else "failed",
+        detail=outcome.detail,
+        outcome="completed" if outcome.status == store.BOOKED else "failed",
+        needs_attention=outcome.status == store.NEEDS_ATTENTION,
+        started_at=started_at, log_file=job_log,
+        results=[{"route": route, "combo": req.combo,
+                  "registrant_id": request_id, "status": outcome.status,
+                  "reason": outcome.detail}])
+    _close_tee()
     if outcome.notify:
         _notify(store.get(request_id), outcome, seen_date)
     else:
@@ -540,8 +680,8 @@ def classify_test(result: Any, commit_step: str) -> Tuple[bool, str]:
 
 
 def _finish_test(request_id: str, result: Any, commit_step: str,
-                 seen_date: str, payment_rows: List[Dict[str, Any]]) -> None:
-    """Record a test run and PARK the request.
+                 seen_date: str, payment_rows: List[Dict[str, Any]]) -> bool:
+    """Record a test run and PARK the request. True when it passed.
 
     Parked whether it passed or failed: a test request left armed would log in
     again on every slot check, and VFS blocks an account after a few logins in
@@ -556,7 +696,7 @@ def _finish_test(request_id: str, result: Any, commit_step: str,
         store.record_event(request_id, outcome.event, outcome.detail,
                            status=outcome.status)
         _notify(store.get(request_id), outcome, seen_date)
-        return
+        return False
 
     passed, detail = classify_test(result, commit_step)
     store.record_event(request_id, "test_passed" if passed else "test_failed",
@@ -566,6 +706,7 @@ def _finish_test(request_id: str, result: Any, commit_step: str,
                 "PASSED" if passed else "FAILED", detail)
     _telegram(format_message("test_passed" if passed else "test_failed", req,
                              seen_date=seen_date, reason=detail))
+    return passed
 
 
 @dataclass
@@ -709,8 +850,13 @@ def manual_run(request_id: str, *, commit: bool, run: Any,
         # Telegram first: "triggered" counts the attempt that is about to start.
         _telegram(format_message("triggered", req,
                                  manual=started_by or "operator"))
+        # trigger="manual": a run a person started must not spend the
+        # AUTOMATIC retry budget. Testing a request used to exhaust it, and the
+        # bot then refused to book that client ever again on its own.
+        from src.utils import run_context
         store.record_event(request_id, "attempt_started",
-                           f"{who} commit", status=store.BOOKING)
+                           f"{who} commit", status=store.BOOKING,
+                           trigger="manual", run_id=run_context.run_id())
         rows_before = len(payment_journal.read_all())
         raised: Optional[Exception] = None
         try:
@@ -736,8 +882,10 @@ def manual_run(request_id: str, *, commit: bool, run: Any,
 
         commit_step = booking_config.commit_step_name(
             req.route, booking_config.ENTRY_NEW)
+        new_rows = payment_journal.read_all()[rows_before:]
         outcome = classify(result, commit_step,
-                           payment_journal.read_all()[rows_before:])
+                           rows_for_run(new_rows, run_context.run_id(),
+                                        new_rows))
         store.record_event(request_id, outcome.event, f"{who}: {outcome.detail}",
                            status=outcome.status, **outcome.details)
         log.warning("Manual booking %s -> %s: %s", request_id, outcome.status,
@@ -857,6 +1005,106 @@ def _telegram(text: str) -> None:
         telegram.send_error(text)
     except Exception as exc:                                # noqa: BLE001
         log.warning("Could not send the booking Telegram: %s", exc)
+
+
+#: The handler writing the current attempt's own log file, or None.
+_TEE: Optional[logging.Handler] = None
+
+
+def _tee_log(path: str) -> None:
+    """Also write this attempt's log lines to `path`, for the jobs API.
+
+    The spawned child already logs to logs/booking_auto/<stamp>_<route>.log —
+    one file for the WHOLE queue, and in a directory the API does not serve. A
+    web app asking "what happened on this attempt?" needs this attempt's lines,
+    at the path its job record names.
+    """
+    global _TEE
+    _close_tee()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handler = logging.FileHandler(path, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S"))
+        logging.getLogger().addHandler(handler)
+        _TEE = handler
+    except Exception as exc:                                # noqa: BLE001
+        log.debug("Could not open the attempt log %s: %s", path, exc)
+
+
+def _close_tee() -> None:
+    global _TEE
+    if _TEE is None:
+        return
+    try:
+        logging.getLogger().removeHandler(_TEE)
+        _TEE.close()
+    except Exception:                                       # noqa: BLE001
+        pass
+    _TEE = None
+
+
+#: Failures that the next tick cannot do any better on, and what the operator
+#: has to change. Matched against the attempt's own reason text, lower-cased.
+#: Deliberately narrow: anything not listed is assumed RETRYABLE, because
+#: retrying costs a login while giving up costs a booking.
+_PERMANENT = (
+    (("invalidcredentials", "wrong credentials", "is disabled",
+      "not registered with us", "emailnotregistered", "accessrestricted",
+      "accountblocked"),
+     "VFS will reject this account on every retry — fix the account, then "
+     "resolve this request."),
+    (("required for booking", "required for payment", "could not select '",
+      "no vfs account to book with", "is not a country this system knows"),
+     "Every retry fills the same form with the same value — correct the "
+     "request, which also re-arms it."),
+    (("booking config", "payment config is unreadable", "is disabled in "
+      "config/booking", "no live booking"),
+     "A configuration problem; no retry can help until it is fixed."),
+)
+
+
+def permanent_problem(reason: str) -> str:
+    """What makes `reason` unretryable, or "" when another tick might work."""
+    text = " ".join(str(reason or "").split()).lower()
+    for needles, advice in _PERMANENT:
+        if any(n in text for n in needles):
+            return advice
+    return ""
+
+
+def rows_for_run(rows: List[Dict[str, Any]], run_id: str,
+                 fallback: Optional[List[Dict[str, Any]]] = None
+                 ) -> List[Dict[str, Any]]:
+    """The payment-journal rows this run wrote.
+
+    Matched on `run_id`, which journal.append() stamps on every row. The old
+    rule — "everything appended since this attempt started" — is only correct
+    while exactly one process can be writing, and it decides whether a card was
+    charged. Rows with no run id at all (hand-edited, or pre-dating the stamp)
+    fall back to the positional slice rather than being dropped, because a
+    payment row nobody attributes is the one failure worth being loud about.
+    """
+    mine = [r for r in rows if str(r.get("run_id") or "") == run_id]
+    if mine:
+        return mine
+    unstamped = [r for r in rows if not r.get("run_id")]
+    return unstamped or (fallback if fallback is not None else [])
+
+
+def _skipped(request_id: str, reason: str, seen_date: str = "") -> None:
+    """Record a tick that matched this request and then did NOT book it.
+
+    These four — a gate, the daily cap, a busy lane, a request no longer
+    armed — used to reach Telegram and the log only. The web app showed
+    "waiting" with nothing to explain it, which made "why was my client not
+    booked?" unanswerable from the API. Status is deliberately NOT changed:
+    nothing was attempted, so nothing is spent and the next tick may book it.
+    """
+    try:
+        store.record_event(request_id, "skipped", reason, seen_date=seen_date)
+    except Exception as exc:                                # noqa: BLE001
+        log.debug("Could not record the skip for %s: %s", request_id, exc)
 
 
 def _notify(req: store.BookingRequest, outcome: Outcome,

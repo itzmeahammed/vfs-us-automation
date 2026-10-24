@@ -129,8 +129,14 @@ def disable(client_id: str) -> Dict[str, Any]:
 
 
 @router.get("/{client_id}/timeline", summary="Everything that happened, newest first")
-def timeline(client_id: str, page: PageParams = Depends()) -> Dict[str, Any]:
-    return paginate(service.timeline(client_id), page)
+def timeline(client_id: str, page: PageParams = Depends(),
+             since: int = Query(default=0, ge=0,
+                                description="Return only entries newer than "
+                                            "this `seq` (the number in a live "
+                                            "client's `req:<seq>` id). 0 "
+                                            "returns everything.")
+             ) -> Dict[str, Any]:
+    return paginate(service.timeline(client_id, since=since), page)
 
 
 @router.post("/{client_id}/resolve", summary="Settle a live client after checking VFS")

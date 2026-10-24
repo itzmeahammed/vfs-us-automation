@@ -59,6 +59,11 @@ EVENT_REGISTRATION_NEEDS_ATTENTION = "registration.needs_attention"
 EVENT_SLOTS_AVAILABLE = "slots.available"
 EVENT_BOOKING_SUCCEEDED = "booking.succeeded"
 EVENT_BOOKING_NEEDS_ATTENTION = "booking.needs_attention"
+#: EVERY change to one booking request, as it happens — created, armed, each
+#: attempt starting and ending, each tick that skipped it and why. The two
+#: events above remain, unchanged, for the outcomes that need a person; this
+#: one is what a web app renders as the client's activity feed.
+EVENT_BOOKING_UPDATED = "booking.updated"
 EVENT_TEST = "test.ping"
 
 PAYLOAD_VERSION = 1
@@ -337,6 +342,17 @@ def notify_booking(result: Dict[str, Any]) -> DeliveryResult:
              if str(result.get("status", "")).lower() == "booked"
              else EVENT_BOOKING_NEEDS_ATTENTION)
     return send(event, _public_result(result, "detail"))
+
+
+def notify_booking_update(payload: Dict[str, Any]) -> DeliveryResult:
+    """One entry appended to one booking request's history.
+
+    Fire-and-forget by design: the web app does not have to receive this. Every
+    entry is also readable from GET /v1/clients/{id}/timeline?since=<seq>, and
+    `seq` is what the web app uses to tell a missed push from a duplicate one.
+    So a failure here costs freshness, never correctness.
+    """
+    return send(EVENT_BOOKING_UPDATED, _public_result(payload, "detail"))
 
 
 def _public_result(result: Dict[str, Any], key: str) -> Dict[str, Any]:
