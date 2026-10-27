@@ -601,23 +601,63 @@ def cmd_requests(args) -> int:
 
 # --------------------------------------------------------------------------- #
 
+#: The booking CLI's exit codes, read by the API job manager
+#: (src/api/modules/jobs/manager.py) to decide a job's status.
+#:
+#:   0    the run completed
+#:   1    the run FAILED — nothing was booked, nothing was charged, retrying
+#:        is safe once the cause is fixed
+#:   2    RESERVED. The waitlist CLI uses it for "a bookable slot exists"; the
+#:        job manager reads a 2 as SLOTS_AVAILABLE, so booking must never
+#:        return it
+#:   3    THE PAYMENT WAS SUBMITTED — paid, or unanswered, or an OTP nobody
+#:        typed. The click happened, so money may have moved
+#:   4    THE GATEWAY DECLINED the payment. The click also happened, and VFS's
+#:        own failure page says funds may still have been deducted
+#:   130  the operator pressed Ctrl-C (the shell's 128 + SIGINT convention)
+#:
+#: *** 3 AND 4 EXIST BECAUSE 1 WAS A LIE. *** A submitted payment marks its
+#: own step not-ok, deliberately, so that nothing downstream can retry it —
+#: which made walk.ok false and sent a PAID booking out as exit 1, listed by
+#: the API as "failed" with "Process exited with code 1". On 2026-10-27 that
+#: was the record for run 37b0e0e9d937731c: AED paid, appointment held for
+#: 23 Nov 09:15, 3-D Secure cleared, PaymentStatus=True from VFS itself — and
+#: a red "failed" pill in the console. The booking-request layer had it right
+#: all along ("booked and paid"), so the two halves of the same API told an
+#: operator opposite stories about the same run. Neither 3 nor 4 is a success,
+#: and neither is a failure: both mean STOP AND CHECK, NEVER RETRY.
+EXIT_PAYMENT_SUBMITTED = 3
+EXIT_PAYMENT_DECLINED = 4
+
+
 def _probe_exit_code(result) -> int:
-    """0 success, 130 the operator stopped it, 1 it failed.
+    """The run's verdict as an exit code. See the table above.
 
-    130 is the shell's SIGINT convention (128 + 2). Keeping it distinct from 1
-    matters because a wrapper or a supervisor reads these: "the human pressed
-    Ctrl-C" must never look like "the run failed and should be retried" — and
-    on a --commit run a retry is a second booking and a second charge.
+    130 is kept distinct from 1 because a wrapper or a supervisor reads these:
+    "the human pressed Ctrl-C" must never look like "the run failed and should
+    be retried" — and on a --commit run a retry is a second booking and a
+    second charge. The same argument is what 3 and 4 are for, more sharply:
+    there a retry is a second charge on a card that has ALREADY been charged.
 
-    A walk that stopped on a failed step is a failure too. ProbeResult.ok only
+    A walk that stopped on a failed step is a failure. ProbeResult.ok only
     covers the dashboard read, so a commit that never booked anything exited 0
     and the API listed it as "succeeded" (2026-10-22, c8c76e4fa3dab8e8). A dry
     run that reaches the commit boundary marks that step ok, so it stays 0.
-    Never 2: the job manager reads 2 as SLOTS_AVAILABLE.
     """
     if getattr(result, "interrupted", False):
         return 130
+
     walk = getattr(result, "walk", None)
+
+    # BEFORE the walk.ok check, because both of these set the payment step
+    # not-ok on purpose and would otherwise be indistinguishable from a broken
+    # selector three pages earlier.
+    if walk is not None:
+        if getattr(walk, "payment_declined", False):
+            return EXIT_PAYMENT_DECLINED
+        if getattr(walk, "payment_submitted", False):
+            return EXIT_PAYMENT_SUBMITTED
+
     if walk is not None and not walk.ok:
         return 1
     return 0 if result.ok else 1

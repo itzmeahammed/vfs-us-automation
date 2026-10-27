@@ -127,6 +127,29 @@ def started(job_id: str, *, request_id: str, route: str, combo: str = "",
     })
 
 
+#: What a status WOULD have exited with, had this lane been a subprocess.
+#:
+#: The automatic lane writes its records in-process, so there is no real exit
+#: code — but the field is in the job schema and the console prints it, so it
+#: has to agree with the status rather than contradict it. Kept in step with
+#: src/booking/__main__.py, which defines the codes.
+_STATUS_EXIT_CODES = {
+    "succeeded": 0,
+    "payment_submitted": 3,
+    "payment_declined": 4,
+}
+
+
+def _exit_code_for(status: str) -> int:
+    """0 for success, the payment codes for the payment statuses, else 1.
+
+    It was `0 if status == "succeeded" else 1`, which printed "exit code 1"
+    beside a status saying a card had been charged — the same contradiction
+    the payment statuses exist to remove.
+    """
+    return _STATUS_EXIT_CODES.get(str(status), 1)
+
+
 def finished(job_id: str, *, request_id: str, route: str, combo: str = "",
              status: str, detail: str = "", outcome: str = "",
              needs_attention: bool = False, started_at: str = "",
@@ -138,7 +161,7 @@ def finished(job_id: str, *, request_id: str, route: str, combo: str = "",
         "command": ["python", "-m", "src.booking", "autobook",
                     "--route", route, "--request", request_id],
         "pid": os.getpid(), "started_at": started_at or _now(),
-        "finished_at": _now(), "exit_code": 0 if status == "succeeded" else 1,
+        "finished_at": _now(), "exit_code": _exit_code_for(status),
         "log_file": log_file or log_path(job_id), "detail": detail,
         "results": results or [], "outcome": outcome or None, "error": None,
         "needs_attention": bool(needs_attention), "idempotency_key": None,

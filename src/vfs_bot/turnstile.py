@@ -16,6 +16,7 @@ functions rather than methods.
 """
 
 import logging
+import re
 
 from src.settings import settings
 from src.vfs_bot import block_detection, diagnostics, page_guard
@@ -378,6 +379,15 @@ class BlockingDialogError(Exception):
 #: country-specific wording to be tuned, they are the conditions under which
 #: this software must refuse to act. A config file is something an operator
 #: edits to make a run go through, which is exactly the wrong affordance here.
+#: VFS's "Please wait N seconds before continuing" countdown, wherever it is
+#: rendered — div#mintime on a form step, a mat-dialog on the slot calendar.
+#: Defined here because this module is what decides whether a dialog can be
+#: clicked away or has to be waited out; booking.walk imports it to read the
+#: number. ONE definition: two copies of this phrase would drift, and the cost
+#: of drift is a modal that stops being recognised and starts being clicked
+#: through.
+COUNTDOWN_PATTERN = re.compile(r"wait\s+(\d+)\s+second", re.I)
+
 BLOCKING_PHRASES = (
     "under process",
     "already have an appointment",
@@ -456,9 +466,24 @@ def dismiss_wait_dialog(page) -> None:
         except Exception:
             continue
 
+    one_line = " ".join(raw.split())
+
+    # A COUNTDOWN HAS NO BUTTON, BY DESIGN — it expires on its own, so failing
+    # to click it is the expected outcome, not a fault. Reporting it as one sent
+    # the operator looking for a broken selector on 2026-10-26 while the real
+    # problem was the calendar being read 22 seconds early
+    # (walk.COUNTDOWN_DIALOG_SELECTOR). The caller waits it out; this just says
+    # which kind of dialog it is.
+    countdown = COUNTDOWN_PATTERN.search(one_line)
+    if countdown:
+        logging.info(
+            f"  VFS is holding the page for {countdown.group(1)}s and the "
+            f"dialog has no button to dismiss: {one_line[:200]}")
+        return
+
     logging.warning(
         "A VFS dialog is blocking the page and none of its buttons could be "
-        f"clicked: {' '.join(raw.split())[:200]}")
+        f"clicked: {one_line[:200]}")
 
 
 # ===== ngx-ui-loader spinner =================================================

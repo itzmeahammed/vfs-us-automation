@@ -103,7 +103,9 @@ class Retry(_Section):
 class Browser(_Section):
     type: str = "chromium"
     headless: bool = True
-    screenshots_enabled: bool = False     # per-step screenshots (final one always taken)
+    screenshots_enabled: bool = False     # per-step screenshots (failures always taken)
+    milestone_screenshots: bool = False   # proof-of-progress shots on a HEALTHY run
+    slot_check_screenshots: bool = False  # the hourly slot check: none at all
 
 
 class Turnstile(_Section):
@@ -392,6 +394,10 @@ class Booking(_Section):
     # Telegram on booked / needs_attention. Those are the two outcomes a
     # person must hear about; a skipped tick is not.
     telegram_enabled: bool = True
+    # Dump the payment page's DOM, and every frame's, beside the screenshots.
+    # OFF: one 3-D Secure run wrote 120 HTML files and 5.3 MB, and the PNGs
+    # beside them already answer "what was on screen". See gateway.capture_screen.
+    payment_dom_capture: bool = False
 
 
 _INI_SECTIONS = {
@@ -406,6 +412,7 @@ _INI_SECTIONS = {
     "logging": "logging",
     "bandwidth": "bandwidth",
     "waitlist": "waitlist",
+    "webhook": "webhook",
     "inbox": "inbox",
     "booking": "booking",
     "switches": "switches",

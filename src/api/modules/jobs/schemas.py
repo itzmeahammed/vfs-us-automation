@@ -26,10 +26,21 @@ class JobResponse(BaseModel):
                     "the whole run.",
     )
     status: str = Field(
-        description="running | succeeded | failed | timed_out | cancelled | "
-                    "slots_available. Note 'slots_available' is a BETTER "
-                    "outcome than success: a bookable slot exists, so the run "
-                    "stopped and nothing was waitlisted — go book it."
+        description=(
+            "running | succeeded | failed | timed_out | cancelled | "
+            "slots_available | payment_submitted | payment_declined | "
+            "unknown. "
+            "Three of these are NOT failures and must not be rendered as one. "
+            "'slots_available' is BETTER than success: a bookable slot exists, "
+            "so the run stopped and nothing was waitlisted - go book it. "
+            "'payment_submitted' means the card was charged, or may have been; "
+            "read the `payment` object for the gateway's actual answer. "
+            "'payment_declined' means the gateway refused - but VFS's own "
+            "failure page says funds may still have been deducted, so it is "
+            "not 'nothing happened' either. "
+            "NEVER offer a retry on either payment status: re-running is a "
+            "second charge on a card that has already been charged."
+        )
     )
     command: List[str]
     pid: Optional[int] = None
@@ -41,9 +52,26 @@ class JobResponse(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
     outcome: Optional[str] = Field(
         default=None,
-        description="Run-level verdict parsed from the job: 'completed', "
-                    "'slots_available' or 'failed'. Null if the job produced "
-                    "no block.",
+        description="Run-level verdict: 'completed', 'slots_available', "
+                    "'payment_submitted', 'payment_declined' or 'failed'. "
+                    "Null if the job produced no result block and reached no "
+                    "payment.",
+    )
+    payment: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Present ONLY when a payment was actually submitted; null on every "
+            "other run, including dry runs and commit runs that stopped before "
+            "the gateway. Fields: `submitted` (always true here), `charged`, "
+            "`gateway_answer`, `retry_safe` (always false), `journal`. "
+            "*** `charged` IS THREE-VALUED AND THE THIRD VALUE IS REAL. *** "
+            "true = the gateway approved it, so it is safe to tell the client "
+            "the appointment is paid. false = the gateway refused, though "
+            "funds may still have moved. null = SUBMITTED AND UNANSWERED, "
+            "which is unknown, NOT 'no' - show it as 'needs a human', never "
+            "as a failure and never as a success. `retry_safe` is false in "
+            "all three cases."
+        ),
     )
     error: Optional[Dict[str, str]] = Field(
         default=None,

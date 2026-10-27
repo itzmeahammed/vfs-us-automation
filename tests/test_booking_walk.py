@@ -761,6 +761,9 @@ def test_norway_dropdown_controls_match_the_captured_dom():
             f"{field['control']} is not under the label {field['label']!r}")
 
 
+from src.booking import walk as walk_mod
+
+
 # --------------------------------------------------------------------------- #
 # The portal's own countdown is read, not guessed                              #
 # --------------------------------------------------------------------------- #
@@ -774,12 +777,20 @@ def test_norway_dropdown_controls_match_the_captured_dom():
 
 
 class _CountdownPage:
-    """A page whose div#mintime counts down one second per read."""
+    """A page that counts down one second per read.
+
+    `where` picks WHICH of the two elements VFS uses carries the countdown:
+    "mintime" is the inline div on a form step, "dialog" is the mat-dialog the
+    slot calendar raises when it is paged. Both are read, because the modal has
+    no button to click and is therefore only survivable by waiting.
+    """
 
     def __init__(self, seconds, template="Warning: Please wait {} seconds "
-                                         "before saving your details"):
+                                         "before saving your details",
+                 where="mintime"):
         self.remaining = seconds
         self.template = template
+        self.where = where
         self.reads = 0
         self.waited_ms = 0
 
@@ -787,14 +798,22 @@ class _CountdownPage:
         self.waited_ms += ms
 
     def locator(self, selector):
-        assert selector == "div#mintime", selector
+        assert selector in (walk_mod.COUNTDOWN_SELECTOR,
+                            walk_mod.COUNTDOWN_DIALOG_SELECTOR), selector
+        mine = ((self.where == "mintime"
+                 and selector == walk_mod.COUNTDOWN_SELECTOR)
+                or (self.where == "dialog"
+                    and selector == walk_mod.COUNTDOWN_DIALOG_SELECTOR))
         page = self
 
         class Block:
             first = None
 
             def count(self):
-                return 1 if page.remaining is not None else 0
+                return 1 if (mine and page.remaining is not None) else 0
+
+            def is_visible(self, timeout=0):
+                return mine and page.remaining is not None
 
             def inner_text(self, timeout=0):
                 page.reads += 1
@@ -984,34 +1003,50 @@ def test_norway_waits_for_the_summary_page_and_continues():
 
 
 def test_the_summary_gate_cannot_match_the_previous_page():
-    """'Your Details Summary' CONTAINS 'Your Details', and the gate is a
-    substring match — so a heading-based gate would report arrival while still
-    sitting on the form. The chosen marker must not appear on Your Details."""
+    """The gate asks "is this phrase ON the page", so the test must too.
+
+    *** THE CONTAINMENT RUNS THE OTHER WAY. *** This test used to assert that
+    no phrase CONTAINS "Your Details", which rejected "Your Details Summary" —
+    a phrase that is in fact perfectly safe, because the form never renders the
+    word "Summary" and so can never match it. Meanwhile the check that would
+    have caught the real bug was guarded by `if os.path.exists(capture)` on a
+    file that is not in the repository, so it never ran at all: a test that
+    looked like it was enforcing this rule while enforcing nothing.
+
+    What matters is whether a phrase appears IN THE FORM'S TEXT. "Applicant 1"
+    does — it is the <h3> above First Name — and that is what let the walk
+    report arrival at the summary on 2026-10-27 while still on the form.
+    """
     from src.utils.config_reader import initialize_config
     from src.booking import config as booking_config
 
     initialize_config()
     booking_config.clear_cache()
-    steps = booking_config.steps_for("AE-NOR", "new")
-    gate = next(s for s in steps
-                if s.get("name") == "details_summary")["wait_for_text"]
-    phrases = gate if isinstance(gate, list) else [gate]
 
-    # EVERY accepted phrase must be distinct to the summary. A list makes the
-    # gate easier to satisfy, so each addition has to clear the same bar the
-    # original did — otherwise widening it quietly reintroduces the bug where
-    # the walk reports arrival while still on the form.
-    for phrase in phrases:
-        assert "Your Details" not in phrase, (
-            f"{phrase!r} contains the PREVIOUS page's heading")
+    # Read off the live failure screenshot,
+    # runs/AE-NOR/6ae0489f76c1dd/20261027_104806_select_slot_FAILED.png.
+    form_text = ("Complete the fields as requested Your Details IMPORTANT: "
+                 "Please enter the information exactly as it appears on the "
+                 "photo page of your passport. We may be unable to provide "
+                 "services if the details you enter do not match your "
+                 "passport. Applicant 1 First Name Last Name Passport Number "
+                 "Contact number Email Cancel Save")
 
-        capture = os.path.join(
-            "captured", "AE-NOR", "20260926_165217_your_details.html")
-        if os.path.exists(capture):
-            with open(capture, encoding="utf-8", errors="replace") as handle:
-                assert phrase not in handle.read(), (
-                    f"{phrase!r} appears on Your Details, so the gate would "
-                    "pass before Save has been accepted")
+    for route in ("AE-NOR", "AE-SWE", "AE-FRA", "AE-HUN", "AE-NLD"):
+        steps = booking_config.steps_for(route, "new")
+        gate = next(s for s in steps
+                    if s.get("name") == "details_summary")["wait_for_text"]
+        phrases = gate if isinstance(gate, list) else [gate]
+        assert phrases, f"{route}: details_summary has no gate at all"
+
+        # EVERY accepted phrase must be distinct to the summary. A list is an
+        # OR, so the gate is only as specific as its loosest entry — widening it
+        # by one careless phrase defeats the stricter ones entirely.
+        for phrase in phrases:
+            assert phrase.lower() not in form_text.lower(), (
+                f"{route}: details_summary waits for {phrase!r}, which is also "
+                "on the Your Details FORM — the gate would report arrival at "
+                "the summary while the walk is still on the form")
 
 
 def test_norway_saves_rather_than_continues_on_your_details():
@@ -1780,6 +1815,161 @@ def test_a_month_read_before_vfs_fills_it_waits_for_the_dates(monkeypatch):
     assert page.reads == 4
 
 
+class _ThrottledCalendar:
+    """A calendar sitting behind VFS's "Please wait N seconds" MODAL.
+
+    The real thing, from run 0f558f0b33f40e64 on 2026-10-26: paging to November
+    raised a mat-dialog with no button, and the grid behind it carried no
+    date-availiable cell until the countdown expired. The dates were there; the
+    modal was what made them unreadable.
+
+    THE CLOCK IS THE STUB'S, not the wall's. Every wait advances `now` and ticks
+    the countdown by the same amount, and the test points walk.time at `now`.
+    Without that the read budget never expires under test, so a read loop that
+    ignored the modal entirely would still "pass" by spinning until the fake
+    countdown ran out — which is exactly the bug, scored as a success.
+    """
+
+    def __init__(self, seconds, dates=("2026-11-10", "2026-11-18")):
+        self.remaining = float(seconds)
+        self.dates = list(dates)
+        self.now = 0.0
+        self.date_reads = 0
+        self.reads_after_clear = 0
+        self.modals_seen = 0
+
+    @property
+    def blocked(self) -> bool:
+        return self.remaining > 0
+
+    def _on_clear(self) -> None:
+        """Hook for a portal that serves another modal after this one."""
+
+    def locator(self, selector):
+        page = self
+
+        class _Loc:
+            first = property(lambda s: s)
+
+            def wait_for(self, **k):
+                pass
+
+            def is_visible(self, timeout=0):
+                return page.blocked
+
+            def count(self):
+                if selector == walk_mod.COUNTDOWN_DIALOG_SELECTOR:
+                    if page.blocked:
+                        page.modals_seen += 1
+                        return 1
+                    return 0
+                if selector == walk_mod.COUNTDOWN_SELECTOR:
+                    return 0          # this portal uses the modal, not #mintime
+                if "date-availiable" in selector:
+                    page.date_reads += 1
+                    if page.blocked:
+                        return 0
+                    page.reads_after_clear += 1
+                    return len(page.dates)
+                return 1
+
+            def inner_text(self, timeout=0):
+                return (f"Please wait {int(page.remaining)} seconds before "
+                        "continuing.")
+
+            def nth(self, i):
+                class _Cell:
+                    def get_attribute(self, name):
+                        return page.dates[i]
+                return _Cell()
+
+        return _Loc()
+
+    def wait_for_timeout(self, ms):
+        step = max(ms, 0) / 1000
+        self.now += step
+        was_blocked = self.blocked
+        self.remaining = max(0.0, self.remaining - step)
+        if was_blocked and not self.blocked:
+            self._on_clear()
+
+
+def _fake_clock(monkeypatch, page):
+    """Point walk's clocks at the stub's, so the read budget really expires."""
+    monkeypatch.setattr(walk_mod.time, "monotonic", lambda: page.now)
+    monkeypatch.setattr(walk_mod.time, "time", lambda: page.now)
+
+
+def test_a_month_behind_the_wait_modal_is_read_after_it_clears(monkeypatch):
+    """THE 2026-10-26 NORWAY REGRESSION, as a test.
+
+    November held slots. Paging to it raised a 32s modal, the read budget was
+    10s, and the month was reported empty — "the requested range is simply not
+    on offer" — on one read taken through the overlay. Note 32 > 10: the point
+    is that the throttle is waited out INSTEAD OF inside the budget.
+    """
+    _no_loader(monkeypatch)
+    page = _ThrottledCalendar(seconds=32)
+    _fake_clock(monkeypatch, page)
+    cal = {"available_day": "td.fc-daygrid-day.date-availiable"}
+
+    found = walk_mod.read_month_dates(page, cal, wait_ms=10000)
+
+    assert found == ["2026-11-10", "2026-11-18"], (
+        "the month was read through the modal instead of after it")
+    assert page.remaining == 0, "the countdown was not waited out"
+    assert page.now >= 32, "the full countdown was not spent"
+
+
+def test_an_empty_month_behind_the_modal_is_still_polled_afterwards(monkeypatch):
+    """A 32s throttle must not consume a 10s budget.
+
+    Without the restart the countdown clears with the deadline already blown,
+    so exactly one read happens — against a grid FullCalendar has not finished
+    repainting. The settle plus a fresh budget is the whole fix.
+    """
+    _no_loader(monkeypatch)
+    page = _ThrottledCalendar(seconds=20, dates=())
+    _fake_clock(monkeypatch, page)
+    cal = {"available_day": "td.fc-daygrid-day.date-availiable"}
+
+    assert walk_mod.read_month_dates(page, cal, wait_ms=4000) == []
+    assert page.reads_after_clear > 1, (
+        f"the month got {page.reads_after_clear} read(s) after the modal "
+        "cleared — the 4s budget was spent inside the 20s throttle instead of "
+        "restarting once the grid was actually visible")
+
+
+def test_waiting_out_the_modal_is_bounded(monkeypatch):
+    """A portal serving countdowns back to back must not hold the read open.
+
+    The slot is not held while the walk sits on this page, so an unbounded wait
+    is worse than an empty answer.
+    """
+    _no_loader(monkeypatch)
+
+    class _Endless(_ThrottledCalendar):
+        def _on_clear(self):
+            self.remaining = 6.0          # another modal, immediately
+
+    page = _Endless(seconds=6, dates=())
+    _fake_clock(monkeypatch, page)
+    cal = {"available_day": "td.fc-daygrid-day.date-availiable"}
+
+    assert walk_mod.read_month_dates(page, cal, wait_ms=1000) == []
+    ceiling = (walk_mod.MAX_COUNTDOWN_WAITS
+               * walk_mod.MAX_COUNTDOWN_TOTAL_SECONDS) + 60
+    assert page.now <= ceiling, (
+        f"waited {page.now}s on a self-renewing modal, over the {ceiling}s "
+        "this is allowed to spend")
+
+
+def test_the_modal_countdown_is_read_like_the_inline_one():
+    """Both elements carry the same wording; both are the authority."""
+    assert walk_mod._stated_wait(_CountdownPage(32, where="dialog")) == 32
+    assert walk_mod._stated_wait(_CountdownPage(None, where="dialog")) == 0
+
+
 def test_a_truly_empty_month_gives_up_after_the_wait(monkeypatch):
     from src.booking import walk as walk_mod
 
@@ -1790,3 +1980,153 @@ def test_a_truly_empty_month_gives_up_after_the_wait(monkeypatch):
     cal = {"available_day": "td.fc-daygrid-day.date-availiable"}
 
     assert walk_mod.read_month_dates(page, cal, wait_ms=5000) == []
+
+
+# ── A CLICK IS NOT A SUBMIT ───────────────────────────────────────────────────
+#
+# AE-NOR 2026-10-27, run 6ae0489f76c1dd: VFS discarded the Save on Your
+# Details, the walk reported the step "completed; now at <the page it never
+# left>", and the run died 51 seconds later in select_slot complaining about a
+# URL. These tests pin the two defences that run was missing — a submit that
+# has to prove the page moved, and a page gate that cannot match the page
+# before it.
+
+
+class _StuckPage:
+    """A page whose visible text never changes, however long you wait."""
+
+    def __init__(self, text="Your Details\nApplicant 1\nFirst Name",
+                 url="https://visa.vfsglobal.com/are/en/nor/your-details"):
+        self.text = text
+        self.url = url
+        self.waited_ms = 0
+
+    def inner_text(self, selector, timeout=0):
+        return self.text
+
+    def wait_for_timeout(self, ms):
+        self.waited_ms += ms
+
+    def locator(self, selector):
+        page = self
+
+        class Block:
+            def filter(self, **kw):
+                return self
+
+            @property
+            def first(self):
+                return self
+
+            def count(self):
+                return 0
+
+            def inner_text(self, timeout=0):
+                return ""
+
+        return Block()
+
+
+def _no_loader_wait(monkeypatch):
+    from src.vfs_bot import turnstile
+    monkeypatch.setattr(turnstile, "wait_for_loader", lambda *a, **k: None)
+
+
+def test_a_submit_that_does_not_move_the_page_is_not_a_success(monkeypatch):
+    """The exact AE-NOR failure: Save clicked, form still on screen."""
+    from src.booking import walk as walk_mod
+
+    _no_loader_wait(monkeypatch)
+    clock = iter(range(0, 10_000))
+    monkeypatch.setattr(walk_mod.time, "monotonic", lambda: next(clock))
+
+    page = _StuckPage()
+    before = walk_mod._page_state(page)
+
+    assert walk_mod._confirm_advanced(page, "your_details", before,
+                                      timeout_ms=20_000) is False
+
+
+def test_a_submit_that_moves_the_page_is_confirmed_at_once(monkeypatch):
+    from src.booking import walk as walk_mod
+
+    _no_loader_wait(monkeypatch)
+    monkeypatch.setattr(walk_mod.time, "monotonic", lambda: 0.0)
+
+    page = _StuckPage()
+    before = walk_mod._page_state(page)
+    page.text = "Your Details Summary\nApplicant 1\nAdd another applicant"
+
+    assert walk_mod._confirm_advanced(page, "your_details", before,
+                                      timeout_ms=20_000) is True
+    assert page.waited_ms == 0, "a page that moved must not be slept on"
+
+
+def test_the_same_url_is_not_evidence_the_page_moved(monkeypatch):
+    """VFS's form and its summary SHARE /your-details.
+
+    This is why the check reads the text and not the address bar: on this
+    route the URL is identical on both sides of a working Save.
+    """
+    from src.booking import walk as walk_mod
+
+    form = _StuckPage("Your Details\nApplicant 1")
+    summary = _StuckPage("Your Details Summary\nAdd another applicant")
+    assert form.url == summary.url
+    assert walk_mod._page_state(form) != walk_mod._page_state(summary)
+
+
+def test_a_ticking_countdown_is_not_mistaken_for_progress(monkeypatch):
+    """div#mintime rewrites its number every second.
+
+    Without stripping it, a page doing nothing but counting down would report
+    that the submit had worked — the precise false positive this guards.
+    """
+    from src.booking import walk as walk_mod
+
+    page = _StuckPage("Your Details\n"
+                      "Warning: Please wait 19 seconds before saving your "
+                      "details and continuing\nApplicant 1")
+    before = walk_mod._page_state(page)
+    page.text = page.text.replace("19 seconds", "4 seconds")
+
+    assert walk_mod._page_state(page) == before
+
+
+def test_the_walk_settles_after_a_countdown_before_submitting(monkeypatch):
+    """'Cleared' is a render event; VFS's guard is a clock comparison.
+
+    Clicking on the tick the warning disappears can still be judged early, and
+    an early Save is discarded in silence.
+    """
+    from src.booking import walk as walk_mod
+
+    slept = []
+    monkeypatch.setattr(walk_mod, "_await_countdown", lambda *a, **k: True)
+    monkeypatch.setattr("src.waitlist.register._dwell", lambda *a, **k: None)
+
+    class _Page:
+        def wait_for_timeout(self, ms):
+            slept.append(ms)
+
+    walk_mod._dwell(_Page(), {"name": "your_details"}, "dwell_seconds", "why")
+
+    assert walk_mod.POST_COUNTDOWN_SETTLE_MS in slept, (
+        "the walk must pause after the countdown clears, not click on the tick")
+
+
+def test_no_countdown_means_no_extra_settle(monkeypatch):
+    """The settle is the countdown's price, not a tax on every form page."""
+    from src.booking import walk as walk_mod
+
+    slept = []
+    monkeypatch.setattr(walk_mod, "_await_countdown", lambda *a, **k: False)
+    monkeypatch.setattr("src.waitlist.register._dwell", lambda *a, **k: None)
+
+    class _Page:
+        def wait_for_timeout(self, ms):
+            slept.append(ms)
+
+    walk_mod._dwell(_Page(), {"name": "services"}, "dwell_seconds", "why")
+
+    assert slept == []

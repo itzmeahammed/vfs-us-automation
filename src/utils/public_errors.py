@@ -142,9 +142,30 @@ ERROR_EVENTS = frozenset({
 })
 
 #: Waitlist / result statuses that are NOT errors.
+#:
+#: "payment_submitted" is in here because it is not a failure: the click
+#: happened and the money may have moved, which is a thing to CHECK, not a
+#: thing that went wrong. Being outside this set would send its detail through
+#: public_message(), which is built to translate VFS's error pages and would
+#: replace a sentence about a successful payment with a generic apology.
+#:
+#: "payment_declined" is deliberately NOT in here. The gateway did refuse, and
+#: that belongs in the error family — but see AUTHORED_DETAIL_STATUSES: its
+#: wording is already written for an operator and must not be rewritten
+#: either.
 OK_STATUSES = frozenset({"success", "succeeded", "dry_run", "skipped",
                          "booked", "passed", "slots_available", "running",
-                         "queued", "cancelled"})
+                         "queued", "cancelled", "payment_submitted"})
+
+#: Statuses whose `detail` the API author wrote FOR AN OPERATOR, so the
+#: public-message translator must leave it alone.
+#:
+#: public_message() exists to turn a Playwright traceback or a VFS error page
+#: into one plain sentence. Applied to a sentence that is already plain, it can
+#: only make it worse — and on these two the sentence is about whether a card
+#: was charged, which is the last text in the system that should be replaced
+#: by a fallback.
+AUTHORED_DETAIL_STATUSES = frozenset({"payment_submitted", "payment_declined"})
 
 
 def public_history(history: Iterable[dict]) -> list:

@@ -53,6 +53,24 @@ DEFAULT_STEP_TIMEOUT_MS = 45000
 #: disabled until both are.
 ENABLE_TIMEOUT_MS = 20000
 
+#: How long to wait for a submit click to visibly move the page.
+#:
+#: *** A CLICK IS NOT A SUBMIT. *** Playwright reports success when a click is
+#: dispatched, not when the application accepts it, and VFS's "Your Details"
+#: rejects a Save silently: no error, no navigation, the form simply stays put.
+#: The walk then reported the step "completed; now at <the page it never left>"
+#: and carried on — the fault surfaced two steps later as a page-gate timeout
+#: somewhere unrelated (AE-NOR 2026-10-27, run 6ae0489f76c1dd: Save was
+#: rejected, the next step's gate matched a phrase that is on BOTH states of
+#: the page, and the run died 51 seconds later in 'select_slot' complaining it
+#: had never reached book-appointment).
+#:
+#: So every submit is now followed by "did anything actually change?". It
+#: returns the moment the page moves, which is normally under two seconds, and
+#: only a genuinely stuck step pays the full budget — the case worth paying
+#: for, and cheaper than the 45s the downstream gate was burning anyway.
+ADVANCE_TIMEOUT_MS = 20000
+
 #: How many months forward to search for an available date. VFS opens on the
 #: current month and the offered dates are routinely weeks out, so reading only
 #: the first month reports "no slots" while the portal is showing plenty.
@@ -430,19 +448,71 @@ def _vfs_page_cause(page) -> str:
     return landed
 
 
+#: After VFS's countdown clears, how long to let the grid actually redraw
+#: before reading it. The modal expiring is not the same event as the month
+#: being painted: FullCalendar re-renders once the overlay releases the page,
+#: and a read in that gap sees the skeleton cells with no date-availiable class
+#: on any of them.
+POST_COUNTDOWN_SETTLE_MS = 2500
+
+#: How many times one read may restart its budget for a fresh countdown. The
+#: wait is bounded per countdown, but a portal that served them back to back
+#: would otherwise hold the read open indefinitely while the slot is not held.
+#:
+#: Two, not more: with MAX_COUNTDOWN_TOTAL_SECONDS this caps one month's read
+#: at ~5 minutes in the pathological case. That is long, and it is still the
+#: right trade — the alternative to waiting is reporting "no slots" for a month
+#: that has them, which is the bug this whole mechanism exists to stop. One
+#: 32s wait is the case actually observed; the cap is for a portal gone wrong.
+MAX_COUNTDOWN_WAITS = 2
+
+
 def read_month_dates(page, calendar: Dict[str, Any],
                      wait_ms: int = DEFAULT_AVAILABILITY_WAIT_MS) -> List[str]:
     """available_dates, once the month has actually LOADED.
 
-    Waits for the ngx-ui-loader overlay to clear and for the grid's day cells
-    to exist, then re-reads until a date shows up or `wait_ms` passes. An
-    empty answer from this means the month stayed empty for that long — not
-    that it was read before VFS had filled it in.
+    Waits for the ngx-ui-loader overlay to clear, waits out any countdown VFS
+    is running, and waits for the grid's day cells to exist, then re-reads
+    until a date shows up or `wait_ms` passes. An empty answer from this means
+    the month stayed empty for that long — not that it was read before VFS had
+    filled it in.
+
+    `wait_ms` IS A BUDGET FOR READING, NOT FOR WAITING OUT A THROTTLE. VFS's
+    countdown runs for as long as it says (32s on the 2026-10-26 Norway run,
+    against a 10s budget), so when one is found the budget is restarted after
+    it clears rather than spent inside it. Without that, the throttle eats the
+    whole budget and the month is reported empty on the strength of one read
+    taken through the modal — see COUNTDOWN_DIALOG_SELECTOR.
     """
     from src.vfs_bot import turnstile
 
-    deadline = time.monotonic() + max(wait_ms, 0) / 1000
+    budget = max(wait_ms, 0) / 1000
+    deadline = time.monotonic() + budget
+    waits_left = MAX_COUNTDOWN_WAITS
+
+    def _ride_out_countdown(why: str) -> bool:
+        """Wait out a live countdown and restart the read budget. False if none.
+
+        wait_for_loader must have run first on every path into this: it is what
+        calls dismiss_wait_dialog, and dismiss_wait_dialog is what raises on a
+        dialog saying this account ALREADY has a booking. Reading the dialog's
+        text before that check had run would turn "you have already paid" into
+        a polite pause. That ordering is the safety property, not a detail.
+        """
+        nonlocal deadline, waits_left
+        if waits_left <= 0:
+            return False
+        if not _await_countdown(page, why):
+            return False
+        waits_left -= 1
+        turnstile.wait_for_loader(page, timeout=max(wait_ms, 1000))
+        page.wait_for_timeout(POST_COUNTDOWN_SETTLE_MS)
+        deadline = time.monotonic() + budget
+        return True
+
     turnstile.wait_for_loader(page, timeout=max(wait_ms, 1000))
+    _ride_out_countdown("before reading the calendar")
+
     day = calendar.get("day_cell", "td.fc-daygrid-day[data-date]")
     try:
         page.locator(day).first.wait_for(
@@ -453,7 +523,14 @@ def read_month_dates(page, calendar: Dict[str, Any],
 
     while True:
         found = available_dates(page, calendar)
-        if found or time.monotonic() >= deadline:
+        if found:
+            return found
+        # CHECKED BEFORE THE DEADLINE, not after. A countdown that appeared
+        # mid-read is the reason this read is coming back empty, so giving up
+        # on it would record exactly the false negative this guards against.
+        if _ride_out_countdown("while reading the calendar"):
+            continue
+        if time.monotonic() >= deadline:
             return found
         page.wait_for_timeout(500)
         turnstile.wait_for_loader(page, timeout=1000)
@@ -726,6 +803,73 @@ def _page_text(page, limit: int = 400) -> str:
         return " ".join((page.inner_text("body", timeout=5000) or "").split())[:limit]
     except Exception:
         return ""
+
+
+def _page_state(page) -> str:
+    """A fingerprint of where the walk is: the URL plus the visible text.
+
+    THE URL ALONE IS NOT ENOUGH. VFS's "Your Details" form and the "Your
+    Details Summary" that follows it are two states of ONE Angular route and
+    share /your-details, so a submit that is rejected and a submit that
+    succeeds look identical to anything watching the address bar.
+
+    Live countdowns are stripped before comparing. div#mintime renders
+    "Please wait 19 seconds before saving your details and continuing" and
+    rewrites the number every second, so a page that is doing nothing but
+    counting down would otherwise read as a page that moved.
+    """
+    try:
+        text = page.inner_text("body", timeout=5000) or ""
+    except Exception:                                       # noqa: BLE001
+        text = ""
+    lines = [line.strip() for line in text.splitlines()
+             if line.strip() and not COUNTDOWN_PATTERN.search(line)]
+    return (page.url or "") + "\n" + "\n".join(lines)
+
+
+def _confirm_advanced(page, name: str, before: str,
+                      timeout_ms: int = ADVANCE_TIMEOUT_MS) -> bool:
+    """Did the submit we just clicked actually move the page off `before`?
+
+    Polls rather than snapshots: the state at click+1.5s is routinely the OLD
+    page even on a submit that works, because Angular's navigation has not
+    landed yet. Returns as soon as anything changes.
+    """
+    from src.vfs_bot import turnstile
+
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while True:
+        try:
+            turnstile.wait_for_loader(page, timeout=2000)
+        except Exception:                                   # noqa: BLE001
+            pass
+        if _page_state(page) != before:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        page.wait_for_timeout(500)
+
+
+def _rejection_reason(page) -> str:
+    """Whatever the page itself says about why a submit did not take.
+
+    Read off the page rather than guessed at, because the honest answer here is
+    usually "VFS said nothing" — and a message that admits that is worth more
+    than one that invents a cause.
+    """
+    for selector in ("div#mintime", "mat-error", ".mat-mdc-form-field-error",
+                     ".alert-danger", ".error-message", ".invalid-feedback"):
+        try:
+            loc = page.locator(selector).filter(visible=True).first
+            if loc.count() == 0:
+                continue
+            said = " ".join((loc.inner_text(timeout=2000) or "").split())
+            if said:
+                return f"The page says: {said[:200]}"
+        except Exception:                                   # noqa: BLE001
+            continue
+    return ("The page gave no error — VFS accepted the click and discarded it, "
+            "which it does when its own minimum wait has not elapsed.")
 
 
 #: Where a run's artifacts land:  runs/AE-NOR/<run_id>/
@@ -1001,6 +1145,7 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                                      StoppedForTesting)
     from src.vfs_bot.turnstile import BlockingDialogError
     from src.waitlist.register import _await_page, _click
+    from src.waitlist.errors import WaitlistStepError
 
     result = WalkResult()
     steps = booking_config.steps_for(route, entry)
@@ -1153,6 +1298,11 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                     page.evaluate(pre_js)
                     page.wait_for_timeout(500)
                 _await_enabled_safe(page, submit)
+
+                # Recorded BEFORE the click, so "did this do anything?" can be
+                # answered after it. See ADVANCE_TIMEOUT_MS.
+                before_submit = _page_state(page)
+
                 _click(page, submit, f"step '{name}' submit", timeout_ms)
                 page.wait_for_timeout(1500)
 
@@ -1164,6 +1314,26 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                     log.info(f"  running post_submit_js on '{name}'...")
                     page.evaluate(post_js)
                     page.wait_for_timeout(1500)
+
+                # *** THE STEP IS NOT DONE UNTIL THE PAGE HAS MOVED. ***
+                #
+                # Opt out with "expect_advance": false on a step whose submit
+                # genuinely leaves you where you were. No configured step does
+                # today — every one of them either navigates or swaps the
+                # Angular view — so the flag exists for the route nobody has
+                # walked yet, not for the ones that have.
+                if step.get("expect_advance", True):
+                    advance_ms = int(step.get("advance_timeout_ms")
+                                     or ADVANCE_TIMEOUT_MS)
+                    if not _confirm_advanced(page, name, before_submit,
+                                             advance_ms):
+                        raise WaitlistStepError(
+                            f"Step '{name}': the submit was clicked but the "
+                            f"page did not move — still at {page.url} after "
+                            f"{advance_ms // 1000}s. The portal discarded the "
+                            f"click, so nothing was saved. "
+                            f"{_rejection_reason(page)}")
+                    log.info(f"  '{name}' submitted — the page moved on.")
 
             report.ok = True
             report.detail = f"completed; now at {page.url}"
@@ -1302,10 +1472,58 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
 #: is both the authority on how long to wait and the way to tell when the wait
 #: is over.
 COUNTDOWN_SELECTOR = "div#mintime"
-COUNTDOWN_PATTERN = re.compile(r"wait\s+(\d+)\s+second", re.I)
+
+#: Imported, not redefined: turnstile owns this phrase because it is what
+#: decides whether a dialog carrying it can be clicked away or must be waited
+#: out. See src/vfs_bot/turnstile.py.
+from src.vfs_bot.turnstile import COUNTDOWN_PATTERN   # noqa: E402
+
+#: THE SECOND PLACE VFS PUTS THE SAME COUNTDOWN. Paging the slot calendar
+#: forward raises a mat-dialog reading "Please wait 32 seconds before
+#: continuing." — the identical wording, in a modal instead of div#mintime, and
+#: it ticks down the same way. It is read here rather than only dismissed
+#: because IT HAS NO BUTTON: it expires on its own, so dismiss_wait_dialog
+#: exhausts Continue/OK/Close, warns, and returns at once
+#: (turnstile.py:dismiss_wait_dialog). On 2026-10-26 (run 0f558f0b33f40e64)
+#: that warning was followed 10s later by "November 2026: 0 available date(s)"
+#: on a grid still greyed out behind the modal with 22 seconds left to run —
+#: a false negative reported to the agent as "the requested range is simply not
+#: on offer".
+COUNTDOWN_DIALOG_SELECTOR = "mat-dialog-container, .mat-mdc-dialog-container"
 
 #: Ceiling on a countdown read off the page, so a misparse cannot hang a run.
 MAX_COUNTDOWN_SECONDS = 120
+
+#: Ceiling on ONE _await_countdown call, however the countdown behaves.
+#: MAX_COUNTDOWN_SECONDS bounds the NUMBER the page states; this bounds the
+#: TIME spent obeying it. They are not the same guard: the wait re-extends
+#: whenever a longer countdown appears, so a portal that refreshes the modal as
+#: each one expires extends the deadline forever and the cap on the number
+#: never comes into it. Found by test_waiting_out_the_modal_is_bounded, which
+#: hung the suite rather than failing it.
+MAX_COUNTDOWN_TOTAL_SECONDS = 150
+
+
+def _countdown_in(page, selector: str) -> int:
+    """Seconds asked for by the first VISIBLE element matching `selector`, or 0.
+
+    Visibility matters for the dialog: Angular leaves a detached container in
+    the DOM after a modal closes, and its stale text would otherwise be read as
+    a live countdown and waited out all over again.
+    """
+    try:
+        block = page.locator(selector).first
+        if block.count() == 0 or not block.is_visible():
+            return 0
+        text = block.inner_text(timeout=3000) or ""
+    except Exception as e:                                  # noqa: BLE001
+        log.debug(f"Could not read the portal countdown in {selector}: {e}")
+        return 0
+
+    match = COUNTDOWN_PATTERN.search(text)
+    if not match:
+        return 0
+    return min(int(match.group(1)), MAX_COUNTDOWN_SECONDS)
 
 
 def _stated_wait(page) -> int:
@@ -1317,20 +1535,14 @@ def _stated_wait(page) -> int:
     hour later; the config said 10, so Save was clicked with 12 seconds still on
     the clock and was silently rejected. The walk then spent its next step
     looking for a Continue button on a page it had never left.
-    """
-    try:
-        block = page.locator(COUNTDOWN_SELECTOR).first
-        if block.count() == 0:
-            return 0
-        text = block.inner_text(timeout=3000) or ""
-    except Exception as e:                                  # noqa: BLE001
-        log.debug(f"Could not read the portal countdown: {e}")
-        return 0
 
-    match = COUNTDOWN_PATTERN.search(text)
-    if not match:
-        return 0
-    return min(int(match.group(1)), MAX_COUNTDOWN_SECONDS)
+    BOTH places are read and the LONGER wins. They are not alternatives: the
+    inline countdown governs submitting a form and the modal governs the
+    calendar, and a page can carry a spent one of either while the other is
+    live. Taking the max is the only reading that is never too short.
+    """
+    return max(_countdown_in(page, COUNTDOWN_SELECTOR),
+               _countdown_in(page, COUNTDOWN_DIALOG_SELECTOR))
 
 
 def _await_countdown(page, why: str) -> bool:
@@ -1345,8 +1557,10 @@ def _await_countdown(page, why: str) -> bool:
         return False
 
     log.info(f"  the portal is asking for {seconds}s ({why}) — waiting it out...")
-    deadline = time.time() + seconds + 5      # margin for the last tick
-    while time.time() < deadline:
+    started = time.time()
+    hard_stop = started + MAX_COUNTDOWN_TOTAL_SECONDS
+    deadline = started + seconds + 5          # margin for the last tick
+    while time.time() < min(deadline, hard_stop):
         page.wait_for_timeout(1000)
         remaining = _stated_wait(page)
         if remaining <= 0:
@@ -1356,8 +1570,9 @@ def _await_countdown(page, why: str) -> bool:
             deadline = time.time() + remaining + 5
         seconds = remaining
 
+    waited = int(time.time() - started)
     log.warning(f"  the portal still shows a {_stated_wait(page)}s countdown "
-                "after waiting it out — submitting anyway.")
+                f"after {waited}s — going on anyway.")
     return True
 
 
@@ -1377,7 +1592,23 @@ def _dwell(page, step: Dict[str, Any], key: str, why: str) -> None:
 
     waitlist_dwell(page, step, key, why)
     if key == "dwell_seconds":
-        _await_countdown(page, why)
+        if _await_countdown(page, why):
+            # *** DO NOT CLICK ON THE TICK THE COUNTDOWN CLEARS. ***
+            #
+            # "cleared" means the countdown ELEMENT has gone, which is a render
+            # event. VFS's guard is a comparison against its own clock, made
+            # when the button is pressed, so the two are not the same instant:
+            # clicking in the same second the warning disappears can still be
+            # judged early, and a Save judged early is DISCARDED IN SILENCE -
+            # no error, no navigation, the form simply stays put (AE-NOR
+            # 2026-10-27, run 6ae0489f76c1dd, where the countdown cleared at
+            # 10:47:15 and the Save that followed it never took).
+            #
+            # The same settle the calendar already takes after the modal goes,
+            # for the same reason and from the same constant. It is paid once
+            # per form page, against a wait the portal has already made us sit
+            # through for 19 to 32 seconds.
+            page.wait_for_timeout(POST_COUNTDOWN_SETTLE_MS)
 
 
 def _fill_form(page, step: Dict[str, Any], report: StepReport,

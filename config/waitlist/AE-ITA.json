@@ -6,6 +6,7 @@
   "extends": "_default",
   "enabled": true,
   "_comment_enabled": "CONFIRMED working 2026-10-14. Ref ITD128931344738, fee AED 38.30. Login OTP via email image (OpenAI), no mobile OTP for waitlist.",
+  "_comment_fields_2026_10_26": "THE 2026-10-14 WALK UNDER-COUNTED THE FORM. Your Details has TEN mandatory fields, not seven: Gender, Date Of Birth and Passport Expiry Date were absent from this config, so Save left the form sitting there with three required controls unset and the next step's gate timed out reporting 'page never showed Summary' — which read as a gate problem and was not one. All three are now listed. Evidence: runs/6adefa72d46083/20261026_111640_ITA_waitlist_your_details_filled.png. The three new fields have NOT been through a successful live walk; confirm with `python -m src.waitlist doctor --route AE-ITA --walk` before trusting them.",
 
   "checkbox": "mat-checkbox[formcontrolname='agreeToWaitlist']",
   "_comment_checkbox": "Pinned, unlike Switzerland: this portal DOES bind the control, and a named control beats inferring one from position or wording. The label reads 'Currently No slots are available for selected category, please confirm waitlist'.",
@@ -22,8 +23,23 @@
       "fields": [
         { "name": "first_name", "label": "First Name", "widget": "text", "value": "{{first_name|upper}}", "required": true },
         { "name": "last_name", "label": "Last Name", "widget": "text", "value": "{{last_name|upper}}", "required": true },
+
+        { "name": "gender", "label": "Gender", "widget": "mat-select", "value": "{{gender}}", "required": true, "exact": true,
+          "_comment": "ADDED 2026-10-26. Mandatory on this portal and previously MISSING, which is why Save never produced a summary: the form held with 'Gender*' unset and details_summary timed out on a page that was still Your Details. Confirmed present in the 11:16 capture (runs/6adefa72d46083/20261026_111640_ITA_waitlist_your_details_filled.png), rendering as a mat-select showing 'Select'.",
+          "_comment_exact": "\"exact\": true IS LOAD-BEARING — 'Male' is a substring of 'Female', and option matching is otherwise a case-insensitive substring taking .first. See the same note on AE-CZE.",
+          "_comment_options": "NOT HARVESTED for this portal — deliberately no \"options\" key, so the API reports options_status=\"unknown\" rather than rejecting a valid value against a guessed list. AE-CZE observed Female / Male / Not Specified / Others / Transgender; do not copy that here without reading Italy's own overlay. Harvest with `python -m src.waitlist doctor --route AE-ITA --walk --harvest`." },
+
+        { "name": "date_of_birth", "label": "Date Of Birth", "widget": "date", "value": "{{date_of_birth|date:%d/%m/%Y}}", "required": true,
+          "_comment": "ADDED 2026-10-26, same reason as gender. Addressed by LABEL, not by id: unlike Passport Expiry Date this portal family gives the DOB picker no stable id, and the AE-FRA booking walk (config/booking/AE-FRA.json) confirmed label matching resolves it on this exact two-per-row layout.",
+          "_comment_format": "dd/mm/yyyy, as every other route in this family sends. The client file stores date_of_birth as ISO (YYYY-MM-DD) and the |date: filter reformats it. The placeholder only reads 'Please select the date', so if the input rejects this, change the filter here — not fields.py." },
+
         { "name": "nationality", "label": "Current Nationality", "widget": "mat-select", "value": "{{nationality}}", "required": true },
         { "name": "passport_number", "label": "Passport Number", "widget": "text", "value": "{{passport_number|upper}}", "required": true },
+
+        { "name": "passport_expiry", "selector": "input#passportExpirtyDate", "widget": "date", "value": "{{passport_expiry|date:%d/%m/%Y}}", "required": true,
+          "_comment": "ADDED 2026-10-26, same reason as gender.",
+          "_comment_selector": "PINNED BY ID, as on every other route in this family: the ngbDatepicker carries a real id, 'passportExpirtyDate', WITH VFS'S OWN TYPO ('Expirty'). Do not 'fix' the spelling." },
+
         { "name": "phone_country_code", "label": "Contact number", "widget": "text", "index": 0, "value": "{{phone_country_code|digits}}", "required": true },
         { "name": "phone_number", "label": "Contact number", "widget": "text", "index": 1, "value": "{{phone_number|digits}}", "required": true },
         { "name": "email", "label": "Email", "widget": "text", "value": "{{email}}", "required": true }

@@ -137,7 +137,8 @@
       "after": "your_details",
       "url_contains": "your-details",
       "fields": [],
-      "wait_for_text": ["Add another applicant", "Applicant 1"],
+      "wait_for_text": ["Add another applicant", "Your Details Summary", "You must book appointments individually"],
+      "_comment_wait_for_text": "ANY of these - all three are unique to the summary. 'Applicant 1' was in this list and was removed 2026-10-27: it is also the <h3> heading of the Your Details FORM, so it matched while the walk was still sitting on the form. See AE-NOR.json for the run that proved it.",
       "submit": {
         "role": "button",
         "name": "Continue"

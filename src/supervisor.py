@@ -40,6 +40,7 @@ from src.utils.config_reader import (
     initialize_config,
     set_config_value,
 )
+from src.vfs_bot import diagnostics
 from src.vfs_bot.vfs_bot import (
     AccessRestrictedError,
     AccountBlockedError,
@@ -156,10 +157,20 @@ def run_once_with_fresh_browser(source: str, dest: str,
         bot.keep_cf_clearance = not egress_changed
         if email and password:
             bot.set_credential(email, password)
-        if not bot.run():
-            # Shouldn't normally happen (run() raises on failure), but treat a
-            # bare False as a retryable failed attempt.
-            raise RetryableError("Flow returned without completing.")
+        # NO SCREENSHOTS FOR THE SLOT CHECK ([browser] slot_check_screenshots).
+        #
+        # Scoped to this block on purpose. The login, OTP, Turnstile and
+        # block-detection modules the bot is about to run are the SAME ones a
+        # booking walk and a waitlist registration use, and the supervisor
+        # fires a waitlist run in this very process once this browser has
+        # closed — outside this `with`, so that run still captures normally.
+        # A module-level switch could not draw that line.
+        with diagnostics.suppressed(
+                not settings().browser.slot_check_screenshots):
+            if not bot.run():
+                # Shouldn't normally happen (run() raises on failure), but treat
+                # a bare False as a retryable failed attempt.
+                raise RetryableError("Flow returned without completing.")
         return getattr(bot, "slot_results", [])
     finally:
         if keep_open:

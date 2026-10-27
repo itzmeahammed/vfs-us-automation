@@ -57,6 +57,19 @@ log = logging.getLogger("vfs.api.jobs")
 # own job status rather than being lumped in with failures.
 EXIT_SLOTS_AVAILABLE = 2
 
+# The BOOKING CLI's money-moved exit codes. Kept in sync with
+# src/booking/__main__.py, where the full table and the reasoning live.
+#
+# *** NEITHER OF THESE IS A FAILURE, AND NEITHER IS A SUCCESS. *** Both mean
+# the card was touched, so both mean "stop and check, never retry". They exist
+# because the alternative was exit 1: on 2026-10-27 a fully paid booking
+# (run 37b0e0e9d937731c, 3-D Secure cleared, PaymentStatus=True from VFS) was
+# listed by this API as "failed — Process exited with code 1", while the
+# booking-request endpoint for the same run said "booked and paid". An operator
+# reading the job list would have concluded the payment had not gone through.
+EXIT_PAYMENT_SUBMITTED = 3
+EXIT_PAYMENT_DECLINED = 4
+
 # Markers the CLI prints around its machine-readable result block. Kept in sync
 # with src/waitlist/__main__.py — a mismatch degrades gracefully (no parsed
 # results) rather than breaking the job.
@@ -122,6 +135,14 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
     # A bookable slot appeared, so the run stopped without registering.
     SLOTS_AVAILABLE = "slots_available"
+    # THE CARD WAS CHARGED, or may have been. Not a success (the gateway's
+    # answer is the journal row, not this status) and emphatically not a
+    # failure. Re-running is a SECOND charge.
+    PAYMENT_SUBMITTED = "payment_submitted"
+    # The gateway answered and refused. Still not an ordinary failure: VFS's
+    # own page says funds may have been deducted anyway, so this needs a human
+    # and never a retry.
+    PAYMENT_DECLINED = "payment_declined"
     # The API restarted while this job was running; its outcome was never
     # recorded and cannot be reconstructed. Needs a human.
     UNKNOWN = "unknown"
@@ -131,6 +152,15 @@ class JobStatus(str, Enum):
 TERMINAL_STATUSES = frozenset({
     JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.TIMED_OUT,
     JobStatus.CANCELLED, JobStatus.SLOTS_AVAILABLE, JobStatus.UNKNOWN,
+    JobStatus.PAYMENT_SUBMITTED, JobStatus.PAYMENT_DECLINED,
+})
+
+#: Statuses where money may have moved. A caller must not re-run one of these,
+#: and the web app should not offer a retry button on one. Grouped rather than
+#: string-matched at each call site, because the whole point is that the rule
+#: is the same for both and must not drift apart.
+MONEY_MOVED_STATUSES = frozenset({
+    JobStatus.PAYMENT_SUBMITTED, JobStatus.PAYMENT_DECLINED,
 })
 
 
@@ -175,6 +205,62 @@ def _booking_failure(record: "JobRecord") -> str:
     except Exception:                                       # noqa: BLE001
         pass
     return ""
+
+
+def payment_facts(run_id: str) -> Tuple[bool, str]:
+    """(was a payment submitted, what the gateway answered) for this run.
+
+    The answer is "success" | "declined" | whatever the row said | "" when the
+    gateway never answered. The two halves are returned together because they
+    are different questions and the second does not imply the first: a run can
+    submit a payment and never learn the outcome, which is the state that most
+    needs saying out loud.
+
+    READ FROM THE JOURNAL, not inferred from an exit code or a job status. The
+    exit code says the click happened; only the journal says what came back.
+
+    Matched on run_id, which is why run_id exists: for an API-triggered job it
+    equals job_id, so the journal, the log lines and the runs/ folder are all
+    reachable from the one id the web app already holds.
+    """
+    if not run_id:
+        return False, ""
+    try:
+        from src.payment import journal
+        from src.booking.autobook import rows_for_run
+
+        rows = rows_for_run(journal.read_all(), run_id)
+        if not rows:
+            return False, ""
+        submitted = any(r.get("event") == "payment_submitting" for r in rows)
+        answered = [r for r in rows if r.get("event") == "payment_result"]
+        answer = str(answered[-1].get("outcome") or "") if answered else ""
+        # An answer without a submitting row still means a payment happened:
+        # the row exists because something was paid for.
+        return bool(submitted or answer), answer
+    except Exception:                                       # noqa: BLE001
+        # A journal that cannot be read must never change what a job reports:
+        # the status already carries the safe reading on its own.
+        log.warning("Could not read the payment journal for run %s.", run_id,
+                    exc_info=True)
+    return False, ""
+
+
+def payment_outcome(run_id: str) -> str:
+    """Just the gateway's answer. See payment_facts."""
+    return payment_facts(run_id)[1]
+
+
+def _payment_detail(record: "JobRecord", paid: str, unresolved: str) -> str:
+    """`paid` if the gateway approved it, else `unresolved`.
+
+    So the API stops hedging when it does not have to. A run whose journal
+    carries `payment_result: success` HAS a definite answer, and telling the
+    operator to "check the card" on one of those is how a real confirmation
+    gets lost among the ones that need looking at.
+    """
+    return paid if payment_outcome(
+        record.run_id or record.job_id) == "success" else unresolved
 
 
 @dataclass
@@ -236,6 +322,49 @@ class JobRecord:
             "needs_attention": self.needs_attention,
         }
 
+    def payment_view(self) -> Optional[Dict[str, Any]]:
+        """What happened to the card, or None when no payment was attempted.
+
+        THE WEB APP SHOULD NOT HAVE TO READ A LOG FILE TO ANSWER "was it
+        paid?". Before this, the only machine-readable answer lived in
+        state/payments.jsonl on the server's disk, so the console showed a
+        status and a sentence and left the operator to open a terminal. The
+        question is asked of every commit run, so it gets a field.
+
+        Gated on THE JOURNAL, not on this job's status. Gating on the status
+        would have hidden it on the one path that matters most: an automatic
+        booking that completes is recorded as "succeeded", so a status gate
+        would report the card for every troubled run and stay silent on every
+        clean one.
+
+        `charged` is deliberately three-valued:
+            True   the gateway approved it - safe to tell the client
+            False  the gateway refused it, though funds may still have moved
+            None   SUBMITTED AND UNANSWERED. Not "no": unknown. The honest
+                   answer, and the one a boolean would have had to lie about.
+        """
+        submitted, answer = payment_facts(self.run_id or self.job_id)
+        if not submitted:
+            return None
+
+        if answer == "success":
+            charged = True
+        elif answer == "declined" or self.status == JobStatus.PAYMENT_DECLINED:
+            charged = False
+        else:
+            charged = None
+
+        return {
+            "submitted": True,
+            "charged": charged,
+            "gateway_answer": answer or "not_answered",
+            # Never true. A payment that may have been taken is never safe to
+            # re-run, and the field exists so a web app does not have to
+            # rediscover that rule per status.
+            "retry_safe": False,
+            "journal": "state/payments.jsonl",
+        }
+
     def to_public(self) -> Dict[str, Any]:
         """What the web app sees: every error as ONE sentence.
 
@@ -247,8 +376,18 @@ class JobRecord:
         from src.utils import public_errors as pe
 
         out = self.to_dict()
+        # Derived from the payment journal on every read, so it is added
+        # HERE and not in to_dict(): to_dict() is the persisted form, and a
+        # stored snapshot of this would be read back by nothing and could
+        # drift from the journal — in the one record that is about money.
+        out["payment"] = self.payment_view()
         failed = self.status.value not in pe.OK_STATUSES and \
             self.status.value != JobStatus.SUCCEEDED.value
+        # A detail written here, for an operator, about whether a card
+        # was charged. The translator below would replace it with a
+        # generic fallback.
+        if self.status.value in pe.AUTHORED_DETAIL_STATUSES:
+            failed = False
         # A crash the code did not foresee is "problem not identified", not
         # the proxy fallback: nothing says the proxy was at fault.
         fallback = (pe.UNIDENTIFIED
@@ -772,12 +911,37 @@ class JobManager:
             #   2  SLOTS AVAILABLE — the run stopped deliberately; a bookable
             #      slot exists, so waitlisting was the wrong action. This is a
             #      BETTER outcome than success, and must not read as an error.
+            #   3  PAYMENT SUBMITTED — the click happened. Paid, unanswered,
+            #      or an OTP nobody typed. Money may have moved.
+            #   4  PAYMENT DECLINED — the gateway refused, but VFS's own
+            #      failure page says funds may have been deducted anyway.
             if exit_code == EXIT_SLOTS_AVAILABLE:
                 record.status = JobStatus.SLOTS_AVAILABLE
                 record.detail = (
                     "A bookable slot exists — the run stopped and nothing was "
                     "registered. Book it on the portal instead."
                 )
+            elif exit_code == EXIT_PAYMENT_SUBMITTED:
+                record.status = JobStatus.PAYMENT_SUBMITTED
+                record.outcome = "payment_submitted"
+                record.detail = _payment_detail(
+                    record,
+                    paid="The payment went through: the gateway approved it "
+                         "and VFS returned a confirmation. The appointment is "
+                         "booked and paid.",
+                    unresolved="The payment was SUBMITTED and the gateway's "
+                               "answer was not read. The card may have been "
+                               "charged. Check the portal or the bank before "
+                               "doing anything else — DO NOT re-run.")
+            elif exit_code == EXIT_PAYMENT_DECLINED:
+                record.status = JobStatus.PAYMENT_DECLINED
+                record.outcome = "payment_declined"
+                record.needs_attention = True
+                record.detail = (
+                    "The gateway DECLINED the payment. VFS's own failure page "
+                    "says funds may still have been deducted, so declined is "
+                    "not the same as nothing happened. Check the card before "
+                    "re-arming — DO NOT re-run.")
             elif exit_code == 0:
                 record.status = JobStatus.SUCCEEDED
             else:

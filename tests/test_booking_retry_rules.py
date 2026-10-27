@@ -208,6 +208,43 @@ def test_a_payment_row_with_no_run_id_is_never_dropped():
     assert autobook.rows_for_run(rows, "mine") == rows
 
 
+def test_another_runs_payment_is_never_reported_as_ours():
+    """THE 2026-10-26 FALSE ALARM, as a test.
+
+    Job 6adf314a89a1ff was a TEST run that lasted 150ms and never started
+    Chrome. It reported "a payment may have been submitted. Check the card and
+    VFS NOW." because rows_for_run, finding nothing of its own and nothing
+    unstamped, fell back to the whole positional slice — which held a DIFFERENT
+    run's payment. The cost of that mistake is the operator stops believing the
+    one alarm that must always be believed.
+    """
+    rows = [{"run_id": "ea9a49fc059c888c", "event": "payment_submitting"},
+            {"run_id": "ea9a49fc059c888c", "event": "payment_result"}]
+
+    assert autobook.rows_for_run(rows, "6adf314a89a1ff", rows) == []
+
+
+def test_the_fallback_argument_cannot_resurrect_another_runs_rows():
+    """All three production call sites pass the slice as `fallback` too."""
+    rows = [{"run_id": "someone-else", "event": "payment_submitting"}]
+
+    assert autobook.rows_for_run(rows, "mine", rows) == []
+    assert autobook.rows_for_run([], "mine", rows) == []
+
+
+def test_ours_and_unattributed_come_back_together_in_journal_order():
+    """A run can write a stamped row and inherit an unstamped one; both count,
+    and the order they are reported in is the order they were written."""
+    rows = [{"run_id": "mine", "event": "payment_submitting"},
+            {"run_id": "other", "event": "payment_submitting"},
+            {"event": "payment_result"},
+            {"run_id": "mine", "event": "payment_result"}]
+
+    got = autobook.rows_for_run(rows, "mine", rows)
+
+    assert [r.get("run_id", "-") for r in got] == ["mine", "-", "mine"]
+
+
 # --------------------------------------------------------------------------- #
 # History keeps what matters                                                   #
 # --------------------------------------------------------------------------- #

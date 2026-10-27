@@ -156,6 +156,8 @@
     background:var(--panel2);
   }
   .banner.bad{border-color:var(--bad)}
+  .banner.ok{border-color:var(--ok)}
+  .banner.warn{border-color:var(--warn)}
   .hide{display:none !important}
   .tabs{display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:14px;
         flex-wrap:wrap}
@@ -705,8 +707,24 @@ function jobPill(j) {
   if (s === "running")          return '<span class="pill info">running</span>';
   if (s === "succeeded")        return '<span class="pill ok">succeeded</span>';
   if (s === "slots_available")  return '<span class="pill ok">slots available</span>';
+  // MONEY MOVED. Never the red "failed" pill: on 2026-10-27 a fully paid
+  // booking (run 37b0e0e9d937731c, 3-D Secure cleared, PaymentStatus=True
+  // from VFS) showed here as red "failed", while the client's own timeline
+  // for the same run read "booked and paid". The pill is what an operator
+  // scans first, so it has to agree with the money.
+  if (s === "payment_submitted") {
+    var charged = j.payment && j.payment.charged;
+    if (charged === true)  return '<span class="pill ok">PAID</span>';
+    if (charged === false) return '<span class="pill bad">declined</span>';
+    // null is UNKNOWN, not "no" — amber, because it is the one state that
+    // needs a person to go and look.
+    return '<span class="pill warn">paid? unconfirmed</span>';
+  }
+  if (s === "payment_declined")  return '<span class="pill bad">declined</span>';
   if (s === "failed")           return '<span class="pill bad">failed</span>';
   if (s === "cancelled")        return '<span class="pill dim">cancelled</span>';
+  if (s === "timed_out")        return '<span class="pill bad">timed out</span>';
+  if (s === "unknown")          return '<span class="pill warn">unknown</span>';
   return '<span class="pill dim">' + esc(s) + "</span>";
 }
 
@@ -872,8 +890,28 @@ function viewJob(id) {
         "retrying anything.</div>"
       : "";
 
+    // THE MONEY ANSWER GOES FIRST, above the status grid. Whether a card was
+    // charged is the only question asked about a commit run, and it was
+    // previously answerable only by reading state/payments.jsonl on the
+    // server. It now rides on the job itself.
+    var pay = j.payment && j.payment.submitted
+      ? "<div class='banner " +
+          (j.payment.charged === true ? "ok"
+            : j.payment.charged === false ? "bad" : "warn") + "'>" +
+        "<strong>" +
+          (j.payment.charged === true
+            ? "Paid. The card was charged and the appointment is booked."
+            : j.payment.charged === false
+              ? "Declined. Funds may still have been deducted."
+              : "Payment submitted — the outcome was never read.") +
+        "</strong> Gateway answer: " + esc(j.payment.gateway_answer) +
+        ". Journal: " + esc(j.payment.journal) +
+        ". <em>Re-running this job would charge the card a second time.</em>" +
+        "</div>"
+      : "";
+
     modal("Job " + id,
-      attn +
+      pay + attn +
       "<div class='grid g2' style='margin-bottom:12px'>" +
         kv("Status", j.status) + kv("Outcome", j.outcome || "—") +
         kv("Exit code", j.exit_code == null ? "—" : j.exit_code) +

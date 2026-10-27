@@ -640,11 +640,12 @@ def _book_one(route: str, request_id: str, seen_date: str,
                        status=outcome.status, run_id=run_id,
                        **outcome.details)
     log.warning("Auto-book %s -> %s: %s", request_id, outcome.status, outcome.detail)
+    job_state, job_outcome = job_status(outcome, payment_rows)
     attempt_job.finished(
         run_id, request_id=request_id, route=route, combo=req.combo,
-        status="succeeded" if outcome.status == store.BOOKED else "failed",
+        status=job_state,
         detail=outcome.detail,
-        outcome="completed" if outcome.status == store.BOOKED else "failed",
+        outcome=job_outcome,
         needs_attention=outcome.status == store.NEEDS_ATTENTION,
         started_at=started_at, log_file=job_log,
         results=[{"route": route, "combo": req.combo,
@@ -1073,23 +1074,68 @@ def permanent_problem(reason: str) -> str:
     return ""
 
 
+def job_status(outcome, payment_rows: List[Dict[str, Any]]) -> tuple:
+    """(job status, run-level outcome) for the API's job list.
+
+    The AUTOMATIC lane writes its own job records (attempt_job.finished)
+    instead of being supervised as a subprocess, so it cannot inherit the
+    CLI's exit codes and has to reach the same verdict independently.
+
+    *** "NOT BOOKED" IS NOT THE SAME AS "FAILED". *** This used to be
+    `"succeeded" if BOOKED else "failed"`, which filed a DECLINED payment and
+    an UNANSWERED one — both of which may have taken money — under the same
+    red word as a mistyped selector. The remedy differs completely: a failure
+    is re-armed once it is fixed, and a payment is never re-run at all.
+
+    A booked run stays "succeeded": the card question is answered separately,
+    by JobRecord.payment_view reading the same journal, so the happy path does
+    not need a special status to carry it.
+    """
+    if outcome.status == store.BOOKED:
+        return "succeeded", "completed"
+
+    submitted = any(r.get("event") == "payment_submitting"
+                    for r in payment_rows)
+    answered = [r for r in payment_rows if r.get("event") == "payment_result"]
+    if answered and str(answered[-1].get("outcome") or "") == "declined":
+        return "payment_declined", "payment_declined"
+    if submitted or answered:
+        return "payment_submitted", "payment_submitted"
+    return "failed", "failed"
+
+
 def rows_for_run(rows: List[Dict[str, Any]], run_id: str,
                  fallback: Optional[List[Dict[str, Any]]] = None
                  ) -> List[Dict[str, Any]]:
-    """The payment-journal rows this run wrote.
+    """The payment-journal rows this run wrote, or that nobody owns.
 
     Matched on `run_id`, which journal.append() stamps on every row. The old
     rule — "everything appended since this attempt started" — is only correct
     while exactly one process can be writing, and it decides whether a card was
-    charged. Rows with no run id at all (hand-edited, or pre-dating the stamp)
-    fall back to the positional slice rather than being dropped, because a
-    payment row nobody attributes is the one failure worth being loud about.
+    charged.
+
+    Exactly two kinds of row count as this run's:
+
+        stamped with OUR run_id   ours, definitively
+        stamped with NO run_id    nobody's, and a payment row nobody attributes
+                                  is the one failure worth being loud about
+
+    A row stamped with ANOTHER run's id is, definitively, NOT OURS — and that
+    is the case the old `fallback` got wrong. When no row matched and none was
+    unstamped it returned the whole positional slice, other runs' rows
+    included, so a concurrent booking's payment was reported as this run's. On
+    2026-10-26 that produced "TEST run wrote payment journal rows — a payment
+    may have been submitted. Check the card and VFS NOW." for a run that lasted
+    150ms and never started Chrome (job 6adf314a89a1ff). An alarm that cries
+    wolf on the one thing that must never be ignored is worse than no alarm.
+
+    `fallback` is accepted and IGNORED, so the three call sites that pass the
+    slice twice keep working. It never added anything: every caller passes the
+    same list as `rows`, and the unstamped rows it was meant to rescue are
+    already picked up from `rows` directly.
     """
-    mine = [r for r in rows if str(r.get("run_id") or "") == run_id]
-    if mine:
-        return mine
-    unstamped = [r for r in rows if not r.get("run_id")]
-    return unstamped or (fallback if fallback is not None else [])
+    return [r for r in rows
+            if not r.get("run_id") or str(r.get("run_id")) == run_id]
 
 
 def _skipped(request_id: str, reason: str, seen_date: str = "") -> None:

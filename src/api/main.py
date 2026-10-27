@@ -68,6 +68,12 @@ def _docs_enabled_at_import() -> bool:
 
 _DOCS_ENABLED = _docs_enabled_at_import()
 
+#: How long a milestone screenshot in runs/ survives. Seven days, because the
+#: only reason to open one is "what did the run that just failed look like on
+#: the way in", and that question has a short shelf life. FAILURE captures are
+#: not aged out at all — see src/utils/runs_retention.py.
+RUNS_MAX_AGE_DAYS = 7
+
 # The admin console at GET /console. OFF by default, for the same reason as the
 # docs: anything reachable through the tunnel should be there because you chose
 # it, not because it shipped enabled.
@@ -150,6 +156,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         job_manager.prune_logs()
     except Exception:                              # noqa: BLE001
         log.exception("Job log pruning failed — continuing.")
+
+    # The same leak in runs/, which had reached 711 MB by 2026-10-26. Only the
+    # three proof-of-health screenshots are touched; every failure capture is
+    # kept, because it is the only record of a state that cannot be reproduced.
+    try:
+        from src.utils.runs_retention import prune_runs
+
+        report = prune_runs(max_age_days=RUNS_MAX_AGE_DAYS)
+        if report.files_removed or report.dirs_removed:
+            log.info(report.summary())
+    except Exception:                              # noqa: BLE001
+        log.exception("runs/ pruning failed — continuing.")
 
     log.info(
         "Webhook API v%s listening on http://%s:%s (docs=%s, single_flight=%s)",

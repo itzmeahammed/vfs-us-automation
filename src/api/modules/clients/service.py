@@ -516,6 +516,15 @@ def timeline(client_id: str, since: int = 0) -> List[Dict[str, Any]]:
                     # GET /v1/jobs/{job_id}/logs
                     "logs_url": f"/v1/jobs/{record.job_id}/logs",
                     "started_by": p.get("started_by", ""),
+                    # WHETHER THE CARD WAS CHARGED, on the entry for the
+                    # attempt that charged it. Null on every attempt that
+                    # reached no payment, which is most of them. Carried here
+                    # as well as on the job itself because this timeline is
+                    # what the web app renders for a client, and "was my
+                    # client's card charged" must not need a second request to
+                    # a different endpoint to answer. See
+                    # JobRecord.payment_view for the three-valued `charged`.
+                    "payment": public.get("payment"),
                     "detail": public.get("detail")
                     or f"{p.get('lane', '')} {p.get('mode', '')}".strip()})
     except Exception:                                       # noqa: BLE001

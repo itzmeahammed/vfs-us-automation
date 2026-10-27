@@ -696,15 +696,40 @@ def redact_html(html: str, scrub: List[str] = ()) -> str:
 
 
 def capture_screen(page, directory: str, label: str,
-                   scrub: List[str] = ()) -> List[str]:
-    """Screenshot + redacted DOM of the page AND every frame in it.
+                   scrub: List[str] = (), dom: Optional[bool] = None
+                   ) -> List[str]:
+    """Screenshot of the page, and — only if asked — its DOM and its frames'.
 
-    Frames matter here more than anywhere: the bank's OTP form is usually an
-    iframe, and page.content() of the parent shows only an empty <iframe>.
+    THE SCREENSHOT IS THE ARTIFACT. Past the committing click the appointment
+    is booked, so if the charge then fails this PNG is the only record of what
+    was on screen and the slot is gone. It is written whatever else is off.
+
+    THE DOM IS NOT, and defaults off ([booking] payment_dom_capture). Frames
+    matter when you are mapping a gateway for the first time — the bank's OTP
+    form is an iframe, and page.content() of the parent shows only an empty
+    <iframe> — but once a gateway is mapped they are CyberSource's own scripts,
+    re-captured near-identically at every step: 120 files and 5.3 MB for 11
+    screenshots on one AE-HUN run. It is also the DOM of a page with a card on
+    it. redact_html holds up (0 of those 120 files held the real PAN), but the
+    API already refuses capture='full' on a commit run for this exact reason,
+    and a file that has to be scrubbed correctly every single time is better
+    not written at all.
+
+    `dom=True`/`False` overrides the setting, for a caller that knows better.
     Best-effort throughout; returns the paths written.
     """
     import io
     import os
+
+    if dom is None:
+        try:
+            from src.settings import settings
+
+            dom = bool(settings().booking.payment_dom_capture)
+        except Exception:                                   # noqa: BLE001
+            # Unreadable settings must not be the reason a payment page goes
+            # uncaptured, and must not be the reason a card DOM gets written.
+            dom = False
 
     os.makedirs(directory, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -716,6 +741,10 @@ def capture_screen(page, directory: str, label: str,
         written.append(shot)
     except Exception as e:                                  # noqa: BLE001
         log.warning(f"  could not screenshot '{label}': {e}")
+
+    if not dom:
+        log.info(f"  captured '{label}' (1 screenshot) -> {directory}")
+        return written
 
     frames = []
     try:

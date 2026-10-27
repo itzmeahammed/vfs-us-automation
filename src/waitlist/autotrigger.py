@@ -198,8 +198,67 @@ def find_waiting_clients(route: str, combo: str) -> List[Any]:
         if capped:
             log.info("Not triggering %s: %s", person.id, capped)
             continue
+        # INCOMPLETE DATA COSTS A LOGIN, so it is caught here rather than in the
+        # browser. On 26 Oct an AE-ITA client with no gender / date of birth /
+        # passport expiry walked the whole flow, filled the seven fields the
+        # config then listed, and sat on Your Details until the summary gate
+        # timed out — a wasted login against VFS's ~3-in-a-window block, and a
+        # failure whose stated reason ("page never showed 'Summary'") pointed at
+        # the wrong thing entirely. The API runs this same check on create and
+        # on enable; a client file edited by hand bypasses that, so the runner
+        # must not assume it ran.
+        gap = _data_problem(person)
+        if gap:
+            log.warning("Not triggering %s: %s", person.id, gap)
+            continue
         waiting.append(person)
     return waiting
+
+
+def _data_problem(person: Any) -> str:
+    """One sentence naming the client data this route's form needs and the
+    client file does not have, or "" when nothing is missing.
+
+    Browser-free and ERRORS ONLY: a warning (e.g. the form email differing from
+    the account email) describes a client who registers perfectly well, and
+    must never silently drop them from a run.
+    """
+    try:
+        from src.waitlist import store, validate
+        data = store.get_raw(person.id)
+        blocking = [p for p in validate.precheck_client(person.id, data)
+                    if getattr(p, "severity", validate.ERROR) == validate.ERROR]
+    except Exception as exc:                       # noqa: BLE001
+        # A fault in the pre-flight is not evidence against the client: let the
+        # run proceed and fail with the portal's own reason if it must.
+        log.debug("Could not pre-flight %s: %s", person.id, exc)
+        return ""
+    if not blocking:
+        return ""
+
+    missing = sorted({
+        name for p in blocking
+        for name in [_missing_field_name(p)] if name
+    })
+    if missing:
+        return (f"their profile is missing {', '.join(missing)}, which this "
+                f"route's form requires — the registration would stall on "
+                f"Your Details. Add the field(s) and re-enable.")
+    return (f"their profile has {len(blocking)} problem(s) that stop a run: "
+            f"{blocking[0].message}")
+
+
+def _missing_field_name(problem: Any) -> str:
+    """The field name out of an 'Unresolved placeholder' problem.
+
+    `check_templates` reports these with an empty `field` and the name inside
+    the message, so the name is recovered from the message rather than read off
+    the problem. Returns "" for any other kind of problem.
+    """
+    import re
+    message = str(getattr(problem, "message", "") or "")
+    match = re.search(r"Placeholder \{\{([a-z0-9_.]+)", message, re.IGNORECASE)
+    return match.group(1) if match else ""
 
 
 def group_by_account(people: List[Any]) -> Dict[str, List[Any]]:

@@ -9,6 +9,7 @@ from anywhere in the flow without a try/except at the call site.
 
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime
 
 from src.settings import settings
@@ -94,12 +95,61 @@ def attach_activity_logging(page) -> None:
     page.on("framenavigated", on_frame_navigated)
 
 
+#: Screenshots are SUPPRESSED FOR THE CURRENT RUN while this is True.
+#:
+#: WHY A RUN-SCOPED FLAG AND NOT A MODULE SWITCH. Everything under
+#: src/vfs_bot/ — login, OTP, Turnstile, block detection, page_guard — is shared
+#: by all four things that drive a browser: the slot checker
+#: (supervisor._run_one_attempt), the booking walk (booking/probe.py), the
+#: waitlist registration (waitlist/runner.py) and the single-route CLI
+#: (src/main.py). They are told apart by WHO STARTED THE RUN, never by which
+#: module took the picture, so a switch read here could not tell a slot check's
+#: geo_blocked from a booking's.
+#:
+#: It also cannot be process-wide: the supervisor fires a waitlist registration
+#: in its OWN process after the slot-check browser closes, and that run's
+#: screenshots are the ones that diagnosed Italy's form on 2026-10-26. So the
+#: slot checker sets this for the duration of its own browser work and clears
+#: it, via the suppressed() context manager.
+_SUPPRESSED = False
+
+
+@contextmanager
+def suppressed(active: bool = True):
+    """Take no screenshots at all inside this block. Restores on exit.
+
+    `active=False` is a no-op, so a caller can pass a config flag straight in
+    rather than wrapping the `with` in an `if`.
+    """
+    global _SUPPRESSED
+    previous = _SUPPRESSED
+    _SUPPRESSED = _SUPPRESSED or bool(active)
+    try:
+        yield
+    finally:
+        _SUPPRESSED = previous
+
+
+def screenshots_suppressed() -> bool:
+    """Whether the current run is writing no screenshots."""
+    return _SUPPRESSED
+
+
 def write_screenshot(page, name: str, fixed_name: bool = False) -> None:
-    """Unconditionally writes a screenshot, ignoring browser.screenshots_enabled.
+    """Writes a screenshot, ignoring browser.screenshots_enabled.
+
+    THE ONE CHOKEPOINT. Every screenshot in src/vfs_bot/ arrives here, through
+    take_screenshot, take_final_screenshot or take_milestone_screenshot, so the
+    run-scoped suppression below is enforced in a single place rather than at
+    forty call sites.
 
     fixed_name=True writes exactly <name>.png (overwritten each run) so you can
     always find e.g. Loginformloaded.png; otherwise the file is timestamped.
     """
+    if _SUPPRESSED:
+        logging.debug(f"Screenshot '{name}' not taken: this run takes none.")
+        return
+
     if fixed_name:
         path = os.path.join(SCREENSHOT_DIR, f"{name}.png")
     else:
@@ -113,6 +163,13 @@ def write_screenshot(page, name: str, fixed_name: bool = False) -> None:
     # CDP fallback (that send() had no timeout and could hang forever, which
     # stalled a whole run between 'Password entered' and Sign In).
     try:
+        # MADE HERE, on the first write, not when Chrome starts. VfsBot used to
+        # create it up front, so every run left a folder whether or not it had
+        # anything to put in it — ~48 empty folders a day once the slot check
+        # stopped taking screenshots at all. Playwright would create the parent
+        # itself, but doing it explicitly keeps the waitlist writer
+        # (register.py) and this one on the same rule.
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         page.screenshot(
             path=path,
             full_page=False,
@@ -135,4 +192,28 @@ def take_screenshot(page, name: str) -> None:
 def take_final_screenshot(page, name: str = "final") -> None:
     """Always writes one screenshot (used at the end of the run, and at every
     classified failure point, regardless of the screenshots_enabled setting)."""
+    write_screenshot(page, name)
+
+
+def take_milestone_screenshot(page, name: str) -> None:
+    """A PROOF-OF-PROGRESS shot on a run that is going fine — off by default.
+
+    The difference from take_final_screenshot is what the picture is FOR. A
+    failure shot is evidence: the state cannot be reproduced, so it is written
+    whatever the settings say. A milestone shot ("we reached the dashboard")
+    only confirms something the log already states in words, and the log is
+    what anyone actually reads.
+
+    They were not distinguished, so the three milestones — after_signin,
+    dashboard and the success-path final — went through take_final_screenshot
+    and ignored every switch. At roughly 13 routes x 2 ticks an hour that came
+    to 11,502 files and 548 MB of healthy runs, against 113 MB of the blocks,
+    turnstile failures, account locks and waitlist pages that are the reason
+    runs/ exists. Turning the ratio around is the whole point of this function.
+
+    Set [browser] milestone_screenshots = true to get them back while
+    debugging a flow that the logs alone are not explaining.
+    """
+    if not settings().browser.milestone_screenshots:
+        return
     write_screenshot(page, name)

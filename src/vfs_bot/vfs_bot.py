@@ -1,5 +1,4 @@
 import logging
-import os
 import time
 from abc import ABC
 
@@ -453,7 +452,10 @@ class VfsBot(ABC):
         # Tag this run's timestamped screenshots with the destination code, e.g.
         # 20260721_090048_GRC_turnstile_fail_1.png.
         diagnostics.set_route(self.destination_country_code)
-        os.makedirs(diagnostics.SCREENSHOT_DIR, exist_ok=True)
+        # The run's artifact folder is NOT created here. It is made on the first
+        # screenshot that is actually written (diagnostics.write_screenshot), so
+        # a run with nothing to show leaves nothing behind. Creating it up front
+        # left an empty runs/<run_id>/ for every healthy run.
 
         with sync_playwright() as p:
             # Per-run value wins; the config key is the single-run fallback.
@@ -522,8 +524,10 @@ class VfsBot(ABC):
                 # error). Bandwidth is already summed above, so nothing is lost.
                 self._detach_listeners()
 
-            # Single final screenshot capturing the successful end state.
-            diagnostics.take_final_screenshot(page, "final")
+            # Single final screenshot capturing the SUCCESSFUL end state — a
+            # milestone. The two take_final_screenshot("final") calls in the
+            # except blocks above are the failure twins and stay unconditional.
+            diagnostics.take_milestone_screenshot(page, "final")
             if self._blocked_requests:
                 logging.info(
                     f"Bandwidth: aborted {self._blocked_requests} asset request(s) "
@@ -939,7 +943,11 @@ class VfsBot(ABC):
                 # 403s captured earlier (page load / a previous rejected attempt).
                 self._block_responses = []
                 otp_since = self._click_sign_in(page)
-                diagnostics.take_final_screenshot(page, "after_signin")
+                # A MILESTONE, not evidence: when this sign-in fails, the
+                # classifier below takes its own named shot (access_restricted,
+                # account_locked, ip_blocked, turnstile_fail...). This one only
+                # ever showed a successful sign-in.
+                diagnostics.take_milestone_screenshot(page, "after_signin")
 
                 # The Sign In API is where VFS returns either a 403201 IP block OR
                 # a rejected-Turnstile 403 — classify the captured body below.
@@ -1063,7 +1071,10 @@ class VfsBot(ABC):
                 f"status: {block_detection.landing_status(page)}."
             )
         logging.info(f"Reached dashboard (verified: URL + content): {page.url}")
-        diagnostics.take_final_screenshot(page, "dashboard")
+        # The failure twin is dashboard_not_ready, raised just above and still
+        # written unconditionally. This one is the healthy case the log line
+        # directly above already records.
+        diagnostics.take_milestone_screenshot(page, "dashboard")
 
     def start_booking(self, page, await_page: bool = False) -> None:
         """Clicks Start New Booking, landing on Appointment Details (step 1).

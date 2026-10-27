@@ -83,11 +83,20 @@ def _await_page(page, step: Dict[str, Any], timeout_ms: int) -> None:
         import re as _re
 
         # A LIST MEANS "any of these". VFS words the same page differently
-        # between routes and revisions — AE-NOR's summary was configured
-        # against "Add another applicant" and the live page also identifies
-        # itself by an "Applicant 1" heading. Accepting either keeps the gate
-        # specific (both phrases appear ONLY on the summary) without loosening
-        # it to a substring that the form page would also match.
+        # between routes and revisions, so a gate gets several phrasings of the
+        # page it is looking for.
+        #
+        # *** EVERY PHRASE IN THE LIST MUST BE UNIQUE TO THE PAGE. *** A list
+        # is an OR, so the gate is only as specific as its LOOSEST entry: one
+        # phrase that also appears on the previous page defeats the whole gate,
+        # and the stricter entries do not help. AE-NOR's details_summary once
+        # listed "Applicant 1" alongside "Add another applicant" on the belief
+        # that both were summary-only; "Applicant 1" is the heading of the Your
+        # Details FORM as well, so on 2026-10-27 (run 6ae0489f76c1dd) the gate
+        # reported arrival at the summary while the walk was still on the form
+        # whose Save VFS had just discarded. The run then failed two steps
+        # later, in select_slot, with a message about a URL - nowhere near the
+        # fault. Prefer one exact phrase to three approximate ones.
         wanted = text if isinstance(text, (list, tuple)) else [text]
         wanted = [str(w) for w in wanted if str(w).strip()]
         if not wanted:
