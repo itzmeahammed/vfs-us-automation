@@ -171,8 +171,22 @@ def test_client_without_an_account_is_skipped(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_disabled_by_default(monkeypatch):
-    """The master switch is OFF, so nothing fires without a deliberate opt-in."""
+def test_nothing_fires_while_disabled(monkeypatch):
+    """The master switch gates everything: off means not one registration.
+
+    This used to be called test_disabled_by_default and set nothing, reading
+    the real config instead. That stopped testing the gate the day the shipped
+    default flipped: config/config.ini now carries
+    `auto_trigger_enabled = true`, because this operator wants slot checks to
+    fire real runs. The switch is therefore set OFF here explicitly, which is
+    the convention tests/conftest.py states for every other switch.
+    """
+    from src.settings import settings
+    cfg = settings()
+    monkeypatch.setattr(cfg.waitlist, "auto_trigger_enabled", False,
+                        raising=False)
+    monkeypatch.setattr("src.settings.settings", lambda: cfg)
+
     called = []
     monkeypatch.setattr(autotrigger, "_handle_one",
                         lambda *a, **k: called.append(a))

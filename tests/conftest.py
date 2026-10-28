@@ -101,3 +101,49 @@ def _no_real_mailboxes_or_background_watcher(monkeypatch):
         monkeypatch.setattr(background, "start", lambda: False)
     except Exception:                                   # noqa: BLE001
         pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_job_history(tmp_path, monkeypatch):
+    """Keeps the suite out of the REAL `logs/api_jobs/jobs.jsonl`.
+
+    2026-10-28: the web app reported 44 booking runs for the day. Three were
+    real. The other 42 were `test_autobook.py` — it books ROUTE "AE-NOR" for
+    requests "r1"/"t1", and `attempt_job._append` resolves JOBS_FILE at call
+    time, so every run of the suite appended a fake booking to the live job
+    history.
+
+    That is not merely untidy. The API re-reads the history whenever its mtime
+    changes (JobManager._absorb_external), so the fakes reached the dashboard;
+    18 of them reported "succeeded", inflating the success rate; and 42 records
+    a day evict genuine ones from the in-memory registry, whose ceiling is
+    job_history_limit (100). The one log an operator consults to answer "did
+    this job register anyone?" was being filled with runs that never happened.
+
+    Autouse rather than per-file: the history is a global that the API module,
+    the autobook child and the supervisor all reach, and the next test to spawn
+    an attempt would reintroduce it. Both the env vars and the already-imported
+    module constants are set — the env var alone is too late for a module that
+    read it at import, and the constant alone does not reach a child process.
+    """
+    directory = tmp_path / "api-jobs"
+    history = directory / "jobs.jsonl"
+
+    monkeypatch.setenv("VFSAPI_JOB_HISTORY_FILE", str(history))
+    monkeypatch.setenv("VFSAPI_JOB_LOG_DIR", str(directory))
+
+    from src.booking import attempt_job
+    monkeypatch.setattr(attempt_job, "JOBS_FILE", str(history))
+    monkeypatch.setattr(attempt_job, "LOG_DIR", str(directory))
+
+    # get_settings() is lru_cached, so the env vars above miss an instance that
+    # was already built. Patch the live object too; pydantic may refuse, and a
+    # refusal is not worth failing a test over when the two above still hold.
+    try:
+        from src.api.core.config import get_settings
+        current = get_settings()
+        monkeypatch.setattr(current, "job_history_file", history)
+        monkeypatch.setattr(current, "job_log_dir", directory)
+    except Exception:                                   # noqa: BLE001
+        pass
+    yield

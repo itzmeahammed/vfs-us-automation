@@ -834,3 +834,20 @@ def test_the_cli_routes_a_request_walk_through_the_tracked_path(
                      "--walk", "--started-by", "sara"])
     assert code == 3
     assert seen == {"request_id": "r1", "commit": False, "started_by": "sara"}
+
+
+def test_the_suite_cannot_write_to_the_real_job_history():
+    """The guard behind conftest._isolate_job_history, asserted from inside.
+
+    If this fails, running the suite is appending fake bookings to the log an
+    operator reads to answer "did this job register anyone?" — and the API
+    re-reads that file on mtime change, so they reach the dashboard too. That
+    is how 42 of the 44 "runs" shown for 2026-10-28 came to be this file.
+    """
+    from src.booking import attempt_job
+
+    real = (REPO_ROOT / "logs" / "api_jobs" / "jobs.jsonl").resolve()
+    assert Path(attempt_job.JOBS_FILE).resolve() != real, (
+        "attempt_job.JOBS_FILE points at the live job history")
+    assert Path(attempt_job.LOG_DIR).resolve() != real.parent, (
+        "attempt_job.LOG_DIR points at the live job log directory")
