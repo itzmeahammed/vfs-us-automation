@@ -1,0 +1,33 @@
+{
+  "description": "UAE -> Japan. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
+  "mode": "slot-check",
+  "slot_check": {
+    "_comment_labels": "Labels must be UNIQUE within a route — a waitlist client file names the combination it wants by label, and duplicates would silently resolve to whichever came first.",
+    "combinations": [
+      {
+        "label": "Abu Dhabi - E-Visa Tourist Single Entry",
+        "centre": "Japan Visa Application Centre, Abu Dhabi",
+        "category": "E-Visa - *Tourist Single Entry",
+        "sub_category": "Single Entry Tourism General"
+      },
+      {
+        "label": "Dubai - E-Visa Tourist Single Entry",
+        "centre": "Japan Visa Application Centre, Dubai",
+        "category": "E-Visa - *Tourist Single Entry",
+        "sub_category": "Single Entry Tourism General"
+      },
+      {
+        "label": "Sharjah - E-Visa Tourist Single Entry",
+        "centre": "Japan VAC - TEL - Sharjah",
+        "category": "E-Visa - *Tourist Single Entry",
+        "sub_category": "Single Entry Tourism General"
+      },
+      {
+        "label": "Al Ain - E-Visa Tourist Single Entry",
+        "centre": "Temporary Enrolment Location - Al Ain",
+        "category": "E-Visa - *Tourist Single Entry",
+        "sub_category": "Single Entry Tourism General"
+      }
+    ]
+  }
+}
