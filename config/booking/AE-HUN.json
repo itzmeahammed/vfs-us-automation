@@ -49,7 +49,7 @@
         "name": "Continue"
       },
       "pre_submit_js": "document.querySelectorAll('button[disabled]').forEach(b => { b.removeAttribute('disabled'); b.classList.remove('mat-mdc-button-disabled'); b.disabled = false; })",
-      "_comment_pre_submit_js": "Force-enable Continue when no slots are shown. Needed to walk past this page and capture the remaining pages' DOM."
+      "_comment_pre_submit_js": "DRY RUNS ONLY. walk.py refuses to run this on a commit run: it strips `disabled` off EVERY button on the page, and VFS disables Continue to say there is nothing to book. It exists so a mapping run can reach the later pages and capture their DOM. A commit run hitting the no-slots banner stops there instead \u2014 see NO_SLOTS_PATTERNS in src/booking/walk.py."
     },
     {
       "name": "your_details",
@@ -183,7 +183,8 @@
       },
       "commits": false,
       "strategy": "earliest",
-      "pre_submit_js": "document.querySelectorAll('button[disabled]').forEach(b => { b.removeAttribute('disabled'); b.classList.remove('mat-mdc-button-disabled'); b.disabled = false; })"
+      "pre_submit_js": "document.querySelectorAll('button[disabled]').forEach(b => { b.removeAttribute('disabled'); b.classList.remove('mat-mdc-button-disabled'); b.disabled = false; })",
+      "_comment_pre_submit_js": "DRY RUNS ONLY. walk.py refuses to run this on a commit run: it strips `disabled` off EVERY button on the page, and VFS disables Continue to say there is nothing to book. It exists so a mapping run can reach the later pages and capture their DOM. A commit run hitting the no-slots banner stops there instead \u2014 see NO_SLOTS_PATTERNS in src/booking/walk.py."
     },
     {
       "name": "services",

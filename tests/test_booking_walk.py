@@ -2130,3 +2130,86 @@ def test_no_countdown_means_no_extra_settle(monkeypatch):
     walk_mod._dwell(_Page(), {"name": "services"}, "dwell_seconds", "why")
 
     assert slept == []
+
+
+# ── "no slots" must stop a commit run, not be clicked past ───────────────────
+#
+# AE-HUN, 2026-10-28: Appointment Details showed "We are sorry out no
+# appointment slots are currently available" with Continue disabled, and the
+# step's pre_submit_js stripped `disabled` off every button so the walk clicked
+# on. The slot_pick path had been gated to dry runs after the 2026-10-22
+# incident; the generic submit path had not.
+
+
+BANNER = ("We are sorry out no appointment slots are currently available. "
+          "New slots open at regular intervals, please try again later")
+
+
+class _BannerPage(_StuckPage):
+    """Appointment Details with the no-slots banner and a dead Continue."""
+
+    def __init__(self, text=None):
+        super().__init__(
+            text=text if text is not None else
+            "Appointment Details" + chr(10) + BANNER + chr(10) + "Continue",
+            url="https://visa.vfsglobal.com/are/en/hun/appointment-details")
+        self.evaluated = []
+
+    def evaluate(self, js, *a, **kw):
+        self.evaluated.append(js)
+        return None
+
+
+def test_the_no_slots_banner_is_detected():
+    from src.booking import walk
+
+    assert walk._no_slots_banner(_BannerPage()) == BANNER
+
+
+def test_a_page_with_slots_is_not_mistaken_for_an_empty_one():
+    from src.booking import walk
+
+    page = _BannerPage(text="Appointment Details" + chr(10) + "Continue")
+    assert walk._no_slots_banner(page) == ""
+
+
+def test_every_no_slots_phrase_is_matched_case_and_space_insensitively():
+    from src.booking import walk
+
+    from src.vfs_bot.turnstile import NO_SLOTS_PHRASES
+
+    for phrase in NO_SLOTS_PHRASES:
+        loud = "  " + phrase.upper().replace(" ", "   ") + "  "
+        page = _BannerPage(text="Appointment Details" + chr(10) + loud)
+        assert walk._no_slots_banner(page), phrase
+
+
+def test_an_unreadable_page_is_not_called_empty():
+    """A read failure must not become "VFS has no slots" — that is a guess."""
+    from src.booking import walk
+
+    class Blind(_BannerPage):
+        def inner_text(self, selector, timeout=0):
+            raise RuntimeError("detached")
+
+    assert walk._no_slots_banner(Blind()) == ""
+
+
+def test_the_force_enable_is_declared_dry_run_only_in_every_config():
+    """The three configs that carry it must say what it is for."""
+    import glob
+    import json
+
+    found = 0
+    for path in sorted(glob.glob("config/booking/*.json")):
+        with open(path, encoding="utf-8") as fh:
+            steps = json.load(fh).get("steps", [])
+        for step in steps:
+            if not step.get("pre_submit_js"):
+                continue
+            found += 1
+            note = step.get("_comment_pre_submit_js", "")
+            assert "DRY RUNS ONLY" in note, (
+                f"{path} step {step.get('name')!r} "
+                "force-enables buttons without saying it is dry-run only")
+    assert found, "no config carries pre_submit_js — did the key get renamed?"

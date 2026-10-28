@@ -71,6 +71,24 @@ ENABLE_TIMEOUT_MS = 20000
 #: for, and cheaper than the 45s the downstream gate was burning anyway.
 ADVANCE_TIMEOUT_MS = 20000
 
+
+#: The portal's own words for "there is nothing to book here".
+#:
+#: *** NO SLOTS IS A HARD STOP ON A COMMIT RUN. ***
+#:
+#: VFS renders one of these banners and DISABLES Continue. Three route
+#: configs (AE-FRA, AE-HUN, AE-NLD) carry a pre_submit_js that strips
+#: `disabled` off every button on the page, so that a DRY run can walk on and
+#: capture the later pages' DOM. That force-enable ran on commit runs too,
+#: which pushed a real booking past an empty Appointment Details page with the
+#: banner still on screen (AE-HUN, 2026-10-28) — the same fault as the
+#: 2026-10-22 slot_pick incident, reached by the other code path.
+#:
+#: The words themselves live in turnstile.NO_SLOTS_PHRASES, next to
+#: BLOCKING_PHRASES, so the inline banner and the "Reminder" modal are
+#: recognised by ONE list. Two lists would drift, and the one that drifted
+#: would be the one that lets a commit run through.
+
 #: How many months forward to search for an available date. VFS opens on the
 #: current month and the offered dates are routinely weeks out, so reading only
 #: the first month reports "no slots" while the portal is showing plenty.
@@ -888,6 +906,28 @@ def _rejection_reason(page) -> str:
 #:
 #: It also makes retention trivial: a run folder is the unit you delete, so
 #: nothing has to reason about which of 199 files belonged together.
+def _no_slots_banner(page) -> str:
+    """VFS's "nothing to book" sentence as it appears, or "" if absent.
+
+    Returns the portal's OWN sentence rather than a flag, so the stop reason
+    quotes the page instead of paraphrasing it. Read from the body text, not
+    from the button state, because the pre_submit_js below removes exactly the
+    `disabled` attribute the button state would be read from.
+    """
+    from src.vfs_bot.turnstile import NO_SLOTS_PHRASES
+
+    try:
+        text = page.inner_text("body", timeout=5000) or ""
+    except Exception:                                       # noqa: BLE001
+        return ""
+    for line in text.splitlines():
+        collapsed = " ".join(line.split())
+        low = collapsed.lower()
+        if any(phrase in low for phrase in NO_SLOTS_PHRASES):
+            return collapsed
+    return ""
+
+
 CAPTURE_ROOT = "runs"
 
 
@@ -1143,7 +1183,13 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
     from src.booking import config as booking_config
     from src.payment.gateway import (PaymentDeclined, PaymentSubmitted,
                                      StoppedForTesting)
-    from src.vfs_bot.turnstile import BlockingDialogError
+    from src.vfs_bot import turnstile
+    from src.vfs_bot.turnstile import BlockingDialogError, NoSlotsDialogError
+
+    # A mapping run may click through the no-slots modal to reach the later
+    # pages; a commit run may not. Set per run, not per step, because the modal
+    # can appear at any step.
+    turnstile.ALLOW_NO_SLOTS_CLICKTHROUGH = bool(dry_run)
     from src.waitlist.register import _await_page, _click
     from src.waitlist.errors import WaitlistStepError
 
@@ -1288,12 +1334,34 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
 
             submit = step.get("submit")
             if submit:
-                # Force-enable: if the step declares pre_submit_js, run it
-                # before checking the button. This exists for portals that
-                # disable Continue when no slots are available — the walk
-                # still needs to reach the later pages to capture their DOM.
+                # *** NO SLOTS IS A HARD STOP. ***
+                #
+                # Checked BEFORE pre_submit_js, because that JS strips the
+                # very `disabled` attribute VFS uses to say so. A commit run
+                # that walks past this banner is booking nothing and may still
+                # reach the payment page, so it stops here instead.
+                banner = _no_slots_banner(page)
+                if banner and not dry_run:
+                    raise WaitlistStepError(
+                        f"Step '{name}': VFS says there is nothing to book "
+                        f"here — \"{banner}\" The portal disabled Continue for "
+                        f"that reason, so the run stops. Nothing was booked and "
+                        f"nothing was charged. This clears by itself when VFS "
+                        f"opens slots for this centre and category.")
+
+                # Force-enable, DRY RUNS ONLY: the JS removes `disabled` from
+                # every button on the page so the walk can reach the later
+                # pages and capture their DOM. On a commit run that means
+                # clicking a Continue the portal disabled on purpose.
                 pre_js = step.get("pre_submit_js")
-                if pre_js:
+                if pre_js and not dry_run:
+                    log.warning(
+                        f"  '{name}' declares pre_submit_js — NOT running it on "
+                        "a commit run: it force-enables disabled buttons.")
+                elif pre_js:
+                    if banner:
+                        log.warning(f"  '{name}': VFS says {banner!r} — dry run, "
+                                    "forcing past it to map the later pages.")
                     log.info(f"  running pre_submit_js on '{name}'...")
                     page.evaluate(pre_js)
                     page.wait_for_timeout(500)
@@ -1402,6 +1470,23 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
             result.stopped_at = name
             result.reason = str(e)
             result.payment_submitted = True
+            return result
+
+        except NoSlotsDialogError as e:
+            # An ordinary stop, NOT result.blocked: no human needs to do
+            # anything and the next scheduled attempt is free to run. The only
+            # thing that must not happen is walking on past it.
+            log.warning(f"Stopped at '{name}': {e}")
+            report.ok = False
+            report.detail = str(e)
+            report.url = page.url
+            report.page_text = _page_text(page)
+            if capture != CAPTURE_OFF:
+                report.image_path = _capture_shot(page, f"{name}_NO_SLOTS",
+                                                  route)
+            result.steps.append(report)
+            result.stopped_at = name
+            result.reason = str(e)
             return result
 
         except BlockingDialogError as e:

@@ -232,6 +232,39 @@ def test_waitlist_rows_always_carry_the_last_run(api):
         assert "last_status" in row and "last_run_at" in row
 
 
+def test_live_rows_carry_the_last_run_too(api):
+    """2026-10-28: a live client that had run twice read "Last run: Never".
+
+    The waitlist branch filled these from its journal and the live branch
+    filled nothing, so the web app had no run history for the whole flow that
+    actually books and pays.
+    """
+    body = api.get("/v1/clients?flow=live", headers=HEADERS).json()
+    for row in body["items"]:
+        assert isinstance(row["run_count"], int)
+        assert "last_status" in row and "last_run_at" in row
+
+
+def test_both_flows_report_the_last_run_in_the_same_shape(api):
+    """One column renders both, so a null on one flow is a rendering bug."""
+    body = api.get("/v1/clients", headers=HEADERS).json()
+    assert body["items"], "there are clients on disk to list"
+    for row in body["items"]:
+        assert row["run_count"] is not None, (
+            f"{row['client_id']} ({row['flow']}) has no run_count, so its "
+            "row cannot say whether it has ever run")
+
+
+def test_a_run_count_matches_having_run(api):
+    """run_count and last_run_at must agree: one without the other is a lie."""
+    body = api.get("/v1/clients", headers=HEADERS).json()
+    for row in body["items"]:
+        if row.get("run_count"):
+            assert row.get("last_run_at"), (
+                f"{row['client_id']} reports {row['run_count']} run(s) but no "
+                "last_run_at, so the UI shows Never next to a run count")
+
+
 def test_an_unknown_include_is_refused(api):
     r = api.get("/v1/clients?include=journal", headers=HEADERS)
     assert r.status_code == 422

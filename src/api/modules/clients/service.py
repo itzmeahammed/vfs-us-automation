@@ -192,6 +192,11 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
                 "date_from": str(start or ""), "date_to": str(end or ""),
                 "test_mode": bool(req.data.get("test_mode")),
                 "appointment": req.data.get("booked") or None,
+                # Without these a live client read "Last run: Never" however
+                # many times it had run — the waitlist branch above filled
+                # them from its journal and this one filled nothing
+                # (ahmed-travel-ae-hun-87afd0, 2026-10-28, after 2 runs).
+                **req.last_run(),
                 "runnable": None, "problem_count": None,
             })
             if not search.matches(rows[-1], needle, _SEARCHABLE):

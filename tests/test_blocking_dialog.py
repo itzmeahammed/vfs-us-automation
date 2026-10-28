@@ -207,3 +207,84 @@ def test_walk_result_has_the_blocked_flag():
     from src.booking.walk import WalkResult
 
     assert WalkResult().blocked is False
+
+
+# --------------------------------------------------------------------------- #
+# The no-slots modal: a Continue button that does not continue                 #
+# --------------------------------------------------------------------------- #
+#
+# AE-HUN, run a4b89472b37384f8, 2026-10-28. After Save on Your Details VFS
+# showed "Reminder We are sorry but no appointment slots are currently
+# available", this dismissed it via Continue, and the run walked two more pages
+# with no appointment selected before dying.
+
+NO_SLOTS_MODAL = ("Reminder We are sorry but no appointment slots are currently "
+                  "available. New slots open at regular intervals, please try "
+                  "again later Continue")
+
+
+@pytest.fixture(autouse=True)
+def _commit_run():
+    """Default every test here to a COMMIT run, whatever ran before it."""
+    before = turnstile.ALLOW_NO_SLOTS_CLICKTHROUGH
+    turnstile.ALLOW_NO_SLOTS_CLICKTHROUGH = False
+    yield
+    turnstile.ALLOW_NO_SLOTS_CLICKTHROUGH = before
+
+
+def test_the_no_slots_modal_RAISES_on_a_commit_run():
+    page = FakePage(NO_SLOTS_MODAL)
+
+    with pytest.raises(turnstile.NoSlotsDialogError):
+        turnstile.dismiss_wait_dialog(page)
+
+
+def test_the_no_slots_modal_is_NEVER_clicked_on_a_commit_run():
+    page = FakePage(NO_SLOTS_MODAL)
+
+    with pytest.raises(turnstile.NoSlotsDialogError):
+        turnstile.dismiss_wait_dialog(page)
+
+    assert page.dialog.clicked == [], (
+        "The no-slots modal was CLICKED. Its button says Continue; what it "
+        "does is hide the reason the run cannot continue.")
+
+
+def test_a_mapping_run_may_still_click_through():
+    """A dry run exists to reach the later pages, and this modal is in its way."""
+    turnstile.ALLOW_NO_SLOTS_CLICKTHROUGH = True
+    page = FakePage(NO_SLOTS_MODAL)
+
+    turnstile.dismiss_wait_dialog(page)        # must not raise
+
+    assert page.dialog.clicked == ["Continue"]
+
+
+def test_no_slots_is_not_a_blocked_account():
+    """They need opposite responses: one waits, one needs a human.
+
+    Subclassing BlockingDialogError would have parked every client in
+    needs_attention every time VFS ran out of slots.
+    """
+    assert not issubclass(turnstile.NoSlotsDialogError, BlockingDialogError)
+
+
+def test_a_booking_in_flight_outranks_no_slots():
+    """Both phrases in one modal must raise the one that needs a human."""
+    page = FakePage(REAL_BLOCKER + " no appointment slots are currently available")
+
+    with pytest.raises(BlockingDialogError):
+        turnstile.dismiss_wait_dialog(page)
+
+
+def test_the_no_slots_check_runs_before_the_dismiss_loop():
+    """Same property the blocker test pins: prevented, not regretted."""
+    import inspect
+
+    source = inspect.getsource(turnstile.dismiss_wait_dialog)
+    check = source.index("NO_SLOTS_PHRASES")
+    loop = source.index('for label in ("Continue"')
+
+    assert check < loop, (
+        "the no-slots check runs after the dismiss loop, so the modal is "
+        "already clicked by the time it is recognised")

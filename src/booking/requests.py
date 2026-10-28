@@ -99,6 +99,14 @@ KEEP_FOREVER_EVENTS = frozenset({
     "expired", "confirmed_by_email",
 })
 
+#: Events that END an attempt. Used to report how the last run finished.
+#: Human actions (edited/enabled/disabled/resolved) are NOT here: they change
+#: the record, they are not an outcome of running it.
+ATTEMPT_OUTCOMES = frozenset({
+    "attempt_failed", "booked", "needs_attention", "skipped",
+    "test_passed", "test_failed", "test_stopped",
+})
+
 #: THE BILLING COUNTRY, FIXED. Every applicant this system books for is
 #: resident in the UAE and the gateway's country select offers one usable
 #: option, so this is not a field a caller supplies — normalise() overwrites
@@ -193,6 +201,31 @@ class BookingRequest:
     @property
     def created_at(self) -> str:
         return str(self.data.get("created_at", ""))
+
+    def last_run(self) -> Dict[str, Any]:
+        """When this client last RAN, and how that run ended.
+
+        The "Last run" column of a client list. Read from the history and NOT
+        from `last_event_at`, because an edit, an enable or a disable stamps
+        that too: a client parked this morning but last run a week ago would
+        report today. `run_count` comes from the `attempts` counter rather
+        than from counting history entries, because the history is pruned.
+
+        Empty strings, not None, for a client that has never run — the caller
+        renders "Never" either way and a missing key reads as "not asked for".
+        """
+        started = outcome = ""
+        for entry in self.data.get("history") or []:
+            event = str(entry.get("event") or "")
+            if event == "attempt_started":
+                started, outcome = str(entry.get("at") or ""), ""
+            elif started and event in ATTEMPT_OUTCOMES:
+                outcome = event
+        return {
+            "last_run_at": started,
+            "last_status": outcome,
+            "run_count": int(self.data.get("attempts") or 0),
+        }
 
     def window(self) -> tuple:
         from src.booking.walk import date_window

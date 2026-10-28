@@ -210,17 +210,26 @@ class ClientSummary(BaseModel):
                     "`include=status`. Call GET /clients/{id} for the detail.",
     )
 
-    # --- include=journal --------------------------------------------------
+    # --- the last run ------------------------------------------------------
+    # Always present, both flows. `include=journal` is gone; the descriptions
+    # still named it and still described only the waitlist flow, while the
+    # live branch filled none of these at all.
     last_status: Optional[str] = Field(
         default=None,
-        description="Outcome of this client's most recent registration attempt "
-                    "(success, failed, pending, dry_run). Null unless "
-                    "`include=journal`, or if they have never run.",
+        description="How this client's most recent run ended. flow=waitlist: "
+                    "the journal outcome (success, failed, pending, dry_run). "
+                    "flow=live: the history event that ended the attempt "
+                    "(attempt_failed, booked, needs_attention, skipped, "
+                    "test_passed, test_failed, test_stopped). Empty or null "
+                    "if they have never run.",
     )
     last_run_at: Optional[str] = Field(
         default=None,
-        description="When that attempt finished (or started, if it is still "
-                    "running). Null unless `include=journal`.",
+        description="When that run happened, UTC. flow=waitlist: when the "
+                    "attempt finished (or started, if still running). "
+                    "flow=live: when the attempt STARTED — read from the "
+                    "history, so parking or editing the client does not move "
+                    "it. Empty or null if they have never run.",
     )
     vfs_reference: Optional[str] = Field(
         default=None,
@@ -230,8 +239,7 @@ class ClientSummary(BaseModel):
     )
     run_count: Optional[int] = Field(
         default=None,
-        description="How many registration attempts this client has made. "
-                    "Null unless `include=journal`.",
+        description="How many times this client has been run. 0 if never.",
     )
 class ClientListResponse(BaseModel):
     """A client listing.

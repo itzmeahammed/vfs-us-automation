@@ -351,6 +351,16 @@ def wait_with_captcha_check(page, total_ms: int, step_ms: int = 3000) -> None:
 # ===== VFS's own 'please wait' reminder dialog ===============================
 
 
+class NoSlotsDialogError(Exception):
+    """VFS saying, in a modal, that there is nothing to book.
+
+    *** DELIBERATELY NOT A BlockingDialogError. *** That one means the account
+    already has a booking in flight and a human must look at it. This one is
+    ordinary and self-clearing: no slots today, try again later. Conflating the
+    two would park every client in needs_attention every time VFS runs dry.
+    """
+
+
 class BlockingDialogError(Exception):
     """A VFS modal that means STOP, not "click Continue".
 
@@ -396,6 +406,30 @@ BLOCKING_PHRASES = (
     "duplicate",
     "pending payment",
 )
+
+#: VFS saying there is nothing to book — inline on Appointment Details, and in
+#: a "Reminder" modal after Save. *** THE MODAL'S ONLY BUTTON SAYS CONTINUE,
+#: AND CLICKING IT IS NOT CONTINUING. *** It dismisses the notice and leaves the
+#: run walking pages with no appointment selected. On 2026-10-28 (AE-HUN, run
+#: a4b89472b37384f8) this was dismissed at your_details and the run went two
+#: pages further before dying with no slot and no explanation.
+#:
+#: Read by walk._no_slots_banner too, so the inline banner and the modal are
+#: recognised by the same words. Substring match on lowered, space-collapsed
+#: text.
+NO_SLOTS_PHRASES = (
+    "no appointment slots are currently available",
+    "no appointment slots available",
+    "no slots are currently available",
+    "currently no slots are available",
+    "new slots open at regular intervals",
+)
+
+#: Set True for the duration of a DRY/mapping run, by walk_flow. A mapping run
+#: exists to reach the later pages and capture their DOM, and the no-slots modal
+#: is the thing in its way. A COMMIT run must never set this.
+ALLOW_NO_SLOTS_CLICKTHROUGH = False
+
 
 
 def dismiss_wait_dialog(page) -> None:
@@ -444,6 +478,22 @@ def dismiss_wait_dialog(page) -> None:
                 f"The portal says: \"{one_line}\" — check the account before "
                 f"running again."
             )
+
+    # AFTER the blocking check (a double-booking warning outranks this) and
+    # BEFORE the dismiss loop, for the same reason that one is: the click that
+    # must not happen has to be prevented, not regretted.
+    if not ALLOW_NO_SLOTS_CLICKTHROUGH:
+        for phrase in NO_SLOTS_PHRASES:
+            if phrase in text:
+                one_line = " ".join(raw.split())
+                raise NoSlotsDialogError(
+                    f"VFS says there is nothing to book here: \"{one_line}\" "
+                    f"Its Continue button only dismisses that notice, so the run "
+                    f"stops instead of walking on with no appointment selected. "
+                    f"Nothing was booked and nothing was charged — this clears "
+                    f"by itself when VFS opens slots."
+                )
+
 
     if not any(k in text for k in ("wait", "reminder", "received", "please")):
         return

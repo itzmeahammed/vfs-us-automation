@@ -1,4 +1,4 @@
-"""One-line web-app errors (src/utils/public_errors.py), against the REAL
+"""One-line web-app errors (src/utils/pe.py), against the REAL
 failure texts the system produced on 2026-10-22."""
 
 from __future__ import annotations
@@ -154,3 +154,68 @@ def test_an_unexpected_crash_reaches_the_web_app_as_unidentified():
     public = record.to_public()
     assert public["detail"] == pe.UNIDENTIFIED
     assert public["error"]["message"] == pe.UNIDENTIFIED
+
+
+# --------------------------------------------------------------------------- #
+# The fallback must not invent a cause                                          #
+# --------------------------------------------------------------------------- #
+#
+# 2026-10-28: the client feed showed "Proxy connection failed trying after 15
+# minutes again" for an AE-HUN run that stopped because VFS had no slots. No
+# proxy was involved. The sentence names a cause and a remedy, so an unmatched
+# message does not read as "we do not know" — it reads as a proxy outage.
+
+NO_SLOTS_STOP = (
+    "MANUAL (x@y.com): stopped at 'appointment_details' before payment: "
+    "Step 'appointment_details': VFS says there is nothing to book here — "
+    "\"We are sorry but no appointment slots are currently available. New "
+    "slots open at regular intervals, please try again later\" The portal "
+    "disabled Continue for that reason, so the run stops.")
+
+STUCK_FORM = (
+    "Step 'details_summary': page never showed 'Add another applicant' or "
+    "'Your Details Summary'. The page is showing: Your Details | Applicant 1.")
+
+DISCARDED_SUBMIT = (
+    "Step 'your_details': the submit was clicked but the page did not move — "
+    "still at https://visa.vfsglobal.com/are/en/hun/your-details after 20s.")
+
+
+def test_no_slots_is_not_reported_as_a_proxy_failure():
+    message = pe.public_message(NO_SLOTS_STOP)
+
+    assert message != pe.FALLBACK
+    assert "proxy" not in message.lower()
+    assert "no appointment slots" in message
+
+
+def test_no_slots_says_no_money_moved():
+    """An agent reading this must not have to ask whether the card was hit."""
+    message = pe.public_message(NO_SLOTS_STOP)
+
+    assert "nothing was charged" in message.lower()
+
+
+def test_a_stuck_form_is_not_reported_as_a_proxy_failure():
+    for raw in (STUCK_FORM, DISCARDED_SUBMIT):
+        message = pe.public_message(raw)
+        assert message != pe.FALLBACK, raw
+        assert "proxy" not in message.lower(), raw
+
+
+def test_every_no_slots_phrase_the_walk_knows_has_a_public_sentence():
+    """The two lists must not drift: a phrase walk.py stops on but
+    public_errors does not recognise becomes a false proxy report."""
+    from src.vfs_bot.turnstile import NO_SLOTS_PHRASES
+
+    for phrase in NO_SLOTS_PHRASES:
+        message = pe.public_message(f"Step 'x': VFS says {phrase}.")
+        assert message != pe.FALLBACK, (
+            f"{phrase!r} stops a run but has no public sentence, so the feed "
+            "reports it as a proxy failure")
+
+
+def test_a_real_proxy_failure_still_says_proxy():
+    """The wording is right where it is true — only the catch-all was wrong."""
+    assert "Proxy" in pe.public_message(
+        "net::ERR_TUNNEL_CONNECTION_FAILED at https://visa.vfsglobal.com")

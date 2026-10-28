@@ -85,6 +85,22 @@ _RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
      "VFS has no appointment available in the requested dates."),
     (("no time slots", "no bookable time slot"),
      "VFS showed no bookable time for the chosen date."),
+    # VFS's own "nothing to book" banner and modal — walk.NO_SLOTS_PHRASES.
+    # Matched HERE and not left to the fallback: this is the single most
+    # common reason a booking run stops, it is nobody's fault, and it needs no
+    # action. Reported as a proxy failure (2026-10-28) it read as a bug in the
+    # bot and sent the operator looking at the proxy pool.
+    (("no appointment slots are currently available",
+      "no appointment slots available", "nothing to book",
+      "new slots open at regular intervals", "no slots are currently available",
+      "currently no slots are available"),
+     "VFS has no appointment slots for this centre and category right now. "
+     "Nothing was booked and nothing was charged; the bot will try again."),
+    # A submit VFS accepted and discarded, and the page gate that catches it.
+    # Both mean the same thing to an agent: the form did not move on.
+    (("did not move", "page never showed", "discarded the click",
+      "minimum wait has not elapsed"),
+     "VFS did not accept the booking form and stayed on the same page."),
     (("could not select '",),
      "VFS did not offer the requested option on its booking form."),
     # ── the connection to VFS ────────────────────────────────────────────────
