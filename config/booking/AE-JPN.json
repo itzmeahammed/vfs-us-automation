@@ -1,0 +1,215 @@
+{
+  "description": "UAE -> Japan booking. SCAFFOLD built from AE-NOR's confirmed shape; NOTHING here has been checked against this portal yet.",
+  "extends": "_default",
+  "enabled": false,
+  "_comment_enabled": "OFF until `python -m src.booking probe -sc AE -dc JPN --walk --keep-open --hold 1800` resolves every field and one dry run reaches review-pay. Each field is copied from AE-NOR and marked UNVERIFIED until then.",
+  "steps": [
+    {
+      "name": "start_booking",
+      "type": "start_booking",
+      "entry": "new",
+      "submit": {
+        "selector": "button:has-text('Start New Booking')"
+      },
+      "before": "appointment_details"
+    },
+    {
+      "name": "appointment_details",
+      "type": "form",
+      "url_contains": "application-detail",
+      "fields": [
+        {
+          "name": "centre",
+          "label": "Choose your Application Centre",
+          "widget": "mat-select",
+          "value": "{{centre}}",
+          "required": true,
+          "control": "centerCode"
+        },
+        {
+          "name": "category",
+          "label": "Choose your appointment category",
+          "widget": "mat-select",
+          "value": "{{category}}",
+          "required": true,
+          "control": "selectedSubvisaCategory",
+          "_comment_control": "THE CONTROL NAMES ARE COUNTER-INTUITIVE — 'Choose your appointment category' is selectedSubvisaCategory and 'Choose your sub-category' is visaCategoryCode. Verified across multiple routes."
+        },
+        {
+          "name": "sub_category",
+          "label": "Choose your sub-category",
+          "widget": "mat-select",
+          "value": "{{sub_category}}",
+          "required": true,
+          "control": "visaCategoryCode"
+        }
+      ],
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      }
+    },
+    {
+      "name": "your_details",
+      "type": "form",
+      "after": "appointment_details",
+      "url_contains": "your-details",
+      "_comment": "UNVERIFIED — fields copied from AE-NOR. Walk the page to confirm which fields Japan actually shows.",
+      "fields": [
+        {
+          "name": "first_name",
+          "label": "First Name",
+          "widget": "text",
+          "value": "{{first_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "last_name",
+          "label": "Last Name",
+          "widget": "text",
+          "value": "{{last_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "passport_number",
+          "label": "Passport Number",
+          "widget": "text",
+          "value": "{{passport_number|upper}}",
+          "required": true
+        },
+        {
+          "name": "phone_country_code",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 0,
+          "value": "{{phone_country_code}}",
+          "required": true
+        },
+        {
+          "name": "phone_number",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 1,
+          "value": "{{phone_number}}",
+          "required": true
+        },
+        {
+          "name": "email",
+          "label": "Email",
+          "widget": "text",
+          "value": "{{email}}",
+          "required": true
+        }
+      ],
+      "dwell_seconds": 5,
+      "submit": {
+        "role": "button",
+        "name": "Save"
+      }
+    },
+    {
+      "name": "details_summary",
+      "type": "form",
+      "after": "your_details",
+      "url_contains": "your-details",
+      "fields": [],
+      "wait_for_text": ["Add another applicant", "Your Details Summary"],
+      "_comment": "UNVERIFIED — summary page between Your Details and Book Appointment. Same shape as AE-NOR.",
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      }
+    },
+    {
+      "name": "select_slot",
+      "type": "slot_pick",
+      "after": "details_summary",
+      "url_contains": "book-appointment",
+      "_comment": "UNVERIFIED — calendar and time slot selectors copied from AE-NOR.",
+      "appointment_type": {
+        "label": "Choose a slot",
+        "if_present": true
+      },
+      "calendar": {
+        "container": "full-calendar",
+        "month_title": ".fc-toolbar-title",
+        "next_month": "button.fc-next-button",
+        "prev_month": "button.fc-prev-button",
+        "available_day": "td.fc-daygrid-day.date-availiable",
+        "day_date_attribute": "data-date",
+        "_comment_available_day": "date-availiable has three i's — VFS's own typo, shared across routes."
+      },
+      "time_slots": {
+        "container": "table.ba-slot-table",
+        "row": "tr.hidden-item",
+        "time_cell": "td[id^='tv']",
+        "select": "label.ba-slot-radio-label",
+        "select_inner": "div.ba-slot-radio-label-text1"
+      },
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      },
+      "commits": false,
+      "strategy": "earliest"
+    },
+    {
+      "name": "services",
+      "type": "form",
+      "after": "select_slot",
+      "url_contains": "services",
+      "_comment": "UNVERIFIED — optional paid add-ons. Nothing is added.",
+      "fields": [],
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      }
+    },
+    {
+      "name": "review_pay",
+      "type": "form",
+      "after": "services",
+      "commits": false,
+      "url_contains": "review-pay",
+      "_comment": "UNVERIFIED — review page before payment.",
+      "fields": [
+        {
+          "name": "accept_terms",
+          "label": "I accept the",
+          "widget": "checkbox",
+          "value": true,
+          "required": true,
+          "wrapper": "div.ot-checkbox"
+        },
+        {
+          "name": "marketing_consent",
+          "label": "Yes, I agree to receive future communication",
+          "widget": "checkbox",
+          "value": false,
+          "required": false,
+          "if_present": true,
+          "wrapper": "div.ot-checkbox"
+        }
+      ]
+    },
+    {
+      "name": "payment",
+      "type": "payment",
+      "after": "review_pay",
+      "processor": "CYBERSOURCE",
+      "commits": true,
+      "_comment": "UNVERIFIED — payment gateway. Processor assumed CYBERSOURCE (same as AE-NOR).",
+      "submit": {
+        "selector": "button#trigger"
+      },
+      "disclaimer": {
+        "role": "button",
+        "name": "Continue"
+      }
+    },
+    {
+      "name": "confirmation",
+      "remove": true
+    }
+  ]
+}

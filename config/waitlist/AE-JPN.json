@@ -1,0 +1,117 @@
+{
+  "description": "UAE -> Japan waitlist registration. SCAFFOLD built from AE-NOR's waitlist shape; NOTHING here has been checked against this portal yet.",
+  "extends": "_default",
+  "enabled": false,
+  "_comment_enabled": "OFF until `python -m src.waitlist doctor --route AE-JPN --walk` resolves every field and one dry run reaches review-pay.",
+  "steps": [
+    {
+      "name": "your_details",
+      "_comment_dwell": "UNVERIFIED. 30s countdown + 2s margin; the countdown varies by session.",
+      "dwell_seconds": 32,
+      "_comment_fields": "UNVERIFIED — field list from AE-NOR waitlist. Gender and Passport Expiry are if_present since they vary by route.",
+      "fields": [
+        {
+          "name": "first_name",
+          "label": "First Name",
+          "widget": "text",
+          "value": "{{first_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "last_name",
+          "label": "Last Name",
+          "widget": "text",
+          "value": "{{last_name|upper}}",
+          "required": true
+        },
+        {
+          "name": "gender",
+          "label": "Gender",
+          "widget": "mat-select",
+          "value": "{{gender}}",
+          "required": true,
+          "if_present": true,
+          "exact": true
+        },
+        {
+          "name": "nationality",
+          "label": "Current Nationality",
+          "widget": "mat-select",
+          "value": "{{nationality}}",
+          "required": true
+        },
+        {
+          "name": "passport_number",
+          "label": "Passport Number",
+          "widget": "text",
+          "value": "{{passport_number|upper}}",
+          "required": true
+        },
+        {
+          "name": "passport_expiry",
+          "selector": "input#passportExpirtyDate",
+          "widget": "date",
+          "value": "{{passport_expiry|date:%d/%m/%Y}}",
+          "required": true,
+          "if_present": true
+        },
+        {
+          "name": "phone_country_code",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 0,
+          "value": "{{phone_country_code|digits}}",
+          "required": true
+        },
+        {
+          "name": "phone_number",
+          "label": "Contact number",
+          "widget": "text",
+          "index": 1,
+          "value": "{{phone_number|digits}}",
+          "required": true
+        },
+        {
+          "name": "email",
+          "label": "Email",
+          "widget": "text",
+          "value": "{{email}}",
+          "required": true
+        }
+      ],
+      "submit": {
+        "role": "button",
+        "name": "Save"
+      }
+    },
+    {
+      "name": "review_pay",
+      "wait_for_text": "I accept the",
+      "_comment_checkboxes": "UNVERIFIED — the two consents shared across routes.",
+      "fields": [
+        {
+          "name": "accept_terms",
+          "label": "I accept the",
+          "widget": "checkbox",
+          "index": 0,
+          "value": true,
+          "required": true
+        },
+        {
+          "name": "agree_waitlist",
+          "label": "Yes, I agree for waitlist confirmation",
+          "widget": "checkbox",
+          "value": true,
+          "required": true
+        }
+      ]
+    }
+  ],
+  "confirmation": {
+    "_comment": "UNVERIFIED — tighten success_text once the real confirmation headline is seen.",
+    "success_text": [
+      "waitlisted"
+    ],
+    "reference_pattern": "\\b([A-Z]{3,4}\\d{9,})\\b"
+  }
+}
