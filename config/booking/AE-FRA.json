@@ -46,7 +46,7 @@
           "value": "{{sub_category}}",
           "required": true,
           "control": "visaCategoryCode",
-          "_comment": "France's sub-category dropdown repeats the category values. CONFIRMED options: 'Long Stay (staying min 90 days)', 'Prime Time (any purpose)', 'Short Stay (any purpose)', 'Short Stay - Business'."
+          "_comment": "France's sub-category dropdown does NOT repeat the category values — that was true when this was written and is not now. Observed live 2026-10-28: sub-category offers 'Short Stay (Business)' where category offers 'Short Stay - Business', and 'Temporary Location - Damac Hills' where category offers 'Temporary Location-Damac Hills'. The value comes from the client record's sub_category, so a client written against the old wording selects nothing: matching is a case-insensitive SUBSTRING of the offered label. See config/routes/AE-FRA.json."
         }
       ],
       "submit": {

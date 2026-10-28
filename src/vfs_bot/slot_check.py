@@ -14,6 +14,7 @@ tests/test_slot_check.py).
 """
 
 import logging
+import re
 
 from src.settings import settings
 from src.slots import store as slot_store
@@ -59,6 +60,59 @@ def _visible_option_texts(page, limit: int = 40) -> list:
     return texts
 
 
+def _normalised(text) -> str:
+    """A label reduced to its words, for comparing wording that VFS rephrased.
+
+    Lowercased with every run of non-alphanumerics collapsed to one space, so
+    'Short Stay - Business', 'Short Stay (Business)' and 'short stay business'
+    are all the same string. Punctuation is exactly what VFS changes without
+    notice, and exactly what carries no meaning in these labels.
+    """
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _reworded_option(page, value: str):
+    """The one option that differs from `value` only in punctuation.
+
+    *** LAST RESORT, AND IT MUST BE UNAMBIGUOUS. ***
+
+    On 2026-10-16 VFS renamed two AE-FRA sub-categories by punctuation alone
+    and the exact-substring match above found nothing, so both combinations
+    errored on every run for nine days. The portal reworded the label; it did
+    not remove the option.
+
+    Requires EXACTLY ONE match. With two candidates the right one would be a
+    guess, and guessing which visa sub-category to select is not a thing to do
+    on a form that leads to a payment. Raises otherwise, so the caller still
+    logs the real options and the config still gets fixed.
+    """
+    want = _normalised(value)
+    texts = _visible_option_texts(page)
+    if not want or not texts:
+        raise RuntimeError(f"no option matching {value!r} and none on offer")
+
+    hits = [i for i, t in enumerate(texts) if _normalised(t) == want]
+    if len(hits) != 1:
+        # Same substring rule as the exact pass, on the normalised form — the
+        # config value must still be contained in the offered label, never the
+        # other way round, or a shorter option could swallow a longer request.
+        hits = [i for i, t in enumerate(texts) if want in _normalised(t)]
+    if len(hits) != 1:
+        raise RuntimeError(
+            f"{len(hits)} option(s) match {value!r} once punctuation is "
+            f"ignored; need exactly 1. Offered: {texts}")
+
+    matched = texts[hits[0]]
+    # LOUD, and it names both strings: the selection worked, but the config is
+    # now wrong and silent self-healing is how drift becomes permanent.
+    logging.warning(
+        f"Matched {value!r} to the portal's {matched!r} by ignoring "
+        f"punctuation. THE ROUTE CONFIG IS STALE — update it to {matched!r}; "
+        "this fallback requires a unique match and will stop working the "
+        "moment VFS adds a similar option.")
+    return page.get_by_role("option").nth(hits[0])
+
+
 def _click_option(page, value: str, option_timeout_ms: int) -> None:
     """Find and click the option matching `value`; raises if it can't.
 
@@ -73,7 +127,13 @@ def _click_option(page, value: str, option_timeout_ms: int) -> None:
     except Exception:
         # a11y-name match failed — try a raw text-substring match instead.
         option = page.locator("mat-option").filter(has_text=value).first
-        option.wait_for(state="visible", timeout=6000)
+        try:
+            option.wait_for(state="visible", timeout=6000)
+        except Exception:
+            # Both exact passes failed. Before giving up, check whether the
+            # option is simply SPELLED differently now.
+            option = _reworded_option(page, value)
+            option.wait_for(state="visible", timeout=6000)
     option.scroll_into_view_if_needed(timeout=5000)
     try:
         option.click(timeout=8000)
@@ -487,6 +547,13 @@ def run_slot_check(page, schema: dict, source_country_code: str,
     # structured (combo, message) entries so it can show the category and
     # sub-category, not just the centre.
     send_slot_report(source_country_code, destination_country_code, report_entries)
+
+    # SEPARATE from the slot report, which stays silent when nothing has
+    # availability. A combination that could not be SELECTED was never read,
+    # so "no slots" is not what we learned about it — see combo_alerts.
+    from src.utils import combo_alerts
+    combo_alerts.notify(
+        f"{source_country_code}-{destination_country_code}", report_entries)
 
     # Separately notify (success chat) about any waitlist-only combinations —
     # the slot report above intentionally ignores them (they carry no date).
