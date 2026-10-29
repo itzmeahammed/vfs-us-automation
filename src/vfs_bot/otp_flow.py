@@ -161,7 +161,7 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
       * "image" (default) — OpenAI reads the code from the PNG attachment, with
         per-submit re-reads to recover a misread (Italy, etc.).
       * "text"            — the code is plain text in the email body; read it
-        directly with NO AI (Greece). See src/utils/greece_otp.py.
+        directly with NO AI (Greece). See src/utils/text_otp.py.
 
     `on_poll` (optional) is called once per wait iteration and may raise. The
     bot passes its network-block classifier here so a VFS 403 that lands AFTER
@@ -242,9 +242,9 @@ def verify_otp(page, otp_selector: str, email_id: str, password: str,
     # it directly (no AI, and no re-read loop — the text is deterministic) and
     # submit once. A rejection is retryable: a fresh browser triggers a new OTP.
     if (otp_mode or "").lower() == "text":
-        from src.utils import greece_otp
+        from src.utils import text_otp
         try:
-            code = greece_otp.extract_code(mail, otp_len)
+            code = text_otp.extract_code(mail, otp_len)
         except Exception as e:
             diagnostics.take_final_screenshot(page, "otp_read_failed")
             raise OtpReadError(f"Could not read the OTP: {e}") from e

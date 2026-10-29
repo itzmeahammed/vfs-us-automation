@@ -252,12 +252,20 @@ class BookingRequest:
         fields["enabled"] = True
         return Registrant(self.request_id, fields)
 
+    #: Write-only credentials: accepted, stored, NEVER returned. Reported as a
+    #: boolean so a form can show "set / not set" without reading the value.
+    #: account_email_password is the MAILBOX (Roundcube/IMAP) password, which
+    #: is NOT the VFS portal password — see src/utils/credentials.py.
+    WRITE_ONLY_KEYS = ("account_password", "account_email_password")
+
     def public_view(self) -> Dict[str, Any]:
-        """Everything except the account password. Passport data IS returned:
+        """Everything except the stored passwords. Passport data IS returned:
         the web app that submitted it is the one reading it back."""
-        view = {k: v for k, v in self.data.items() if k != "account_password"}
+        view = {k: v for k, v in self.data.items()
+                if k not in self.WRITE_ONLY_KEYS}
         view["request_id"] = self.request_id
-        view["has_account_password"] = bool(self.data.get("account_password"))
+        for key in self.WRITE_ONLY_KEYS:
+            view[f"has_{key}"] = bool(self.data.get(key))
         return view
 
 
@@ -269,6 +277,46 @@ class BookingRequest:
 def _problem(field: str, message: str, hint: str = ""):
     from src.waitlist.validate import Problem
     return Problem(field=field, message=message, hint=hint)
+
+
+#: Agents book with their own VFS accounts, which must be on a domain whose
+#: mailbox the bot can read — otherwise the emailed OTP is unreachable.
+#: Overridable so the rule is not welded to one company's domain.
+DEFAULT_ACCOUNT_DOMAIN = "travnook.com"
+
+
+def booking_account_domain() -> str:
+    """The domain a booking account must be on ([booking] account_domain).
+
+    '' disables the restriction entirely, for a deployment that reads its OTP
+    mail somewhere else.
+    """
+    try:
+        from src.utils.config_reader import get_config_value
+        value = get_config_value("booking", "account_domain",
+                                 DEFAULT_ACCOUNT_DOMAIN)
+    except Exception:                                       # noqa: BLE001
+        return DEFAULT_ACCOUNT_DOMAIN
+    return str(value if value is not None else "").strip().lstrip("@").lower()
+
+
+def route_needs_mailbox(route: str) -> bool:
+    """Does booking this route require reading the account's mailbox?
+
+    True when any booking step is an "email_otp" — VFS demands an emailed code
+    mid-booking there (France). Read from the step list rather than a separate
+    flag so adding the step to a route cannot forget to set one.
+    """
+    try:
+        from src.booking import config as booking_config
+
+        for mode in booking_config.entry_modes(route):
+            for step in booking_config.steps_for(route, mode):
+                if step.get("type") == "email_otp" and not step.get("disabled"):
+                    return True
+    except Exception:                                       # noqa: BLE001
+        return False
+    return False
 
 
 def route_combos(route: str) -> List[str]:
@@ -449,6 +497,36 @@ def precheck(request_id: str, data: Dict[str, Any],
                 hint="Send account + account_password with the request, or "
                      "have the operator set the shared account ([waitlist] "
                      "account / account_password in config/config.local.ini)."))
+
+    # --- the mailbox the bot reads the OTP from ---------------------------- #
+    #
+    # France asks for an emailed one-time password between Your Details and the
+    # slot picker (config/booking/AE-FRA.json, step "email_otp"). The bot reads
+    # that code from the account's own mailbox, so on such a route the account
+    # must be one whose mailbox we can log into, and the MAILBOX password must
+    # be supplied — it is a different secret from the portal password and is
+    # never derived from it.
+    #
+    # Checked HERE, at the form, and not left to the web app alone: getting it
+    # wrong is only discovered three pages into a live booking, with the
+    # applicant's details already submitted to VFS, and that run is then spent.
+    if route_ok and route_needs_mailbox(route):
+        account = str(data.get("account") or "").strip()
+        domain = booking_account_domain()
+        if account and domain and not account.lower().endswith("@" + domain):
+            problems.append(_problem(
+                "account", f"{route} books with an emailed OTP, so the account "
+                           f"must be an @{domain} address whose mailbox the "
+                           f"bot can read.",
+                hint=f"\"{account}\" is not on @{domain}. An agent's own VFS "
+                     f"account is fine as long as it is on that domain."))
+        if account and not str(data.get("account_email_password") or "").strip():
+            problems.append(_problem(
+                "account_email_password",
+                f"Required for booking: {route} asks for an emailed OTP and "
+                f"the bot needs the MAILBOX password for {account} to read it.",
+                hint="This is the Roundcube/webmail password, NOT the VFS "
+                     "portal password in account_password."))
 
     return problems
 
@@ -754,26 +832,61 @@ STALE_SECONDS = 3 * 3600
 DEAD_PROCESS_GRACE_SECONDS = 120
 
 
-def _attempt_pid(req: "BookingRequest") -> Optional[int]:
-    """The pid of the run that put this request into 'booking', if known."""
+#: What the job record says about the run that owns a 'booking' request.
+RUN_ALIVE = "alive"          # the child is still working — leave it alone
+RUN_GONE = "gone"            # the child is not there any more
+RUN_UNKNOWN = "unknown"      # no usable evidence; fall back to STALE_SECONDS
+
+
+def _attempt_run_state(req: "BookingRequest"):
+    """(state, pid) for the run that put this request into 'booking'.
+
+    *** A JOB RECORD IN A TERMINAL STATE DOES NOT MEAN THE CHILD REPORTED. ***
+
+    This used to return a pid only when the job record said "running", on the
+    reasoning that a finished record meant the child got far enough to report.
+    That holds for a clean exit and is false for a killed one. A cancelled job
+    is SIGTERMed: the child dies between pages and never writes its own
+    terminal event, so the job record says `cancelled` while the request still
+    says `booking`.
+
+    The old code read that as "not stuck on a dead process", returned None, and
+    left the request sitting in 'booking' for the full three hours — during
+    which it was not armed, nothing retried, and the web app showed a booking
+    that had already been cancelled. Seen on 2026-10-29 with
+    testfrance-october-ae-fra-51bcaf and job 23122689e59e3fb1.
+
+    The inference the other way round is sound and is what this uses: flag_stale
+    only ever looks at requests whose status is still BOOKING, so if the job
+    record is terminal, the child cannot have written a terminal event. The
+    process is the evidence — a terminal job record is proof it is gone.
+    """
     for entry in reversed(req.data.get("history") or []):
         if entry.get("event") == "attempt_started":
             run_id = str(entry.get("run_id") or "")
             if not run_id:
-                return None
+                return RUN_UNKNOWN, None
             try:
                 from src.booking import attempt_job
                 record = attempt_job.find(run_id)
             except Exception:                               # noqa: BLE001
-                return None
-            # A finished record means the child got far enough to report, so
-            # the request is not stuck on a dead process.
-            if not record or record.get("status") != "running":
-                return None
-            return record.get("pid")
+                return RUN_UNKNOWN, None
+            if not record:
+                return RUN_UNKNOWN, None
+            if str(record.get("status")) != "running":
+                # Terminal record + request still BOOKING = the child was
+                # stopped before it could report. No pid to check: it is gone.
+                return RUN_GONE, record.get("pid")
+            pid = record.get("pid")
+            try:
+                from src.booking import attempt_job
+                alive = attempt_job.is_running(pid)
+            except Exception:                               # noqa: BLE001
+                alive = True        # unknown counts as alive — the safe way
+            return (RUN_ALIVE if alive else RUN_GONE), pid
         if entry.get("event") in ("booked", "needs_attention", "resolved"):
-            return None
-    return None
+            return RUN_UNKNOWN, None
+    return RUN_UNKNOWN, None
 
 
 def flag_stale(now: Optional[float] = None) -> List[str]:
@@ -807,17 +920,12 @@ def flag_stale(now: Optional[float] = None) -> List[str]:
             reason = ("the booking process stopped reporting 3h ago (crash or "
                       "reboot?). Whether it booked or paid is unknown.")
         elif age > DEAD_PROCESS_GRACE_SECONDS:
-            pid = _attempt_pid(req)
-            if pid is not None:
-                try:
-                    from src.booking import attempt_job
-                    alive = attempt_job.is_running(pid)
-                except Exception:                           # noqa: BLE001
-                    alive = True
-                if not alive:
-                    reason = ("the booking process exited without reporting "
-                              f"(pid {pid} is gone). Whether it booked or paid "
-                              "is unknown.")
+            state, pid = _attempt_run_state(req)
+            if state == RUN_GONE:
+                where = f"pid {pid} is gone" if pid else "its process is gone"
+                reason = ("the booking process exited without reporting "
+                          f"({where}). Whether it booked or paid "
+                          "is unknown.")
         if reason:
             record_event(req.request_id, "needs_attention", reason,
                          status=NEEDS_ATTENTION)

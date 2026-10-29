@@ -137,6 +137,60 @@ def test_a_dead_booking_process_is_noticed_in_minutes(store_dir, monkeypatch,
     assert "booked or paid is unknown" in req.data["last_error"]
 
 
+def test_a_cancelled_job_does_not_leave_the_request_booking_for_three_hours(
+        store_dir, monkeypatch, tmp_path):
+    """Cancelling a job SIGTERMs the child, so it never reports its own
+    outcome. The job record goes terminal while the request still says
+    'booking'.
+
+    This used to read as "the child got far enough to report" and the request
+    sat in 'booking' for the full STALE_SECONDS — not armed, nothing retried,
+    and the web app polling a feed for an outcome that would not arrive for
+    three hours. Seen with testfrance-october-ae-fra-51bcaf on 2026-10-29.
+    """
+    from src.booking import attempt_job
+
+    monkeypatch.setattr(attempt_job, "JOBS_FILE", str(tmp_path / "jobs.jsonl"))
+    _make()
+    store.record_event(CLIENT, "attempt_started", "going",
+                       status=store.BOOKING, run_id="killedrun")
+    attempt_job.started("killedrun", request_id=CLIENT, route="AE-NOR")
+    attempt_job.finished("killedrun", request_id=CLIENT, route="AE-NOR",
+                         status="cancelled", detail="Cancelled via API.")
+    # The pid may well still be alive — a terminated child's pid gets reused.
+    # The job record being terminal is the evidence, not the pid.
+    monkeypatch.setattr(attempt_job, "is_running", lambda pid: True)
+
+    assert store.flag_stale(now=time.time()) == [], "inside the grace period"
+
+    later = time.time() + store.DEAD_PROCESS_GRACE_SECONDS + 60
+    assert store.flag_stale(now=later) == [CLIENT]
+    req = store.get(CLIENT)
+    assert req.status == store.NEEDS_ATTENTION
+    assert "booked or paid is unknown" in req.data["last_error"]
+
+
+@pytest.mark.parametrize("terminal", ["cancelled", "failed", "timed_out",
+                                      "unknown"])
+def test_any_terminal_job_with_the_request_still_booking_is_gone(
+        store_dir, monkeypatch, tmp_path, terminal):
+    """flag_stale only looks at BOOKING requests, so a terminal job record
+    proves the child never wrote its terminal event, whatever killed it."""
+    from src.booking import attempt_job
+
+    monkeypatch.setattr(attempt_job, "JOBS_FILE", str(tmp_path / "jobs.jsonl"))
+    _make()
+    store.record_event(CLIENT, "attempt_started", "going",
+                       status=store.BOOKING, run_id="rr")
+    attempt_job.started("rr", request_id=CLIENT, route="AE-NOR")
+    attempt_job.finished("rr", request_id=CLIENT, route="AE-NOR",
+                         status=terminal, detail="stopped")
+    monkeypatch.setattr(attempt_job, "is_running", lambda pid: True)
+
+    later = time.time() + store.DEAD_PROCESS_GRACE_SECONDS + 60
+    assert store.flag_stale(now=later) == [CLIENT]
+
+
 def test_a_booking_still_running_is_left_alone(store_dir, monkeypatch, tmp_path):
     from src.booking import attempt_job
 

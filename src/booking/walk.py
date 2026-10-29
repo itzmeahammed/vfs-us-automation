@@ -1165,7 +1165,9 @@ class _PaymentRun:
 def walk_flow(page, route: str, to_step: Optional[str] = None,
               dry_run: bool = True, entry: str = "waitlist",
               values: Optional[Dict[str, Any]] = None,
-              capture: str = DEFAULT_CAPTURE) -> WalkResult:
+              capture: str = DEFAULT_CAPTURE,
+              account_email: str = "",
+              mailbox_password: str = "") -> WalkResult:
     """Walk the configured booking steps from wherever the page currently is.
 
     `dry_run` (default) refuses to submit the committing step — the run stops in
@@ -1179,6 +1181,13 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
     a screenshot only when a step fails, "full" adds the rendered DOM of every
     page, "off" writes nothing. See CAPTURE_MODES above for why the failure
     case is not simply dropped.
+
+    `account_email` / `mailbox_password` are the account this run signed in as
+    and ITS MAILBOX password, needed only by an "email_otp" step — VFS asks for
+    an emailed code mid-booking on some routes. They are passed in rather than
+    read from `values` because the template context deliberately carries no
+    credentials: `as_context()` exposes the applicant's `email`, never the
+    account or either password.
     """
     from src.booking import config as booking_config
     from src.payment.gateway import (PaymentDeclined, PaymentSubmitted,
@@ -1262,6 +1271,21 @@ def walk_flow(page, route: str, to_step: Optional[str] = None,
                         page.wait_for_timeout(500)
                     else:
                         raise
+            elif step.get("type") == "email_otp":
+                # VFS asks for an emailed code between Your Details and the
+                # slot picker. Not the sign-in OTP (src/vfs_bot/otp_flow.py) —
+                # see src/booking/otp_step.py for why the two are separate and
+                # why Generate is clicked exactly once.
+                from src.booking import otp_step as otp_mod
+
+                if not otp_mod.is_asked(page, step):
+                    log.info(f"  {name}: VFS is not asking for an OTP this "
+                             "session — skipping.")
+                    report.detail = "not asked this session"
+                else:
+                    report.detail = otp_mod.verify(
+                        page, step, account_email=account_email,
+                        mailbox_password=mailbox_password, dry_run=dry_run)
             elif step.get("type") == "form" and step.get("fields"):
                 _fill_form(page, step, report, values or {}, timeout_ms)
             elif step.get("scroll_to_bottom"):

@@ -77,8 +77,18 @@ _RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     (("login form never appeared", "loginformnotready", "login failed",
       "loginbounced", "dashboardnotreached"),
      "VFS's login page did not load."),
+    # The MID-BOOKING OTP (src/booking/otp_step.py), which is a different
+    # failure from the sign-in one below and has a different fix. Listed first
+    # because the table is first-hit-wins and "otp" below would swallow it.
+    # Reported as "VFS's login code (OTP) could not be completed" on
+    # 2026-10-29 it read as a login problem, on a run that had logged in fine
+    # and filled three pages.
+    (("mailbox password", "read the code", "otp email", "generate otp",
+      "emailed otp", "no otp input", "nothing to read with"),
+     "VFS asked for a one-time password during booking and the bot could not "
+     "complete it. Nothing was booked and nothing was charged."),
     (("otp", "one-time"),
-     "VFS's login code (OTP) could not be completed."),
+     "VFS's one-time password (OTP) step could not be completed."),
     # ── VFS availability ─────────────────────────────────────────────────────
     (("no appointment is available", "no date inside the window",
       "nothing inside the window", "no dates in range"),

@@ -700,7 +700,15 @@ def run_probe(source: str, dest: str,
             result.walk = _do_walk(page, route, result, to_step, entry,
                                    _walk_values(route, combo, person,
                                                 applicant),
-                                   commit=commit, capture=capture)
+                                   commit=commit, capture=capture,
+                                   # For an "email_otp" step only. `resolved`
+                                   # is the account this run signed in as;
+                                   # email_password is its MAILBOX password and
+                                   # is '' when unconfigured — otp_step refuses
+                                   # with that named, never falling back to the
+                                   # portal password.
+                                   account_email=resolved.email,
+                                   mailbox_password=resolved.email_password)
 
             # A walk that stopped short is exactly when the session is worth
             # most: the page it could not pass is on screen, logged in, one
@@ -1000,7 +1008,8 @@ def _walk_values(route: str, combo: str, person,
 
 def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
              entry: str = "waitlist", values: Optional[Dict[str, Any]] = None,
-             commit: bool = False, capture: str = ""):
+             commit: bool = False, capture: str = "",
+             account_email: str = "", mailbox_password: str = ""):
     """Click 'Book Now' on the chosen row, then walk the booking pages.
 
     Only reached with --walk. Everything it does is REVERSIBLE: confirmed with
@@ -1029,7 +1038,8 @@ def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
                  "walking from the entry step.")
         return walk_flow(page, route, to_step=to_step, entry=entry,
                          values=values or {}, dry_run=not commit,
-                         capture=capture)
+                         capture=capture, account_email=account_email,
+                         mailbox_password=mailbox_password)
 
     # Prefer the client's own row; otherwise the only bookable one. Never guess
     # between several — the same rule the runner will follow.
@@ -1088,7 +1098,8 @@ def _do_walk(page, route: str, result: "ProbeResult", to_step: Optional[str],
     log.info(f"Now at {page.url}")
 
     return walk_flow(page, route, to_step=to_step, dry_run=not commit,
-                     capture=capture)
+                     capture=capture, account_email=account_email,
+                     mailbox_password=mailbox_password)
 
 
 def _go_to_dashboard(page, login_url: str) -> None:

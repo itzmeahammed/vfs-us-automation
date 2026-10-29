@@ -9,7 +9,8 @@ TWO SECURITY RULES, both load-bearing:
 1. **Secrets go in, never out.** Client payloads now carry VFS account
    passwords (the web app supplies per-client credentials). They are persisted
    0600 and are NEVER echoed back in a response, NEVER logged, and reported
-   only as a boolean "has_account_password". `_public_view()` is the single
+   only as booleans "has_account_password" / "has_account_email_password".
+   `_public_view()` is the single
    choke point — if a field would leak, it leaks there and nowhere else.
 
 2. **Created ≠ armed.** A new client is written with `enabled: false` unless
@@ -46,7 +47,10 @@ log = logging.getLogger("vfs.api.clients")
 
 
 # Keys never returned to a caller, in any endpoint.
-_SECRET_KEYS = frozenset({"account_password", "password", "proxy"})
+# account_email_password is the MAILBOX password an agent supplies for an
+# OTP route; it is as secret as the portal password and not the same value.
+_SECRET_KEYS = frozenset({"account_password", "account_email_password",
+                          "password", "proxy"})
 
 # Keys shown only as a masked/derived value.
 _MASKED_KEYS = frozenset({"passport_number", "date_of_birth", "email",
@@ -79,8 +83,12 @@ def _public_view(registrant_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
             out[key] = _mask(value)
             continue
         out[key] = value
-    # Report the presence of a pinned account without revealing the password.
+    # Report the presence of a pinned account without revealing the passwords.
+    # Two of them on an OTP route: the VFS portal one and the MAILBOX one the
+    # bot needs to read the emailed code. A form shows "set / not set" from
+    # these and never receives either value.
     out["has_account_password"] = bool(data.get("account_password"))
+    out["has_account_email_password"] = bool(data.get("account_email_password"))
     return out
 
 

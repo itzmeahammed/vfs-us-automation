@@ -24,7 +24,38 @@ Before any real payment, check once:
 - the card is set (`python -m src.payment card`)
 - the SMS relay is online (`python -m src.otp_relay devices`)
 
-### Start everything
+### Restart after a code change
+
+**One command. Use this one.**
+
+```powershell
+.\restart.ps1
+```
+
+Replaces the API process, waits for `/v1/health`, leaves the tunnel alone, and
+reports whether the slot checker is enabled.
+
+**Why a script and not `-StartApi`:** the API loads everything at import and
+serves jobs from memory, so a code change is invisible until the process is
+replaced. `start_tunnel.ps1 -StartApi` does NOT do that - it only starts an API
+when none is answering, so against a healthy old process it prints
+`[ok] API healthy` and changes nothing. On 2026-10-28 four fixes sat unserved
+for a day for exactly that reason.
+
+**Why it leaves ngrok running:** `ngrok/ngrok.yml` reserves no domain, so the
+free tier issues a NEW public URL on every ngrok restart - and that URL is the
+webhook the web app calls. Restarting the API under the existing tunnel keeps
+the URL. Only pass `-Tunnel` when you want a new one:
+
+```powershell
+.\restart.ps1 -Tunnel      # also restarts ngrok; PRINTS A NEW PUBLIC URL
+```
+
+It refuses to restart while a booking is in flight, because booking jobs are
+children of the API: one killed after the Pay click leaves a payment nobody can
+account for. Answer `yes` to override.
+
+### Start everything from cold
 
 ```powershell
 # Terminal 1: API (keep open). Reads .env.api. Restart it after any code change.
@@ -40,6 +71,8 @@ Enable-ScheduledTask  -TaskName "VFS Slot Checker"
 Get-ScheduledTaskInfo -TaskName "VFS Slot Checker" | Format-List LastRunTime, LastTaskResult, NextRunTime
 ```
 
+Once it is up, `.\restart.ps1` is the only command you need for a code change.
+
 ### Run the slot checker now
 
 ```powershell
@@ -53,7 +86,11 @@ python -m src.supervisor -sc AE -dc NOR --local    # one route, no proxy
 
 ```powershell
 Disable-ScheduledTask -TaskName "VFS Slot Checker"  # pause the slot checker (and auto-book)
-# API / ngrok: Ctrl+C in their terminals
+# API / ngrok: Ctrl+C in their terminals, or, when restart.ps1 started
+# the API (it runs hidden, so there is no terminal to Ctrl+C):
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -match 'src.api' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
 
 ---

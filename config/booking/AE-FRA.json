@@ -1,11 +1,8 @@
 {
   "_comment": "UAE -> France booking flow. Built from AE-NOR's proven config — VFS runs the same Angular app across portals, so the page sequence and selectors are shared. The FIELD LIST and combo values are what differ.",
-
   "extends": "_default",
-
   "enabled": true,
   "_comment_enabled": "ARMED for walking/capturing. The steps are copied from Norway's proven flow; field lists and selectors need confirmation against France's actual DOM.",
-
   "steps": [
     {
       "name": "start_booking",
@@ -54,7 +51,7 @@
         "name": "Continue"
       },
       "pre_submit_js": "document.querySelectorAll('button[disabled]').forEach(b => { b.removeAttribute('disabled'); b.classList.remove('mat-mdc-button-disabled'); b.disabled = false; })",
-      "_comment_pre_submit_js": "DRY RUNS ONLY. walk.py refuses to run this on a commit run: it strips `disabled` off EVERY button on the page, and VFS disables Continue to say there is nothing to book. It exists so a mapping run can reach the later pages and capture their DOM. A commit run hitting the no-slots banner stops there instead \u2014 see NO_SLOTS_PATTERNS in src/booking/walk.py."
+      "_comment_pre_submit_js": "DRY RUNS ONLY. walk.py refuses to run this on a commit run: it strips `disabled` off EVERY button on the page, and VFS disables Continue to say there is nothing to book. It exists so a mapping run can reach the later pages and capture their DOM. A commit run hitting the no-slots banner stops there instead — see NO_SLOTS_PATTERNS in src/booking/walk.py."
     },
     {
       "name": "your_details",
@@ -160,16 +157,51 @@
       "after": "your_details",
       "url_contains": "your-details",
       "fields": [],
-      "wait_for_text": ["Add another applicant", "Your Details Summary"],
+      "wait_for_text": [
+        "Add another applicant",
+        "Your Details Summary"
+      ],
       "submit": {
         "role": "button",
         "name": "Continue"
       }
     },
     {
+      "name": "email_otp",
+      "type": "email_otp",
+      "after": "details_summary",
+      "url_contains": "your-details",
+      "if_present": true,
+      "present_when": "text=One-time Password (OTP)",
+      "_comment": "VFS asks for an emailed code between Your Details and Book Appointment. Observed on job 4cb31459180a1750 (2026-10-29): both form pages submitted, then this panel appeared and 'select_slot' waited 45s for a book-appointment URL that was never coming. \"if_present\" because VFS does NOT ask on every session.",
+      "panel_text": "One-time Password (OTP)",
+      "generate": {
+        "role": "button",
+        "name": "Generate OTP"
+      },
+      "input": {
+        "selector": "input[placeholder='OTP']"
+      },
+      "_comment_input": "Falls back to otp_step.INPUT_SELECTORS when this one misses, so a reworded placeholder does not cost a run.",
+      "verify": {
+        "role": "button",
+        "name": "Verify"
+      },
+      "submit": {
+        "role": "button",
+        "name": "Continue"
+      },
+      "mail_wait_seconds": 100,
+      "_comment_mail_wait": "The page says the code is valid for 3 minutes, so waiting longer returns a code it has already expired — and submitting a dead code spends one of a rationed number of verify attempts.",
+      "otp_mode": "text",
+      "_comment_otp_mode": "The mail is plain text: 'The OTP for your application with VFS Global is 160064. The OTP will expire in 3 mins.' — read with src/utils/greece_otp.py, no AI. Deterministic, so a re-read of the same mail cannot differ, which otp_step relies on when VFS rejects a code. Drop this key to fall back to body-then-image.",
+      "submit_attempts": 2,
+      "_comment_submit_attempts": "Submissions of a RE-READ of the same email, never regenerations. The page states: 'You have left 3 attempt of generating new OTP. After crossing limit You will be logged off.' — and being logged off here abandons a completed application form."
+    },
+    {
       "name": "select_slot",
       "type": "slot_pick",
-      "after": "details_summary",
+      "after": "email_otp",
       "url_contains": "book-appointment",
       "appointment_type": {
         "label": "Choose a slot",
@@ -198,7 +230,7 @@
       "commits": false,
       "strategy": "earliest",
       "pre_submit_js": "document.querySelectorAll('button[disabled]').forEach(b => { b.removeAttribute('disabled'); b.classList.remove('mat-mdc-button-disabled'); b.disabled = false; })",
-      "_comment_pre_submit_js": "DRY RUNS ONLY. walk.py refuses to run this on a commit run: it strips `disabled` off EVERY button on the page, and VFS disables Continue to say there is nothing to book. It exists so a mapping run can reach the later pages and capture their DOM. A commit run hitting the no-slots banner stops there instead \u2014 see NO_SLOTS_PATTERNS in src/booking/walk.py."
+      "_comment_pre_submit_js": "DRY RUNS ONLY. walk.py refuses to run this on a commit run: it strips `disabled` off EVERY button on the page, and VFS disables Continue to say there is nothing to book. It exists so a mapping run can reach the later pages and capture their DOM. A commit run hitting the no-slots banner stops there instead — see NO_SLOTS_PATTERNS in src/booking/walk.py."
     },
     {
       "name": "services",

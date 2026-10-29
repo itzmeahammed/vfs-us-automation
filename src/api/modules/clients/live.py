@@ -73,8 +73,16 @@ class BookingRequestFields(BaseModel):
                                                     "false is sent.")
     account: Optional[str] = Field(default=None, description="VFS account to book "
                                    "under. Omit to use the shared booking account.")
-    account_password: Optional[str] = Field(default=None, description="Stored, "
-                                            "never returned.")
+    account_password: Optional[str] = Field(default=None, description="The VFS "
+                                            "PORTAL password. Stored, never "
+                                            "returned.")
+    account_email_password: Optional[str] = Field(
+        default=None,
+        description="The MAILBOX (Roundcube/IMAP) password for `account` — NOT "
+                    "the portal password above. Required on a route whose "
+                    "booking asks for an emailed OTP (France): the bot reads "
+                    "the code from that mailbox. Stored, never returned; "
+                    "`has_account_email_password` reports whether it is set.")
 
 
 class BookingRequestCreate(BookingRequestFields):
@@ -222,9 +230,12 @@ def replace_request(request_id: str,
     existing = _get_or_404(request_id)
     data = payload.model_dump(exclude_none=True)
     # A password is never sent back out, so a PUT that omits it keeps it.
-    if data.get("account") == existing.data.get("account") and not data.get("account_password"):
-        if existing.data.get("account_password"):
-            data["account_password"] = existing.data["account_password"]
+    # Both of them: an edit that changes a date must not silently clear the
+    # mailbox password and leave the next OTP run with nothing to read with.
+    if data.get("account") == existing.data.get("account"):
+        for key in ("account_password", "account_email_password"):
+            if not data.get(key) and existing.data.get(key):
+                data[key] = existing.data[key]
     return _replace(request_id, data, "Request replaced.")
 
 

@@ -48,9 +48,17 @@ def test_every_entry_gets_a_number_that_only_goes_up(store_dir):
     assert [e["seq"] for e in history] == [1, 2, 3, 4]      # created + three
 
 
-def test_two_events_in_the_same_second_stay_distinguishable(store_dir):
+def test_two_events_in_the_same_second_stay_distinguishable(store_dir,
+                                                            monkeypatch):
     """`at` has second resolution. A cursor built on it would either repeat an
-    event or lose one."""
+    event or lose one.
+
+    The clock is frozen rather than hoped at: two record_event calls normally
+    land in the same second, but when they straddled a boundary the
+    "same second" precondition failed and the test reported a flake in the
+    cursor rather than in its own setup.
+    """
+    monkeypatch.setattr(store, "_now", lambda: "2026-10-29T09:00:00Z")
     _make()
     store.record_event(CLIENT, "enabled")
     store.record_event(CLIENT, "disabled")

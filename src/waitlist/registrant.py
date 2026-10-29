@@ -47,8 +47,15 @@ REGISTRANT_DIR = os.path.join("config", "registrants")
 #: from the data context, so they can never be typed into a field by accident.
 #: "account"/"account_password" are the VFS LOGIN, never form content — keeping
 #: them out of the context also stops a password reaching a page field.
+#: "account_email_password" is the MAILBOX password, read by accounts.resolve
+#: so the mid-booking OTP step can fetch the code. It was not listed here until
+#: 2026-10-29 and nothing set it, so nothing leaked; the moment agents began
+#: supplying it through the web app, {{account_email_password}} would have
+#: resolved and a route config could have typed a mailbox password into a VFS
+#: form field.
 _META_KEYS = ("route", "combos", "enabled", "id", "notes",
-              "account", "account_password", "proxy")
+              "account", "account_password", "account_email_password",
+              "proxy")
 
 #: Fields whose values must never reach a log file or a Telegram message.
 SENSITIVE_FIELDS = (
@@ -74,6 +81,22 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MISSING = object()
 
 
+def _text(data: Dict[str, Any], key: str) -> str:
+    """A string field, with JSON null read as ABSENT rather than as "None".
+
+    str(None) is "None" — four truthy characters. Written straight into
+    `account_password` that is a password the bot would actually try, and into
+    `account` an address it would actually look up; written into
+    `account_email_password` it is an IMAP login attempt with the password
+    "None", which on a server that bans on repeated failures is worse than a
+    blank. The API strips nulls (model_dump(exclude_none=True)) so this never
+    surfaced from there, but nothing stopped a null reaching a record written
+    any other way.
+    """
+    value = data.get(key)
+    return "" if value is None else str(value).strip()
+
+
 class Registrant:
     """One client: their route, their combinations, and their form data."""
 
@@ -88,12 +111,23 @@ class Registrant:
         # The VFS account this client's waitlist entries live under. Optional —
         # falls back to [waitlist] account. See accounts.resolve() for the full
         # order and for why the hourly rotation is deliberately not used.
-        self.account = str(data.get("account", "")).strip()
-        self.account_password = str(data.get("account_password", "")).strip()
+        self.account = _text(data, "account")
+        self.account_password = _text(data, "account_password")
+
+        # The MAILBOX (Roundcube/IMAP) password for `account`, which the bot
+        # needs to read a mid-booking OTP from that inbox (France). A SEPARATE
+        # SECRET from account_password above and never derived from it.
+        #
+        # accounts.resolve() has read this off the registrant with getattr
+        # since the 2026-10-16 credential split, but nothing ever defined the
+        # attribute, so it silently read '' on every route. Dead until an
+        # "email_otp" step needed it, at which point it would have reported a
+        # missing mailbox password for a client that had supplied one.
+        self.account_email_password = _text(data, "account_email_password")
 
         # Optional exit-IP pin for this client, e.g. "user:pass@host:port".
         # Omit to let accounts.resolve_proxy() pick from config/proxylist.txt.
-        self.proxy = str(data.get("proxy", "")).strip()
+        self.proxy = _text(data, "proxy")
 
         # Only non-meta keys become form data, so {{route}} always means the
         # run's route and can never be shadowed by this file.

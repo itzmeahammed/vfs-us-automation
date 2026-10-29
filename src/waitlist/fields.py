@@ -45,7 +45,7 @@ DEFAULT_TIMEOUT_MS = 15000
 DYNAMIC_CONTROL = "app-dynamic-control"
 
 
-def _locator(page, spec: Dict[str, Any], widget: str):
+def _locator(page, spec: Dict[str, Any], widget: str, strict: bool = True):
     """Builds the Playwright locator for a field spec.
 
     Three addressing strategies, in priority order — a field spec picks whichever
@@ -81,7 +81,7 @@ def _locator(page, spec: Dict[str, Any], widget: str):
 
     label = spec.get("label")
     if label:
-        return _locator_by_label(page, spec, widget, label)
+        return _locator_by_label(page, spec, widget, label, strict)
 
     raise WaitlistConfigError(
         f"Field {_label(spec)}: needs \"label\" (the visible caption — use this "
@@ -90,12 +90,17 @@ def _locator(page, spec: Dict[str, Any], widget: str):
     )
 
 
-def _locator_by_label(page, spec: Dict[str, Any], widget: str, label: str):
+def _locator_by_label(page, spec: Dict[str, Any], widget: str, label: str,
+                      strict: bool = True):
     """Finds a control by the visible label of its <app-dynamic-control> block.
 
     `index` picks among controls sharing one label — that is how the split phone
     field is addressed: both the country-code and number inputs live under a
     single "Contact number" caption, so they are index 0 and 1 within it.
+
+    `strict=False` is for the doctor: it wants a locator back even for a block
+    it cannot resolve, so it can report the ambiguity as a finding instead of
+    dying on it. A real run always uses strict=True.
     """
     wrapper_selector = spec.get("wrapper") or DYNAMIC_CONTROL
     inner = _LABEL_INNER.get(widget, "input")
@@ -104,9 +109,102 @@ def _locator_by_label(page, spec: Dict[str, Any], widget: str, label: str):
     described = f"{wrapper_selector}:has-text('{label}') {inner}"
 
     index = spec.get("index")
-    if index is None:
-        return block.locator(inner).first, described
-    return block.locator(inner).nth(int(index)), f"{described} [{index}]"
+    if index is not None:
+        return block.locator(inner).nth(int(index)), f"{described} [{index}]"
+
+    # *** .first IS ONLY SAFE WHEN THE BLOCK HOLDS ONE CANDIDATE. ***
+    #
+    # 2026-10-29, AE-FRA "Your Details": France renders Passport Number and
+    # Passport Expiry Date as two columns of ONE <app-dynamic-control>. Both
+    # fields matched that single block, `.first` took the same <input> for
+    # both, and the expiry OVERWROTE the passport number with a date — leaving
+    # "06/05/2029" under "Please enter a valid passport number" and the expiry
+    # box empty. The config was correct; the locator silently aimed at the
+    # wrong control.
+    #
+    # Hungary and the Netherlands carry the same label-addressed pair, so this
+    # was not one route's problem. Sweden had already been worked around with a
+    # raw selector (input#passportExpirtyDate) rather than fixed here.
+    #
+    # Nothing changes for a block with one candidate, nor for an explicit
+    # `index` (the split phone field) — only the ambiguous case, which used to
+    # be a silent wrong answer, is now resolved by the label's own position.
+    candidates = block.locator(inner)
+    try:
+        count = candidates.count()
+    except Exception:                                       # noqa: BLE001
+        count = 1
+    if count <= 1:
+        return candidates.first, described
+
+    position = _candidate_nearest_label(block, inner, label)
+    if position is None:
+        if not strict:
+            # The doctor probes to REPORT a layout problem; raising here would
+            # abort the diagnosis that is meant to describe it.
+            return candidates.first, described
+        raise WaitlistStepError(
+            f"Field {_label(spec)}: {count} '{inner}' controls share the "
+            f"'{label}' block and none could be matched to that caption. "
+            f"Filling the wrong one writes this field's value into another "
+            f"field, so the run stops instead of guessing. Give this field an "
+            f"\"index\" (which of the {count}) or a \"selector\" in the "
+            f"route config.")
+    logging.debug(f"  {_label(spec)}: {count} controls under '{label}', "
+                  f"took #{position} by caption position.")
+    return candidates.nth(position), f"{described} [{position}]"
+
+
+def _candidate_nearest_label(block, inner: str, label: str) -> Optional[int]:
+    """Which candidate in `block` the caption `label` actually introduces.
+
+    Returns its index among the block's `inner` elements, or None when the page
+    gives no basis to choose. Two rules, in order:
+
+      * a real <label for="..."> / aria-labelledby association, which is the
+        only one the browser itself would honour; then
+      * document order — the first candidate that comes AFTER the element whose
+        own text is the caption. VFS's two-column rows put each caption
+        immediately before its control, so this resolves them.
+
+    Deliberately returns None rather than falling back to 0: the caller turns
+    that into a stopped run, and a wrong passport field is worse than a stop.
+    """
+    script = r"""
+    (block, [innerSel, caption]) => {
+      const nodes = Array.from(block.querySelectorAll(innerSel));
+      if (!nodes.length) return null;
+      const tidy = (s) => (s || '').replace(/\s+/g, ' ').trim()
+                            .replace(/\*$/, '').trim().toLowerCase();
+      const want = tidy(caption);
+
+      // 1. A genuine label association.
+      for (const el of block.querySelectorAll('label[for]')) {
+        if (tidy(el.textContent) !== want) continue;
+        const target = block.querySelector('#' + CSS.escape(el.htmlFor));
+        const at = nodes.indexOf(target);
+        if (at !== -1) return at;
+      }
+
+      // 2. The caption element, then the first candidate after it.
+      let captionEl = null;
+      for (const el of block.querySelectorAll('*')) {
+        if (el.querySelector(innerSel)) continue;   // a container, not a caption
+        if (tidy(el.textContent) === want) { captionEl = el; break; }
+      }
+      if (!captionEl) return null;
+      for (let i = 0; i < nodes.length; i++) {
+        if (captionEl.compareDocumentPosition(nodes[i])
+            & Node.DOCUMENT_POSITION_FOLLOWING) return i;
+      }
+      return null;
+    }
+    """
+    try:
+        found = block.evaluate(script, [inner, label])
+    except Exception:                                       # noqa: BLE001
+        return None
+    return None if found is None else int(found)
 
 
 #: Which element to take INSIDE a label-matched block, per widget.

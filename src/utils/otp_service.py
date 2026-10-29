@@ -28,6 +28,7 @@ a mailbox on imap_host).
 import logging
 import re
 import time
+from typing import Optional
 
 from src.utils import otp_email, otp_openai
 from src.utils.config_reader import get_config_value
@@ -75,11 +76,19 @@ def otp_length() -> int:
 
 
 def wait_for_otp_mail(email_user: str, email_password: str,
-                      since_epoch: float) -> otp_email.OtpMail:
+                      since_epoch: float,
+                      timeout_seconds: Optional[int] = None
+                      ) -> otp_email.OtpMail:
     """
     Polls the mailbox and returns the fresh OTP email (OtpMail) WITHOUT reading
     the code — so the caller can read AND RE-READ the image on demand (e.g. to
     recover after VFS rejects a misread code with 'Please enter a valid OTP').
+
+    `timeout_seconds` overrides [otp] timeout_seconds for one call. The
+    mid-booking OTP page (src/booking/otp_step.py) passes a shorter one: it
+    states the code is valid for 3 minutes, so waiting the full default would
+    return a code the page has already expired — and submitting a dead code
+    spends one of a rationed number of verify attempts.
 
     Raises OtpError if [otp] is misconfigured or no matching email arrives in time.
     """
@@ -91,7 +100,8 @@ def wait_for_otp_mail(email_user: str, email_password: str,
         get_config_value("otp", "search_text", DEFAULT_SEARCH_TEXT)
         or DEFAULT_SEARCH_TEXT
     )
-    timeout_s = _int_config("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+    timeout_s = (int(timeout_seconds) if timeout_seconds
+                 else _int_config("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
     poll_s = max(1, _int_config("poll_seconds", DEFAULT_POLL_SECONDS))
 
     logging.info(

@@ -131,9 +131,12 @@ def resolve(registrant, cli_email: str = None,
         return Account(pinned, registrant.account_password,
                        f"client file ({registrant.id})",
                        proxy=getattr(registrant, "proxy", ""),
-                       # OPTIONAL. Only needed once the mailbox password stops
-                       # matching the portal one; absent, Account.email_password
-                       # falls back and nothing changes.
+                       # The MAILBOX password, and it does NOT fall back to
+                       # the portal one above — Account.__init__ stores '' when
+                       # it is absent, deliberately, since the two values were
+                       # split on 2026-10-16. Absent, a route that needs to
+                       # read the mailbox (an "email_otp" step) stops with that
+                       # named; requests.precheck refuses it at the form first.
                        email_password=getattr(
                            registrant, "account_email_password", "") or "")
 
@@ -154,7 +157,7 @@ def resolve(registrant, cli_email: str = None,
                 "config/credentials.local.ini.")
         return Account(
             default_email, password, "[waitlist] account",
-            # OPTIONAL, same fallback as everywhere else.
+            # Optional, and NOT defaulted to the portal password above.
             email_password=(get_config_value(
                 "waitlist", "account_email_password", "") or "").strip())
 

@@ -90,7 +90,9 @@ def _probe(page, spec: Dict[str, Any], step_name: str) -> Finding:
         return Finding(step_name, name, Finding.SKIPPED, "disabled in config")
 
     try:
-        locator, described = fields._locator(page, spec, widget)
+        # strict=False: an ambiguous block is a FINDING here, not a stop.
+        locator, described = fields._locator(page, spec, widget,
+                                             strict=False)
     except WaitlistConfigError as e:
         return Finding(step_name, name, Finding.MISSING, str(e))
 

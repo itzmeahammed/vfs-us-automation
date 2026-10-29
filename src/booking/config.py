@@ -39,6 +39,11 @@ STEP_TYPES = frozenset({
     "identity_assert",    # verify the opened application is the right client
     "start_booking",      # create a NEW application (the live-slot entry)
     "form",               # fill fields and submit (the waitlist behaviour)
+    "email_otp",          # an emailed code VFS demands MID-BOOKING, after
+                          # Your Details. Not the sign-in OTP — that is a
+                          # route-schema flag ("otp": true) handled by
+                          # src/vfs_bot/otp_flow.py before the dashboard is
+                          # ever reached. See src/booking/otp_step.py.
     "slot_pick",          # choose a date/time — reversible; nothing is held
     "payment",            # follow VFS to the gateway and pay — IRREVERSIBLE
     "confirm",            # read the confirmation, capture the reference

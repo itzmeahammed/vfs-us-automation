@@ -548,6 +548,39 @@ def required_fields_live(route: str) -> List[Dict[str, Any]]:
     out.append(_field("date_from", "Earliest date", "date", "booking_window", window))
     out.append(_field("date_to", "Latest date", "date", "booking_window",
                       window + " Send the same date twice for a single day."))
+
+    # The account the agent books under, asked for ONLY where the booking
+    # itself needs the mailbox: France's flow stops on an emailed OTP that the
+    # bot reads from that account's inbox. On every other route the account is
+    # optional (the shared pool covers it), so advertising these everywhere
+    # would put two password boxes on forms that have no use for them.
+    try:
+        from src.booking import requests as booking_requests
+
+        if booking_requests.route_needs_mailbox(route):
+            domain = booking_requests.booking_account_domain()
+            on_domain = f" Must be an @{domain} address." if domain else ""
+            out.append(_field(
+                "account", "VFS account", "email", "account",
+                "The VFS account to book under — the agent's own is fine."
+                + on_domain +
+                " This route asks for an emailed OTP, so the bot has to sign "
+                "in to this address's mailbox to read it."))
+            out.append(_field(
+                "account_password", "VFS portal password", "password",
+                "account",
+                "The password for visa.vfsglobal.com. Stored, never returned."))
+            out.append(_field(
+                "account_email_password", "Email (Roundcube) password",
+                "password", "account",
+                "The MAILBOX password for the same address — NOT the portal "
+                "password above. The bot reads the emailed OTP with it. "
+                "Verify it before submitting: a wrong one is only discovered "
+                "after the applicant's details have been sent to VFS, and "
+                "that attempt is then spent. Stored, never returned."))
+    except Exception:                                  # noqa: BLE001
+        pass
+
     out.extend(step_fields)
 
     try:
