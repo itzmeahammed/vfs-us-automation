@@ -27,6 +27,8 @@ DESTINATION_FLAGS = {
     "NOR": "🇳🇴", "NO": "🇳🇴",       # Norway
     "NLD": "🇳🇱", "NL": "🇳🇱",       # Netherlands
     "SWE": "🇸🇪", "SE": "🇸🇪",       # Sweden
+    "AUT": "🇦🇹", "AT": "🇦🇹",       # Austria
+    "JPN": "🇯🇵", "JP": "🇯🇵",       # Japan
 }
 
 # Destination code -> friendly country name. It LEADS every slot line, so the
@@ -46,6 +48,8 @@ DESTINATION_NAMES = {
     "NOR": "Norway", "NO": "Norway",
     "NLD": "Netherlands", "NL": "Netherlands",
     "SWE": "Sweden", "SE": "Sweden",
+    "AUT": "Austria", "AT": "Austria",
+    "JPN": "Japan", "JP": "Japan",
 }
 
 

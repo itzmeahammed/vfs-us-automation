@@ -1,6 +1,6 @@
 {
-  "generated_iso": "2026-09-23T18:02:14+04:00",
-  "generated": "Wed 23 Sep, 18:02",
+  "generated_iso": "2026-10-29T16:10:50+04:00",
+  "generated": "Thu 29 Oct, 16:10",
   "rotate_seconds": 20,
   "views": [
     {
@@ -15,11 +15,11 @@
         },
         {
           "label": "Soonest",
-          "value": "Sep 24"
+          "value": "Oct 30"
         },
         {
           "label": "Open now",
-          "value": "2 of 12"
+          "value": "2 of 13"
         },
         {
           "label": "Waitlist only",
@@ -31,7 +31,7 @@
           "rank": 1,
           "order": [
             0,
-            "2026-09-24",
+            "2026-10-30",
             -98
           ],
           "country": "Sweden",
@@ -43,10 +43,88 @@
           "badge": "",
           "has_date": true,
           "headline_label": "Next appointment",
-          "headline": "Sep 24",
+          "headline": "Oct 30",
           "centre": "Abu Dhabi, Short Stay",
+          "centres": [
+            {
+              "order": [
+                0,
+                "2026-10-30",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Oct 30",
+              "date_iso": "2026-10-30",
+              "visa_type": "Short Stay",
+              "forecast": null,
+              "note": "",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "1d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "1d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "21m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            },
+            {
+              "order": [
+                0,
+                "2026-11-02",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 02",
+              "date_iso": "2026-11-02",
+              "visa_type": "Short Stay",
+              "forecast": null,
+              "note": "",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "1d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "1d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "20m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Sep 24, seen 13m ago",
+          "empty_sub": "Last slot Nov 02, seen 20m ago",
           "stats_left": [
             {
               "label": "Wait",
@@ -60,7 +138,7 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "13m"
+              "value": "20m"
             },
             {
               "label": "Drift",
@@ -72,22 +150,100 @@
           "rank": 2,
           "order": [
             0,
-            "2026-09-25",
-            -95
+            "2026-11-02",
+            -96
           ],
           "country": "Norway",
           "forecast": null,
-          "meter_value": "95",
-          "meter": 95,
+          "meter_value": "96",
+          "meter": 96,
           "kind": "open",
           "status": "Open now",
           "badge": "",
           "has_date": true,
           "headline_label": "Next appointment",
-          "headline": "Sep 25",
+          "headline": "Nov 02",
           "centre": "Abu Dhabi, Short Stay - Tourist",
+          "centres": [
+            {
+              "order": [
+                0,
+                "2026-11-02",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 02",
+              "date_iso": "2026-11-02",
+              "visa_type": "Short Stay - Tourist",
+              "forecast": null,
+              "note": "",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "2d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "2d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "23m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            },
+            {
+              "order": [
+                0,
+                "2026-11-02",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 02",
+              "date_iso": "2026-11-02",
+              "visa_type": "Short Stay - Tourist",
+              "forecast": null,
+              "note": "",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "3d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "2d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "22m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "-2d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Sep 29, seen 15m ago",
+          "empty_sub": "Last slot Nov 02, seen 22m ago",
           "stats_left": [
             {
               "label": "Wait",
@@ -101,11 +257,11 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "15m"
+              "value": "22m"
             },
             {
               "label": "Drift",
-              "value": "+5.6d"
+              "value": "+1d"
             }
           ]
         },
@@ -114,17 +270,17 @@
           "order": [
             2,
             "",
-            -53
+            -63
           ],
           "country": "Hungary",
           "forecast": {
             "label": "Next opening",
-            "value": "Sep 23 – Sep 24",
+            "value": "Nov 02",
             "note": "pooled",
             "kind": "due"
           },
-          "meter_value": "53",
-          "meter": 53,
+          "meter_value": "63",
+          "meter": 63,
           "kind": "wait",
           "status": "No slots now",
           "badge": "",
@@ -132,26 +288,114 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": {
+                "label": "Next opening",
+                "value": "Nov 02",
+                "note": "pooled",
+                "kind": "due"
+              },
+              "note": "Last slot Nov 24, seen 38h ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "24d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "8d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+4.3d"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": {
+                "label": "Next opening",
+                "value": "Nov 02",
+                "note": "pooled",
+                "kind": "due"
+              },
+              "note": "Last slot Nov 26, seen 35h ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "26d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "8d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+4.4d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Oct 26, seen 3h ago",
+          "empty_sub": "Last slot Nov 26, seen 35h ago",
           "stats_left": [
             {
               "label": "Wait",
-              "value": "16d"
+              "value": "24d"
             },
             {
               "label": "Soonest",
-              "value": "3d"
+              "value": "8d"
             }
           ],
           "stats_right": [
             {
               "label": "Seen",
-              "value": "3h"
+              "value": "Oct 28"
             },
             {
               "label": "Drift",
-              "value": "+5.4d"
+              "value": "+4.4d"
             }
           ]
         },
@@ -173,6 +417,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -214,6 +536,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -255,6 +655,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -284,7 +762,7 @@
           "rank": 1,
           "order": [
             0,
-            "2026-09-24",
+            "2026-10-30",
             -98
           ],
           "country": "Sweden",
@@ -296,10 +774,88 @@
           "badge": "",
           "has_date": true,
           "headline_label": "Next appointment",
-          "headline": "Sep 24",
+          "headline": "Oct 30",
           "centre": "Abu Dhabi, Short Stay",
+          "centres": [
+            {
+              "order": [
+                0,
+                "2026-10-30",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Oct 30",
+              "date_iso": "2026-10-30",
+              "visa_type": "Short Stay",
+              "forecast": null,
+              "note": "",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "1d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "1d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "21m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            },
+            {
+              "order": [
+                0,
+                "2026-11-02",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 02",
+              "date_iso": "2026-11-02",
+              "visa_type": "Short Stay",
+              "forecast": null,
+              "note": "",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "1d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "1d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "20m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Sep 24, seen 13m ago",
+          "empty_sub": "Last slot Nov 02, seen 20m ago",
           "stats_left": [
             {
               "label": "Wait",
@@ -313,7 +869,7 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "13m"
+              "value": "20m"
             },
             {
               "label": "Drift",
@@ -325,22 +881,100 @@
           "rank": 2,
           "order": [
             0,
-            "2026-09-25",
-            -95
+            "2026-11-02",
+            -96
           ],
           "country": "Norway",
           "forecast": null,
-          "meter_value": "95",
-          "meter": 95,
+          "meter_value": "96",
+          "meter": 96,
           "kind": "open",
           "status": "Open now",
           "badge": "",
           "has_date": true,
           "headline_label": "Next appointment",
-          "headline": "Sep 25",
+          "headline": "Nov 02",
           "centre": "Abu Dhabi, Short Stay - Tourist",
+          "centres": [
+            {
+              "order": [
+                0,
+                "2026-11-02",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 02",
+              "date_iso": "2026-11-02",
+              "visa_type": "Short Stay - Tourist",
+              "forecast": null,
+              "note": "",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "2d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "2d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "23m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            },
+            {
+              "order": [
+                0,
+                "2026-11-02",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 02",
+              "date_iso": "2026-11-02",
+              "visa_type": "Short Stay - Tourist",
+              "forecast": null,
+              "note": "",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "3d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "2d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "22m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "-2d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Sep 29, seen 15m ago",
+          "empty_sub": "Last slot Nov 02, seen 22m ago",
           "stats_left": [
             {
               "label": "Wait",
@@ -354,11 +988,11 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "15m"
+              "value": "22m"
             },
             {
               "label": "Drift",
-              "value": "+5.6d"
+              "value": "+1d"
             }
           ]
         },
@@ -367,17 +1001,17 @@
           "order": [
             2,
             "",
-            -53
+            -63
           ],
           "country": "Hungary",
           "forecast": {
             "label": "Next opening",
-            "value": "Sep 23 – Sep 24",
+            "value": "Nov 02",
             "note": "pooled",
             "kind": "due"
           },
-          "meter_value": "53",
-          "meter": 53,
+          "meter_value": "63",
+          "meter": 63,
           "kind": "wait",
           "status": "No slots now",
           "badge": "",
@@ -385,26 +1019,114 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": {
+                "label": "Next opening",
+                "value": "Nov 02",
+                "note": "pooled",
+                "kind": "due"
+              },
+              "note": "Last slot Nov 24, seen 38h ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "24d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "8d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+4.3d"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": {
+                "label": "Next opening",
+                "value": "Nov 02",
+                "note": "pooled",
+                "kind": "due"
+              },
+              "note": "Last slot Nov 26, seen 35h ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "26d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "8d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+4.4d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Oct 26, seen 3h ago",
+          "empty_sub": "Last slot Nov 26, seen 35h ago",
           "stats_left": [
             {
               "label": "Wait",
-              "value": "16d"
+              "value": "24d"
             },
             {
               "label": "Soonest",
-              "value": "3d"
+              "value": "8d"
             }
           ],
           "stats_right": [
             {
               "label": "Seen",
-              "value": "3h"
+              "value": "Oct 28"
             },
             {
               "label": "Drift",
-              "value": "+5.4d"
+              "value": "+4.4d"
             }
           ]
         },
@@ -426,6 +1148,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -467,6 +1267,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -508,6 +1386,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -549,6 +1505,46 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Jul 31, seen 96d ago",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Jul 25"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -564,7 +1560,7 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "Jul 24"
+              "value": "Jul 25"
             },
             {
               "label": "Drift",
@@ -590,6 +1586,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -631,6 +1705,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Sep 09, seen 92d ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Jul 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -672,8 +1824,86 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Dec 24, seen 26d ago",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 02"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Damac Hills"
+              ],
+              "city": "Damac Hills",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Dec 30, seen 14d ago",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 15"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Oct 21, seen 12d ago",
+          "empty_sub": "Last slot Dec 30, seen 14d ago",
           "stats_left": [
             {
               "label": "Wait",
@@ -687,7 +1917,7 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "Sep 11"
+              "value": "Oct 15"
             },
             {
               "label": "Drift",
@@ -713,6 +1943,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Not checked",
           "empty_sub": "No data for this country yet",
           "stats_left": [
@@ -754,6 +2062,279 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
+          "empty_title": "Not checked",
+          "empty_sub": "No data for this country yet",
+          "stats_left": [
+            {
+              "label": "Wait",
+              "value": "—"
+            },
+            {
+              "label": "Soonest",
+              "value": "—"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "never"
+            },
+            {
+              "label": "Drift",
+              "value": "—"
+            }
+          ]
+        },
+        {
+          "rank": 13,
+          "order": [
+            2,
+            "",
+            0
+          ],
+          "country": "JPN",
+          "forecast": null,
+          "meter_value": "0",
+          "meter": 0,
+          "kind": "none",
+          "status": "Not checked",
+          "badge": "",
+          "has_date": false,
+          "headline_label": "Next appointment",
+          "headline": "",
+          "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Al Ain"
+              ],
+              "city": "Al Ain",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Sharjah"
+              ],
+              "city": "Sharjah",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Not checked",
           "empty_sub": "No data for this country yet",
           "stats_left": [
@@ -781,37 +2362,37 @@
       "feed": [
         {
           "title": "Hungary: slot gone",
-          "sub": "Abu Dhabi, was Oct 26",
+          "sub": "Dubai, was Nov 26",
           "kind": "occ",
-          "when": "2h"
+          "when": "1d"
         },
         {
-          "title": "Hungary: new slot Oct 26",
-          "sub": "Abu Dhabi, Short Stay - Tourist",
+          "title": "Hungary: new slot Nov 26",
+          "sub": "Dubai, Short Stay - Tourist",
           "kind": "open",
-          "when": "3h"
+          "when": "1d"
         },
         {
           "title": "Hungary: slot gone",
-          "sub": "Abu Dhabi, was Oct 26",
+          "sub": "Abu Dhabi, was Nov 24",
           "kind": "occ",
-          "when": "4h"
+          "when": "1d"
         },
         {
-          "title": "Germany: waitlist opened",
-          "sub": "Abu Dhabi, Short Term Visa - Short Stay",
-          "kind": "wait",
-          "when": "5h"
-        },
-        {
-          "title": "Hungary: new slot Sep 30",
+          "title": "Hungary: new slot Nov 24",
           "sub": "Abu Dhabi, Short Stay - Tourist",
           "kind": "open",
-          "when": "8h"
+          "when": "1d"
+        },
+        {
+          "title": "Hungary: slot gone",
+          "sub": "Abu Dhabi, was Nov 26",
+          "kind": "occ",
+          "when": "1d"
         }
       ],
       "note_label": "Best right now",
-      "note": "Sweden, Sep 24 at Abu Dhabi, Short Stay. Typical wait 1d."
+      "note": "Sweden, Oct 30 at Abu Dhabi, Short Stay. Typical wait 1d."
     },
     {
       "name": "Business",
@@ -825,7 +2406,7 @@
         },
         {
           "label": "Soonest",
-          "value": "Sep 24"
+          "value": "Oct 30"
         },
         {
           "label": "Open now",
@@ -841,7 +2422,7 @@
           "rank": 1,
           "order": [
             0,
-            "2026-09-24",
+            "2026-10-30",
             -98
           ],
           "country": "Sweden",
@@ -853,10 +2434,88 @@
           "badge": "",
           "has_date": true,
           "headline_label": "Next appointment",
-          "headline": "Sep 24",
+          "headline": "Oct 30",
           "centre": "Abu Dhabi, Short Stay",
+          "centres": [
+            {
+              "order": [
+                0,
+                "2026-10-30",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Oct 30",
+              "date_iso": "2026-10-30",
+              "visa_type": "Short Stay",
+              "forecast": null,
+              "note": "",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "1d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "1d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "21m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            },
+            {
+              "order": [
+                0,
+                "2026-11-02",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 02",
+              "date_iso": "2026-11-02",
+              "visa_type": "Short Stay",
+              "forecast": null,
+              "note": "",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "1d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "1d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "20m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Sep 24, seen 13m ago",
+          "empty_sub": "Last slot Nov 02, seen 20m ago",
           "stats_left": [
             {
               "label": "Wait",
@@ -870,7 +2529,7 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "13m"
+              "value": "20m"
             },
             {
               "label": "Drift",
@@ -882,40 +2541,118 @@
           "rank": 2,
           "order": [
             0,
-            "2026-10-26",
-            -77
+            "2026-11-18",
+            -79
           ],
           "country": "France",
           "forecast": null,
-          "meter_value": "77",
-          "meter": 77,
+          "meter_value": "79",
+          "meter": 79,
           "kind": "open",
           "status": "Open now",
           "badge": "",
           "has_date": true,
           "headline_label": "Next appointment",
-          "headline": "Oct 26",
+          "headline": "Nov 18",
           "centre": "Abu Dhabi, Short Stay - Business",
+          "centres": [
+            {
+              "order": [
+                0,
+                "2026-11-18",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 18",
+              "date_iso": "2026-11-18",
+              "visa_type": "Short Stay - Business",
+              "forecast": null,
+              "note": "",
+              "combos": 4,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "20d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "20d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "5m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Damac Hills"
+              ],
+              "city": "Damac Hills",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Dec 30, seen 14d ago",
+              "combos": 4,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 15"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Oct 26, seen 26m ago",
+          "empty_sub": "Last slot Nov 18, seen 5m ago",
           "stats_left": [
             {
               "label": "Wait",
-              "value": "26d"
+              "value": "20d"
             },
             {
               "label": "Soonest",
-              "value": "22d"
+              "value": "20d"
             }
           ],
           "stats_right": [
             {
               "label": "Seen",
-              "value": "26m"
+              "value": "5m"
             },
             {
               "label": "Drift",
-              "value": "+2.6d"
+              "value": "—"
             }
           ]
         },
@@ -924,17 +2661,17 @@
           "order": [
             2,
             "",
-            -54
+            -63
           ],
           "country": "Hungary",
           "forecast": {
             "label": "Next opening",
-            "value": "too little history to say",
-            "note": "",
-            "kind": "quiet"
+            "value": "Nov 02",
+            "note": "pooled",
+            "kind": "due"
           },
-          "meter_value": "54",
-          "meter": 54,
+          "meter_value": "63",
+          "meter": 63,
           "kind": "wait",
           "status": "No slots now",
           "badge": "",
@@ -942,26 +2679,114 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": {
+                "label": "Next opening",
+                "value": "Nov 02",
+                "note": "pooled",
+                "kind": "due"
+              },
+              "note": "Last slot Nov 24, seen 38h ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "24d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "8d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+4.3d"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": {
+                "label": "Next opening",
+                "value": "too little history to say",
+                "note": "",
+                "kind": "quiet"
+              },
+              "note": "Last slot Nov 26, seen 35h ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "25d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "8d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1.7d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Oct 26, seen 3h ago",
+          "empty_sub": "Last slot Nov 26, seen 35h ago",
           "stats_left": [
             {
               "label": "Wait",
-              "value": "16d"
+              "value": "24d"
             },
             {
               "label": "Soonest",
-              "value": "3d"
+              "value": "8d"
             }
           ],
           "stats_right": [
             {
               "label": "Seen",
-              "value": "3h"
+              "value": "Oct 28"
             },
             {
               "label": "Drift",
-              "value": "+3.7d"
+              "value": "+4.3d"
             }
           ]
         },
@@ -983,6 +2808,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -1024,6 +2927,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -1065,6 +3046,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -1094,7 +3153,7 @@
           "rank": 1,
           "order": [
             0,
-            "2026-09-24",
+            "2026-10-30",
             -98
           ],
           "country": "Sweden",
@@ -1106,10 +3165,88 @@
           "badge": "",
           "has_date": true,
           "headline_label": "Next appointment",
-          "headline": "Sep 24",
+          "headline": "Oct 30",
           "centre": "Abu Dhabi, Short Stay",
+          "centres": [
+            {
+              "order": [
+                0,
+                "2026-10-30",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Oct 30",
+              "date_iso": "2026-10-30",
+              "visa_type": "Short Stay",
+              "forecast": null,
+              "note": "",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "1d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "1d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "21m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            },
+            {
+              "order": [
+                0,
+                "2026-11-02",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 02",
+              "date_iso": "2026-11-02",
+              "visa_type": "Short Stay",
+              "forecast": null,
+              "note": "",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "1d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "1d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "20m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Sep 24, seen 13m ago",
+          "empty_sub": "Last slot Nov 02, seen 20m ago",
           "stats_left": [
             {
               "label": "Wait",
@@ -1123,7 +3260,7 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "13m"
+              "value": "20m"
             },
             {
               "label": "Drift",
@@ -1135,40 +3272,118 @@
           "rank": 2,
           "order": [
             0,
-            "2026-10-26",
-            -77
+            "2026-11-18",
+            -79
           ],
           "country": "France",
           "forecast": null,
-          "meter_value": "77",
-          "meter": 77,
+          "meter_value": "79",
+          "meter": 79,
           "kind": "open",
           "status": "Open now",
           "badge": "",
           "has_date": true,
           "headline_label": "Next appointment",
-          "headline": "Oct 26",
+          "headline": "Nov 18",
           "centre": "Abu Dhabi, Short Stay - Business",
+          "centres": [
+            {
+              "order": [
+                0,
+                "2026-11-18",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "open",
+              "status": "Open now",
+              "has_date": true,
+              "headline_label": "Next appointment",
+              "headline": "Nov 18",
+              "date_iso": "2026-11-18",
+              "visa_type": "Short Stay - Business",
+              "forecast": null,
+              "note": "",
+              "combos": 4,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "20d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "20d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "5m"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Damac Hills"
+              ],
+              "city": "Damac Hills",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Dec 30, seen 14d ago",
+              "combos": 4,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 15"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Oct 26, seen 26m ago",
+          "empty_sub": "Last slot Nov 18, seen 5m ago",
           "stats_left": [
             {
               "label": "Wait",
-              "value": "26d"
+              "value": "20d"
             },
             {
               "label": "Soonest",
-              "value": "22d"
+              "value": "20d"
             }
           ],
           "stats_right": [
             {
               "label": "Seen",
-              "value": "26m"
+              "value": "5m"
             },
             {
               "label": "Drift",
-              "value": "+2.6d"
+              "value": "—"
             }
           ]
         },
@@ -1177,17 +3392,17 @@
           "order": [
             2,
             "",
-            -54
+            -63
           ],
           "country": "Hungary",
           "forecast": {
             "label": "Next opening",
-            "value": "too little history to say",
-            "note": "",
-            "kind": "quiet"
+            "value": "Nov 02",
+            "note": "pooled",
+            "kind": "due"
           },
-          "meter_value": "54",
-          "meter": 54,
+          "meter_value": "63",
+          "meter": 63,
           "kind": "wait",
           "status": "No slots now",
           "badge": "",
@@ -1195,26 +3410,114 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": {
+                "label": "Next opening",
+                "value": "Nov 02",
+                "note": "pooled",
+                "kind": "due"
+              },
+              "note": "Last slot Nov 24, seen 38h ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "24d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "8d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+4.3d"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": {
+                "label": "Next opening",
+                "value": "too little history to say",
+                "note": "",
+                "kind": "quiet"
+              },
+              "note": "Last slot Nov 26, seen 35h ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "25d"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "8d"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Oct 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "+1.7d"
+                }
+              ]
+            }
+          ],
           "empty_title": "",
-          "empty_sub": "Last slot Oct 26, seen 3h ago",
+          "empty_sub": "Last slot Nov 26, seen 35h ago",
           "stats_left": [
             {
               "label": "Wait",
-              "value": "16d"
+              "value": "24d"
             },
             {
               "label": "Soonest",
-              "value": "3d"
+              "value": "8d"
             }
           ],
           "stats_right": [
             {
               "label": "Seen",
-              "value": "3h"
+              "value": "Oct 28"
             },
             {
               "label": "Drift",
-              "value": "+3.7d"
+              "value": "+4.3d"
             }
           ]
         },
@@ -1236,6 +3539,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -1277,6 +3658,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -1318,6 +3777,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "wait",
+              "status": "Waitlist only",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Register the client, wait for a drop",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Waitlist only",
           "empty_sub": "Register the client, wait for a drop",
           "stats_left": [
@@ -1352,15 +3889,55 @@
           "forecast": null,
           "meter_value": "0",
           "meter": 0,
-          "kind": "wait",
-          "status": "No slots now",
+          "kind": "none",
+          "status": "Not checked",
           "badge": "",
           "has_date": false,
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
-          "empty_title": "",
-          "empty_sub": "Last slot Jul 31, seen 60d ago",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Jul 31, seen 96d ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Jul 25"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
+          "empty_title": "Not checked",
+          "empty_sub": "No data for this country yet",
           "stats_left": [
             {
               "label": "Wait",
@@ -1374,7 +3951,7 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "Jul 24"
+              "value": "Jul 25"
             },
             {
               "label": "Drift",
@@ -1400,6 +3977,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Not checked",
           "empty_sub": "No data for this country yet",
           "stats_left": [
@@ -1441,6 +4096,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "wait",
+              "status": "No slots now",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Nothing seen in the window",
+              "combos": 2,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "No slots",
           "empty_sub": "Nothing seen in the window",
           "stats_left": [
@@ -1482,6 +4215,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Sep 03, seen 92d ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Jul 28"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Not checked",
           "empty_sub": "No data for this country yet",
           "stats_left": [
@@ -1523,6 +4334,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Not checked",
           "empty_sub": "No data for this country yet",
           "stats_left": [
@@ -1564,6 +4453,84 @@
           "headline_label": "Next appointment",
           "headline": "",
           "centre": "",
+          "centres": [
+            {
+              "order": [
+                2,
+                "",
+                "Abu Dhabi"
+              ],
+              "city": "Abu Dhabi",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "No data for this centre yet",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "never"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            },
+            {
+              "order": [
+                2,
+                "",
+                "Dubai"
+              ],
+              "city": "Dubai",
+              "kind": "none",
+              "status": "Not checked",
+              "has_date": false,
+              "headline_label": "Next appointment",
+              "headline": "",
+              "date_iso": null,
+              "visa_type": "",
+              "forecast": null,
+              "note": "Last slot Jul 27, seen 97d ago",
+              "combos": 1,
+              "stats_left": [
+                {
+                  "label": "Wait",
+                  "value": "—"
+                },
+                {
+                  "label": "Soonest",
+                  "value": "—"
+                }
+              ],
+              "stats_right": [
+                {
+                  "label": "Seen",
+                  "value": "Jul 24"
+                },
+                {
+                  "label": "Drift",
+                  "value": "—"
+                }
+              ]
+            }
+          ],
           "empty_title": "Not checked",
           "empty_sub": "No data for this country yet",
           "stats_left": [
@@ -1591,37 +4558,37 @@
       "feed": [
         {
           "title": "Hungary: slot gone",
-          "sub": "Abu Dhabi, was Oct 26",
+          "sub": "Dubai, was Nov 26",
           "kind": "occ",
-          "when": "2h"
+          "when": "1d"
         },
         {
-          "title": "Hungary: new slot Oct 26",
-          "sub": "Abu Dhabi, Short Stay - Business",
+          "title": "Hungary: new slot Nov 26",
+          "sub": "Dubai, Short Stay - Business",
           "kind": "open",
-          "when": "3h"
+          "when": "1d"
         },
         {
           "title": "Hungary: slot gone",
-          "sub": "Abu Dhabi, was Oct 26",
+          "sub": "Dubai, was Nov 26",
           "kind": "occ",
-          "when": "4h"
+          "when": "1d"
         },
         {
-          "title": "Germany: waitlist opened",
-          "sub": "Abu Dhabi, Short Term Visa - Short Stay",
-          "kind": "wait",
-          "when": "5h"
-        },
-        {
-          "title": "Hungary: Sep 30, 19 days sooner",
-          "sub": "Abu Dhabi, was Oct 19",
+          "title": "Hungary: new slot Nov 26",
+          "sub": "Dubai, Short Stay - Business",
           "kind": "open",
-          "when": "8h"
+          "when": "1d"
+        },
+        {
+          "title": "Hungary: slot gone",
+          "sub": "Abu Dhabi, was Nov 24",
+          "kind": "occ",
+          "when": "1d"
         }
       ],
       "note_label": "Best right now",
-      "note": "Sweden, Sep 24 at Abu Dhabi, Short Stay. Typical wait 1d."
+      "note": "Sweden, Oct 30 at Abu Dhabi, Short Stay. Typical wait 1d."
     },
     {
       "name": "Waitlist",
@@ -1649,63 +4616,7 @@
       "cards": [
         {
           "rank": 1,
-          "country": "Greece",
-          "meter_value": "100%",
-          "meter": 100,
-          "kind": "wait",
-          "status": "Open now",
-          "badge": "",
-          "has_date": false,
-          "empty_title": "Waitlist open",
-          "empty_sub": "Register the client, wait for a drop",
-          "stats_left": [
-            {
-              "label": "Offered",
-              "value": "100%"
-            },
-            {
-              "label": "Real slots",
-              "value": "Never"
-            }
-          ],
-          "stats_right": [
-            {
-              "label": "Seen",
-              "value": "47m"
-            }
-          ]
-        },
-        {
-          "rank": 2,
-          "country": "Italy",
-          "meter_value": "100%",
-          "meter": 100,
-          "kind": "wait",
-          "status": "Open now",
-          "badge": "",
-          "has_date": false,
-          "empty_title": "Waitlist open",
-          "empty_sub": "Register the client, wait for a drop",
-          "stats_left": [
-            {
-              "label": "Offered",
-              "value": "100%"
-            },
-            {
-              "label": "Real slots",
-              "value": "Never"
-            }
-          ],
-          "stats_right": [
-            {
-              "label": "Seen",
-              "value": "17m"
-            }
-          ]
-        },
-        {
-          "rank": 3,
-          "country": "Netherlands",
+          "country": "Czech Republic",
           "meter_value": "100%",
           "meter": 100,
           "kind": "wait",
@@ -1732,8 +4643,64 @@
           ]
         },
         {
+          "rank": 2,
+          "country": "Germany",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "1h"
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "country": "Greece",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "24m"
+            }
+          ]
+        },
+        {
           "rank": 4,
-          "country": "Switzerland",
+          "country": "Italy",
           "meter_value": "100%",
           "meter": 100,
           "kind": "wait",
@@ -1761,9 +4728,9 @@
         },
         {
           "rank": 5,
-          "country": "Czech Republic",
-          "meter_value": "99%",
-          "meter": 99,
+          "country": "Netherlands",
+          "meter_value": "100%",
+          "meter": 100,
           "kind": "wait",
           "status": "Open now",
           "badge": "",
@@ -1773,7 +4740,7 @@
           "stats_left": [
             {
               "label": "Offered",
-              "value": "99%"
+              "value": "100%"
             },
             {
               "label": "Real slots",
@@ -1783,15 +4750,15 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "just now"
+              "value": "17m"
             }
           ]
         },
         {
           "rank": 6,
-          "country": "Germany",
-          "meter_value": "99%",
-          "meter": 99,
+          "country": "Switzerland",
+          "meter_value": "100%",
+          "meter": 100,
           "kind": "wait",
           "status": "Open now",
           "badge": "",
@@ -1801,7 +4768,7 @@
           "stats_left": [
             {
               "label": "Offered",
-              "value": "99%"
+              "value": "100%"
             },
             {
               "label": "Real slots",
@@ -1811,7 +4778,7 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "20m"
+              "value": "6m"
             }
           ]
         }
@@ -1819,63 +4786,7 @@
       "table": [
         {
           "rank": 1,
-          "country": "Greece",
-          "meter_value": "100%",
-          "meter": 100,
-          "kind": "wait",
-          "status": "Open now",
-          "badge": "",
-          "has_date": false,
-          "empty_title": "Waitlist open",
-          "empty_sub": "Register the client, wait for a drop",
-          "stats_left": [
-            {
-              "label": "Offered",
-              "value": "100%"
-            },
-            {
-              "label": "Real slots",
-              "value": "Never"
-            }
-          ],
-          "stats_right": [
-            {
-              "label": "Seen",
-              "value": "47m"
-            }
-          ]
-        },
-        {
-          "rank": 2,
-          "country": "Italy",
-          "meter_value": "100%",
-          "meter": 100,
-          "kind": "wait",
-          "status": "Open now",
-          "badge": "",
-          "has_date": false,
-          "empty_title": "Waitlist open",
-          "empty_sub": "Register the client, wait for a drop",
-          "stats_left": [
-            {
-              "label": "Offered",
-              "value": "100%"
-            },
-            {
-              "label": "Real slots",
-              "value": "Never"
-            }
-          ],
-          "stats_right": [
-            {
-              "label": "Seen",
-              "value": "17m"
-            }
-          ]
-        },
-        {
-          "rank": 3,
-          "country": "Netherlands",
+          "country": "Czech Republic",
           "meter_value": "100%",
           "meter": 100,
           "kind": "wait",
@@ -1902,8 +4813,64 @@
           ]
         },
         {
+          "rank": 2,
+          "country": "Germany",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "1h"
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "country": "Greece",
+          "meter_value": "100%",
+          "meter": 100,
+          "kind": "wait",
+          "status": "Open now",
+          "badge": "",
+          "has_date": false,
+          "empty_title": "Waitlist open",
+          "empty_sub": "Register the client, wait for a drop",
+          "stats_left": [
+            {
+              "label": "Offered",
+              "value": "100%"
+            },
+            {
+              "label": "Real slots",
+              "value": "Never"
+            }
+          ],
+          "stats_right": [
+            {
+              "label": "Seen",
+              "value": "24m"
+            }
+          ]
+        },
+        {
           "rank": 4,
-          "country": "Switzerland",
+          "country": "Italy",
           "meter_value": "100%",
           "meter": 100,
           "kind": "wait",
@@ -1931,9 +4898,9 @@
         },
         {
           "rank": 5,
-          "country": "Czech Republic",
-          "meter_value": "99%",
-          "meter": 99,
+          "country": "Netherlands",
+          "meter_value": "100%",
+          "meter": 100,
           "kind": "wait",
           "status": "Open now",
           "badge": "",
@@ -1943,7 +4910,7 @@
           "stats_left": [
             {
               "label": "Offered",
-              "value": "99%"
+              "value": "100%"
             },
             {
               "label": "Real slots",
@@ -1953,15 +4920,15 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "just now"
+              "value": "17m"
             }
           ]
         },
         {
           "rank": 6,
-          "country": "Germany",
-          "meter_value": "99%",
-          "meter": 99,
+          "country": "Switzerland",
+          "meter_value": "100%",
+          "meter": 100,
           "kind": "wait",
           "status": "Open now",
           "badge": "",
@@ -1971,7 +4938,7 @@
           "stats_left": [
             {
               "label": "Offered",
-              "value": "99%"
+              "value": "100%"
             },
             {
               "label": "Real slots",
@@ -1981,39 +4948,14 @@
           "stats_right": [
             {
               "label": "Seen",
-              "value": "20m"
+              "value": "6m"
             }
           ]
         }
       ],
-      "feed": [
-        {
-          "title": "Germany: waitlist opened",
-          "sub": "Abu Dhabi, Short Term Visa - Short Stay",
-          "kind": "wait",
-          "when": "5h"
-        },
-        {
-          "title": "Czech Republic: waitlist opened",
-          "sub": "Dubai, Tourism",
-          "kind": "wait",
-          "when": "1d"
-        },
-        {
-          "title": "Czech Republic: waitlist opened",
-          "sub": "Abu Dhabi, Tourism",
-          "kind": "wait",
-          "when": "1d"
-        },
-        {
-          "title": "Switzerland: waitlist opened",
-          "sub": "Dubai, SCHENGEN",
-          "kind": "wait",
-          "when": "1d"
-        }
-      ],
+      "feed": [],
       "note_label": "Waitlists open now",
-      "note": "Greece, Italy, Netherlands, Switzerland, Czech Republic, Germany."
+      "note": "Czech Republic, Germany, Greece, Italy, Netherlands, Switzerland."
     }
   ]
 }

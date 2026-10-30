@@ -33,8 +33,31 @@ from src.utils.config_reader import get_config_value
 
 DEFAULT_URL = "https://www.travnooker.com/api/tv/ingest/board"
 
-# Bumped when the payload shape changes in a way that would break a renderer.
+# Bumped when the payload shape changes IN A WAY THAT WOULD BREAK A RENDERER.
 # The web app should refuse a schema it does not know rather than render blanks.
+#
+# *** `centres` DID NOT EARN A BUMP, AND BUMPING FOR IT FROZE THE BOARD. ***
+#
+# On 2026-10-29 every slot card gained `centres` - one row per application
+# centre, so Dubai and Abu Dhabi both appear instead of only whichever held the
+# soonest date - and this went to 2 to advertise it. The receiver does exactly
+# what this file's own contract tells it to ("reject a schema you do not know"),
+# so every push came back:
+#
+#     400 {"ok": false, "error": "Unknown board schema 2; this server accepts 1"}
+#
+# and the board sat frozen on its last snapshot for a day, which is precisely
+# the failure the age fields exist to make visible and nobody was watching.
+#
+# The bump was wrong on its own terms. `centres` is purely ADDITIVE: every
+# schema-1 field is unchanged, and a renderer that ignores it still works - it
+# just shows one centre of two. The rule above says to bump when a change would
+# BREAK a renderer, and this one cannot. A new number for a compatible change
+# buys an announcement and costs a coordinated deploy on two machines.
+#
+# So: additive changes ship under 1 and the receiver needs no deploy. The next
+# number is reserved for something that genuinely breaks - a field removed, a
+# field's meaning changed, or the views restructured.
 SCHEMA = 1
 
 _SECTION = "tv_board"

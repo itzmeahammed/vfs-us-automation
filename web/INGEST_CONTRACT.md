@@ -26,7 +26,7 @@ User-Agent: vfs-slot-checker-board/1
 }
 ```
 
-**Body size ~26 KB. Frequency ~30/day** (once per run cycle, inside the checker's
+**Body size ~60 KB. Frequency ~30/day** (once per run cycle, inside the checker's
 09:00–24:00 window). Nothing arrives overnight — that is expected, not a fault.
 
 ## What to do with it
@@ -42,6 +42,49 @@ GET   /api/slots/board       →  latest_board          (your page calls this)
 The React component in `web/SlotWall.jsx` renders `board` directly. It does not
 transform it, and neither should you: reordering, reformatting or recomputing
 anything in it will disagree with the rules the checker applies.
+
+## Both application centres are on every card
+
+Each card in the Tourist and Business views carries `centres[]` — **one row per
+application centre**, e.g. Abu Dhabi and Dubai:
+
+```jsonc
+"country": "Sweden",
+"headline": "Nov 02",            // the soonest of the centres below
+"centre":   "Dubai, Short Stay", // the ONE centre that holds it
+"centres": [
+  { "city": "Dubai",     "status": "Open now",      "has_date": true,
+    "headline": "Nov 02", "date_iso": "2026-11-02",
+    "visa_type": "Short Stay - Tourist", "note": "", "combos": 1,
+    "forecast": null,
+    "stats_left":  [{"label": "Wait", "value": "2d"}, {"label": "Soonest", "value": "2d"}],
+    "stats_right": [{"label": "Seen", "value": "5m"}, {"label": "Drift", "value": "+1d"}] },
+  { "city": "Abu Dhabi", "status": "No slots now",  "has_date": false,
+    "headline": "", "date_iso": null, "visa_type": "",
+    "note": "Last slot Nov 24, seen 42h ago", "combos": 2, "forecast": null,
+    "stats_left":  [{"label": "Wait", "value": "24d"}, {"label": "Soonest", "value": "8d"}],
+    "stats_right": [{"label": "Seen", "value": "Oct 28"}, {"label": "Drift", "value": "+4.4d"}] }
+]
+```
+
+Three things to know about it:
+
+**A centre with nothing to report still arrives**, as `"Not checked"` with a
+`note`. Render it. Dropping the row looks exactly like not checking that centre,
+which is the bug `centres` exists to fix.
+
+**The rows are pre-sorted** — bookable first, then the soonest date, then city
+name. Do not re-sort. Ties keep one order between cycles on purpose: a row that
+moves on a screen nobody touches reads as news.
+
+**The card's own fields have not changed.** `headline` is still the soonest date
+across the centres and `centre` still names the one holding it, so a renderer
+that ignores `centres` keeps working — it just shows one centre of two. That is
+why this ships under `schema: 1` and needs nothing deployed on your side.
+
+Field names, wording and stat labels match `Card` exactly, so a row can reuse
+the card's renderers. The waitlist view has no `centres`: there is no
+appointment date there to break down.
 
 ## Three things that matter
 
@@ -79,8 +122,10 @@ Cache-Control: no-cache
 
 ## Versioning
 
-`schema` is `1`. It is bumped when `board`'s shape changes in a way that would
-break a renderer.
+`schema` is `1`. It is bumped when `board`'s shape changes **in a way that would
+break a renderer** — a field removed, a field's meaning changed, or the views
+restructured. Adding a field is not that: a renderer that does not know about it
+carries on working.
 
 **Reject a schema you do not know**, and keep serving the last one you do:
 
@@ -88,8 +133,17 @@ break a renderer.
 if (body.schema !== 1) return reject("unknown board schema");
 ```
 
-Failing loudly at ingest beats a page full of blanks that nobody traces back to a
-deploy on a different machine.
+That is right, and you should keep it. On 2026-10-29 `centres` was added and the
+checker bumped itself to `2` to advertise it. Your endpoint did exactly as
+instructed:
+
+```
+400 {"ok": false, "error": "Unknown board schema 2; this server accepts 1"}
+```
+
+Every push was refused for a day and the board sat frozen on its last snapshot —
+for a change that could not have broken anything. The bump was the mistake, not
+the gate. Additive changes now ship under `1`.
 
 ## Auth
 

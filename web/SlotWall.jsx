@@ -128,6 +128,50 @@ function ForecastLine({ forecast }) {
   );
 }
 
+/**
+ * One row per application centre, under the country's headline.
+ *
+ * The headline above names ONE centre — the one holding the soonest bookable
+ * date — because the payload ranks a country by its best centre. These rows are
+ * every centre the route checks, Abu Dhabi and Dubai alike, so a card can no
+ * longer read as "Dubai is not checked" when Dubai was checked all day and
+ * simply lost the tie.
+ *
+ * A centre with nothing to report arrives as "Not checked" with a note, and is
+ * rendered: dropping the row would look exactly like not checking it. Rows come
+ * pre-sorted (bookable first, then soonest, then city) and are not re-sorted
+ * here, like everything else in this file.
+ *
+ * Absent on a schema-1 board, and on the waitlist view, which has no
+ * appointment date to break down — hence the empty-array guard.
+ */
+function CentreRows({ centres }) {
+  // One centre says nothing the headline above it does not already say.
+  if (!centres || centres.length < 2) return null;
+  return (
+    <div className="flex flex-col gap-1 border-t pt-2" style={{ borderColor: C.line }}>
+      {centres.map((r) => (
+        <div key={r.city} className="flex items-baseline gap-2 text-sm">
+          <span className={`h-2 w-2 shrink-0 translate-y-[-1px] rounded-full ${DOT[r.kind] || DOT.none}`} />
+          <span className="w-24 shrink-0 truncate" style={{ color: C.ink2 }}>{r.city}</span>
+          {r.has_date ? (
+            <>
+              <b className="font-semibold tabular-nums" style={{ color: C.ink }}>{r.headline}</b>
+              <span className="min-w-0 truncate text-xs" style={{ color: C.dim }}>
+                {r.visa_type}
+              </span>
+            </>
+          ) : (
+            <span className="min-w-0 truncate text-xs" style={{ color: C.muted }}>
+              {r.note || r.status}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CountryCard({ card, lead }) {
   const stats = [...(card.stats_left || []), ...(card.stats_right || [])];
   return (
@@ -190,6 +234,8 @@ function CountryCard({ card, lead }) {
           <div className="text-lg leading-snug" style={{ color: C.ink2 }}>{card.empty_sub}</div>
         )}
       </div>
+
+      <CentreRows centres={card.centres} />
 
       <ForecastLine forecast={card.forecast} />
 

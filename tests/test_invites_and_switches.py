@@ -248,3 +248,72 @@ def test_status_reports_the_master_switches():
     state = _switches()
     for name in ("waitlist", "invite_booking", "live_booking", "test_booking"):
         assert hasattr(state, name)
+
+
+# --------------------------------------------------------------------------- #
+# The account an invitation is filed under must be an ADDRESS                  #
+# --------------------------------------------------------------------------- #
+#
+# `candidates()` decides who an invitation is for by comparing this to each
+# client's resolved email. The watcher was handing `record()` the masked label
+# it uses for its log lines, so the comparison was always
+# 'at***@travnook.com' == 'athul@travnook.com' and no client could ever match.
+# Every invitation was filed "manual" with the reason "no enabled,
+# waitlist-registered, unbooked client on <route> uses <masked>" - while the
+# client sat there registered and enabled. Seen on AE-GRC, 2026-10-29: the
+# client held GRC129529986331 and the invitation still went to a human.
+
+
+def test_a_masked_account_never_matches_its_own_client(roster):
+    """*** THE BUG, STATED AS ARITHMETIC. ***
+
+    Nothing about this client is wrong. Only the address it is compared to is
+    a display string, and no amount of correct client data can survive that.
+    """
+    roster.append(_person("c1", "A", "B"))
+
+    people, why = invites.candidates(_item(name="A B", account="ho***@example.com"))
+
+    assert people == []
+    assert "no enabled, waitlist-registered, unbooked client" in why
+
+
+def test_the_same_invitation_matches_once_the_account_is_real(roster):
+    """The control for the test above: same client, same name, real address."""
+    roster.append(_person("c1", "A", "B"))
+
+    people, why = invites.candidates(_item(name="A B", account=ACCOUNT))
+
+    assert [p.id for p in people] == ["c1"]
+    assert "matched by name" in why
+
+
+def test_recording_keeps_the_real_address(roster):
+    """What the watcher now hands over is what gets stored."""
+    key = invites.record([_Obs()])[0]
+
+    assert invites.get(key)["account"] == ACCOUNT
+    assert "*" not in invites.get(key)["account"]
+
+
+def test_a_masked_account_is_refused_at_the_door(roster, caplog):
+    """A record written with a masked account cannot be matched for the rest of
+    its life, so the mailbox it was read from is used instead - and it is
+    logged as an error, because something upstream is passing a label."""
+    obs = _Obs(account="ho***@example.com")
+
+    key = invites.record([obs])[0]
+
+    assert invites.get(key)["account"] == ACCOUNT, "fell back to email.mailbox"
+    assert "*" not in invites.get(key)["account"]
+
+
+def test_a_recorded_invitation_can_find_its_client(roster):
+    """End to end over the two halves: whatever record() stores, candidates()
+    has to be able to match. They are the only reason either exists."""
+    roster.append(_person("c1", "A", "B"))
+
+    key = invites.record([_Obs()])[0]
+    people, why = invites.candidates(invites.get(key))
+
+    assert [p.id for p in people] == ["c1"], why

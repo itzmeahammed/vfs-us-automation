@@ -256,3 +256,159 @@ def test_the_mailbox_password_never_substitutes_for_the_portal_one(
     assert resolved.password == PORTAL_PW
     assert resolved.email_password == ""
     assert resolved.can_read_mailbox is False
+
+
+# ── the mailbox password, on every route ─────────────────────────────────────
+#
+# Registering is half the job. VFS announces a bookable slot by EMAIL, the
+# inbox watcher reads it over IMAP from the account the client registered
+# under, and invite_booking turns it into a booking. So the field was scoped to
+# routes with an `email_otp` step - France - because that is where a MID-booking
+# code is read. Too narrow: the INVITATION arrives on every route. On
+# 2026-10-29 an AE-NLD client was registered under a mailbox nothing could
+# open, and no form had ever asked for its password.
+
+
+def test_every_waitlist_route_offers_the_field():
+    """*** THE WHOLE POINT: NOT JUST THE OTP ROUTE. ***"""
+    for route in (OTP_ROUTE, PLAIN_ROUTE, "AE-CHE", "AE-NLD", "AE-CZE"):
+        names = [f["name"] for f in validate.required_fields(route)]
+        assert "account_email_password" in names, route
+
+
+def test_the_form_field_says_which_password_it_wants():
+    """An agent cannot be expected to know Roundcube from the portal unless the
+    form says so."""
+    field = next(f for f in validate.required_fields(PLAIN_ROUTE)
+                 if f["name"] == "account_email_password")
+
+    assert field["kind"] == "password"
+    assert "NOT the portal password" in field["notes"]
+    assert "Roundcube" in field["label"] or "Roundcube" in field["notes"]
+    assert "invitation" in field["notes"]
+
+
+def test_the_form_does_not_demand_it_before_an_account_is_chosen():
+    """The form renders before anyone has picked an account, and a company
+    account needs nothing typed. The demand belongs at submit, not at render -
+    marking it required here would make an agent retype a value the bot already
+    holds, which is how the wrong value gets typed."""
+    field = next(f for f in validate.required_fields(PLAIN_ROUTE)
+                 if f["name"] == "account_email_password")
+
+    assert field["required"] is False
+
+
+def test_the_box_is_offered_even_when_the_pool_holds_a_password(monkeypatch):
+    """It briefly skipped the field for an address the pool knows.
+
+    That hid the one field the whole invitation chain hangs on, and made the
+    form depend on server-side credential state an agent cannot see - the same
+    route rendering differently per account, for a reason the page cannot
+    explain. Always offered; whether it HAD to be filled is settled at submit.
+    """
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "pool-secret")
+
+    field = validate.mailbox_password_field(PLAIN_ROUTE)
+
+    assert field and field["name"] == "account_email_password"
+
+
+def test_the_box_is_offered_when_the_pool_knows_nothing(monkeypatch):
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "")
+
+    field = validate.mailbox_password_field(PLAIN_ROUTE)
+
+    assert field and field["name"] == "account_email_password"
+
+
+def test_the_form_never_varies_by_account(monkeypatch):
+    """One route, one form. A field that appears for some agents and not others
+    is a support call nobody can answer from the page."""
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "pool-secret")
+    known = [f["name"] for f in validate.required_fields(PLAIN_ROUTE)]
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "")
+    unknown = [f["name"] for f in validate.required_fields(PLAIN_ROUTE)]
+
+    assert known == unknown
+    assert "account_email_password" in known
+
+
+# ── enforced at submit, where the account is known ───────────────────────────
+
+def _client(**over):
+    data = {"route": PLAIN_ROUTE, "account": "agent@travnook.com",
+            "account_email_password": "", "first_name": "A"}
+    data.update(over)
+    return data
+
+
+def _mailbox_errors(data):
+    return [p.field for p in validate.check_mailbox_password(data)]
+
+
+def test_an_agents_own_account_must_supply_it(monkeypatch):
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "")
+
+    assert _mailbox_errors(_client()) == ["account_email_password"]
+
+
+def test_supplying_it_settles_the_matter(monkeypatch):
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "")
+
+    assert _mailbox_errors(_client(account_email_password="mailbox-pw")) == []
+
+
+def test_a_pool_account_needs_nothing_typed(monkeypatch):
+    """The bot already holds it. Demanding it again breaks every existing
+    client on a company account for no gain."""
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "pool-secret")
+
+    assert _mailbox_errors(_client()) == []
+
+
+def test_no_pinned_account_is_not_a_problem(monkeypatch):
+    """With no account the shared pool supplies the login AND its mailbox
+    password, so there is nothing for an agent to get wrong."""
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "")
+
+    assert _mailbox_errors(_client(account="")) == []
+
+
+def test_an_unreadable_pool_asks_rather_than_assumes(monkeypatch):
+    """Demanding the field is recoverable; assuming a password exists is not."""
+    def boom(email, required=False):
+        raise RuntimeError("credentials file is unreadable")
+    monkeypatch.setattr("src.utils.credentials.email_password_for", boom)
+
+    assert _mailbox_errors(_client()) == ["account_email_password"]
+
+
+def test_the_refusal_never_points_at_the_portal_password(monkeypatch):
+    """The two were one value until 2026-10-16. An agent who reads this must
+    not come away thinking the portal password will do."""
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "")
+
+    said = validate.check_mailbox_password(_client())[0]
+
+    assert "NOT the VFS portal password" in said.hint
+    assert "invitation" in said.hint
+
+
+def test_the_portal_password_does_not_satisfy_it(monkeypatch):
+    """The 2026-10-16 split, as a rule rather than a comment."""
+    monkeypatch.setattr("src.utils.credentials.email_password_for",
+                        lambda email, required=False: "")
+
+    data = _client(account_password="portal-pw")
+
+    assert _mailbox_errors(data) == ["account_email_password"]

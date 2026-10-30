@@ -291,7 +291,7 @@ def fetch_mailbox(
     password: str,
     state: seen_state.SeenState,
     matchers_by_route: Dict[str, List[Dict[str, Any]]],
-    account_label: str = "",
+    account: str = "",
 ) -> Tuple[List[Observation], int]:
     """Reads one mailbox and classifies everything new in it.
 
@@ -303,7 +303,13 @@ def fetch_mailbox(
     failure so the other accounts still get read. One bad password must not
     blind the whole watcher.
     """
+    from src.waitlist.accounts import mask
+
     mailbox_key = user
+    # Masked only for the log lines in this function. Anything that has to
+    # IDENTIFY the account - the Observation below, and so the invitation it
+    # becomes - gets `account` itself.
+    account_label = mask(account or user)
     observations: List[Observation] = []
     examined = 0
 
@@ -385,7 +391,20 @@ def fetch_mailbox(
 
                 if found.matched:
                     observations.append(
-                        Observation(email=message, match=found, account=account_label)
+                        # *** THE REAL ADDRESS, NOT THE LABEL. ***
+                        #
+                        # invites.record() stores this as the invitation's
+                        # `account`, and invites.candidates() compares it to
+                        # each client's resolved email to decide WHO the
+                        # invitation is for. Passing the masked label here made
+                        # that comparison 'at***@travnook.com' == 'athul@
+                        # travnook.com', so it never matched and EVERY
+                        # invitation was filed as "manual" with the reason "no
+                        # enabled, waitlist-registered, unbooked client uses
+                        # <masked>" - while the client was sitting right there,
+                        # registered and enabled (AE-GRC, 2026-10-29,
+                        # GRC129529986331). Masking is for the log lines below.
+                        Observation(email=message, match=found, account=account)
                     )
             except Exception as e:
                 # One unreadable message must not abort the mailbox.
@@ -611,7 +630,7 @@ def run_pass(state: Optional[seen_state.SeenState] = None,
         label = mask(user)
         try:
             observations, examined = fetch_mailbox(
-                host, port, user, password, state, matchers_by_route, label
+                host, port, user, password, state, matchers_by_route, user
             )
             result.observations.extend(observations)
             result.messages_seen += examined

@@ -137,6 +137,151 @@ def _forecast_line(cell: dict) -> Optional[dict]:
     return {"label": label, "value": value, "note": note, "kind": kind}
 
 
+def _live_state(has_date: bool, rolled: dict, outcome: Optional[str]) -> tuple:
+    """The chip: what is true NOW, for a country or for one centre.
+
+    Shared, so a card and the centre rows beneath it can never word one state
+    two different ways. The chip says what is true now, not what was true across
+    the window: a country with a slot on the screen read "Occasional" because
+    that is its history — accurate, and the opposite of useful to someone
+    deciding whether to call a client. History still shows, in the score and the
+    footer.
+    """
+    if has_date:
+        return "Open now", "open"
+    if rolled.get("reason") == "unconfirmed" and rolled.get("since"):
+        return f"Was open {_relative(rolled['since'])} ago", "occ"
+    if outcome == "waitlist":
+        return "Waitlist only", "wait"
+    if outcome == "none":
+        return "No slots now", "wait"
+    return "Not checked", "none"
+
+
+def _order_tier(has_date: bool, rolled: dict, date: Optional[str]) -> tuple:
+    """Availability first, score second — the board's one sort rule.
+
+    A board is read left to right, so what can be booked now has to be in the
+    first position, whatever its history score says. Within the bookable tier
+    the soonest appointment leads.
+    """
+    if has_date:
+        return 0, date or ""
+    if rolled.get("reason") == "unconfirmed":
+        return 1, ""
+    return 2, ""
+
+
+def _centres(country: dict, forecasts: Optional[dict] = None) -> List[dict]:
+    """One row per application centre, to sit under the country's headline.
+
+    *** THE CARD NAMES EXACTLY ONE CITY, AND THAT WAS NEVER ENOUGH. ***
+
+    `query.rank` collapses a country to its best centre on purpose — an agent
+    books the client wherever is soonest — and the card's `centre` names that
+    winner. Every other centre then vanished from the payload entirely: before
+    this, a city appeared in just two fields on the whole board, `centre` and
+    the change feed's `sub`, so a renderer could not have shown Dubai even if it
+    wanted to. Abu Dhabi won `centre` almost every cycle, which read as "Dubai
+    is not checked" when Dubai was checked all day and routinely differed — on
+    2026-10-29 it held a Norway Business reading of 27 Jul against Abu Dhabi's
+    nothing, and Greece and Italy were Dubai-only.
+
+    So every centre the route checks gets a row, whether or not it won, and a
+    centre with nothing to report still gets one saying so — a missing row reads
+    as "not checked" and would be the same lie in a new place.
+
+    Same wording, stat labels and sort rule as the card: see `_live_state`.
+    """
+    groups: dict = {}
+    for combo in country["combos"]:
+        city = combo["city"] or combo["centre"] or ""
+        groups.setdefault(city, []).append(combo)
+
+    rows = []
+    for city, combos in groups.items():
+        cells = [forecast.cell((forecasts or {}).get(k["combo_id"]))
+                 for k in combos]
+        rolled = forecast.roll_up(cells) if cells else {}
+
+        # The soonest BOOKABLE date at this centre, by the same test the card
+        # applies: a stale reading, or a date already gone by, is not an offer.
+        offers = [k for k in combos if k["current_bookable"] and k["current_date"]]
+        best = min(offers, key=lambda k: k["current_date"]) if offers else None
+        has_date = best is not None
+
+        if has_date:
+            outcome = "slot"
+        elif any(k["current_outcome"] == "waitlist" for k in combos):
+            outcome = "waitlist"
+        elif any(k["observed"] for k in combos):
+            outcome = "none"
+        else:
+            outcome = None
+        status, kind = _live_state(has_date, rolled, outcome)
+
+        # Each figure is this centre's best combination, exactly as a country's
+        # is its best centre — averaging a dead visa type into a live one would
+        # describe a queue nobody actually joins.
+        leads = [k["median_lead"] for k in combos if k["median_lead"] is not None]
+        bests = [k["best_lead"] for k in combos if k["best_lead"] is not None]
+        drifts = [k["drift_per_day"] for k in combos
+                  if k["drift_per_day"] is not None]
+        sightings = [k for k in combos if k["last_slot_seen"]]
+        latest = (max(sightings, key=lambda k: k["last_slot_seen"])
+                  if sightings else None)
+
+        # A row with no date only has to say why it is blank. The card's empty
+        # state asks the reader to DO something; repeating that per row would
+        # spend the space and tell an agent nothing new.
+        if has_date:
+            note = ""
+        elif latest and latest["last_slot_date"]:
+            note = (f"Last slot {_fmt_date(latest['last_slot_date'])}, "
+                    f"seen {query.humanise_age(latest['last_slot_seen'])}")
+        elif outcome == "waitlist":
+            note = "Register the client, wait for a drop"
+        elif outcome == "none":
+            note = "Nothing seen in the window"
+        else:
+            note = "No data for this centre yet"
+
+        tier, within = _order_tier(has_date, rolled,
+                                   best["current_date"] if best else None)
+        rows.append({
+            # City last, so two centres with nothing to separate them keep one
+            # order every cycle - a row that moves on a screen nobody touches
+            # looks like news.
+            "order": [tier, within, city],
+            "city": city,
+            "kind": kind,
+            "status": status,
+            "has_date": has_date,
+            "headline_label": "Next appointment",
+            "headline": _fmt_date(best["current_date"]) if best else "",
+            "date_iso": best["current_date"] if best else None,
+            "visa_type": (best or {}).get("visa_type") or "",
+            "forecast": _forecast_line(rolled),
+            "note": note,
+            "combos": len(combos),
+            "stats_left": [
+                {"label": "Wait",
+                 "value": _fmt_lead(min(leads) if leads else None)},
+                {"label": "Soonest",
+                 "value": _fmt_lead(min(bests) if bests else None)},
+            ],
+            "stats_right": [
+                {"label": "Seen",
+                 "value": _seen_date(latest["last_slot_seen"] if latest else None)},
+                {"label": "Drift",
+                 "value": _fmt_drift(max(drifts) if drifts else None)},
+            ],
+        })
+
+    rows.sort(key=lambda r: r["order"])
+    return rows
+
+
 def _slot_card(country: dict, rank: int, forecasts: Optional[dict] = None) -> dict:
     # Bookable, not merely "the last reading saw a slot". A date in 88px type is
     # a promise that an agent can act on it now; a stale reading or a date that
@@ -157,20 +302,7 @@ def _slot_card(country: dict, rank: int, forecasts: Optional[dict] = None) -> di
             parts.append(best["visa_type"])
         centre = ", ".join(p for p in parts if p)
 
-    # The chip says what is true NOW, not what was true across the window. A
-    # country with a slot on the screen read "Occasional" because that is its
-    # history — accurate, and the opposite of useful to someone deciding whether
-    # to call a client. History still shows, in the score and the footer.
-    if has_date:
-        live, live_kind = "Open now", "open"
-    elif rolled.get("reason") == "unconfirmed" and rolled.get("since"):
-        live, live_kind = f"Was open {_relative(rolled['since'])} ago", "occ"
-    elif country["current_outcome"] == "waitlist":
-        live, live_kind = "Waitlist only", "wait"
-    elif country["current_outcome"] == "none":
-        live, live_kind = "No slots now", "wait"
-    else:
-        live, live_kind = "Not checked", "none"
+    live, live_kind = _live_state(has_date, rolled, country["current_outcome"])
 
     # The empty state has to say what to DO, not just what is missing.
     if country["verdict"] == "Waitlist only":
@@ -186,16 +318,7 @@ def _slot_card(country: dict, rank: int, forecasts: Optional[dict] = None) -> di
     else:
         empty_title, empty_sub = "No slots", "Nothing seen in the window"
 
-    # What puts a card near the top. Availability first and score second: a
-    # board is read left to right, so what can be booked now has to be in the
-    # first position, whatever its history score says. Within the bookable tier
-    # the soonest appointment leads.
-    if has_date:
-        tier, within = 0, country["current_date"] or ""
-    elif rolled.get("reason") == "unconfirmed":
-        tier, within = 1, ""
-    else:
-        tier, within = 2, ""
+    tier, within = _order_tier(has_date, rolled, country["current_date"])
 
     return {
         "rank": rank,
@@ -211,6 +334,8 @@ def _slot_card(country: dict, rank: int, forecasts: Optional[dict] = None) -> di
         "headline_label": "Next appointment",
         "headline": _fmt_date(country["current_date"]) if has_date else "",
         "centre": centre,
+        # Every centre, not just the one `centre` names. See `_centres`.
+        "centres": _centres(country, forecasts),
         "empty_title": empty_title,
         "empty_sub": empty_sub,
         # The dashboard's four numbers, laid out in the mockup's footer style:

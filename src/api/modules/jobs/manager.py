@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import secrets
+import signal
 import subprocess
 import sys
 import time
@@ -50,6 +51,13 @@ from src.utils import run_context
 from src.api.modules.jobs.store import JobStore, prune_logs, reconcile
 
 log = logging.getLogger("vfs.api.jobs")
+
+#: How long a cancelled or timed-out child gets to stop itself before the tree
+#: is killed. It is generous on purpose: in that window probe.py closes Chrome,
+#: records which step it was on and reports whether a payment is in flight -
+#: every one of which is worth more than a fast cancel. Past it, a stray browser
+#: window is the lesser evil.
+GRACEFUL_STOP_SECONDS = 20
 
 
 # The waitlist CLI returns 2 when it stopped because a real, bookable slot
@@ -1051,9 +1059,50 @@ class JobManager:
 
     @staticmethod
     async def _terminate(process: asyncio.subprocess.Process) -> None:
-        """Ask the child to exit, then kill it if it will not."""
+        """Ask the child to exit the way Ctrl-C does, then kill its TREE.
+
+        *** THE OLD VERSION LEFT CHROME RUNNING AND THE JOURNAL UNWRITTEN. ***
+
+        It called `process.terminate()`, which on Windows is TerminateProcess:
+        the child is destroyed where it stands. No `except KeyboardInterrupt`,
+        no `finally`, so nothing closed the browser and nothing recorded what
+        the run had been doing. Chrome is a GRANDchild, so it was not killed
+        either - it just lost its parent. Seen 2026-10-30 on AE-FRA job
+        aa0986956806d353: cancelled from the web app one step after `services`,
+        on the way into payment; the log stops mid-sentence and the browser was
+        still on screen.
+
+        `src/booking/probe.py` already handles this properly - Ctrl-C is a
+        first-class outcome there: it names the step it was on, says whether a
+        payment is in flight, and its `finally` closes Chrome cleanly. The API
+        was simply never delivering an interrupt it could catch. It is also why
+        `requests.flag_stale` needs a RUN_UNKNOWN state at all: a child killed
+        this way never writes its own terminal event.
+
+        So: interrupt first and let the child do all of that, and only take the
+        tree by force if it will not go. The children are spawned into their own
+        process group (see `_process_group_kwargs`) precisely so this signal can
+        be sent without the API receiving it too.
+        """
         if process.returncode is not None:
             return
+
+        pid = process.pid
+        if JobManager._interrupt(pid):
+            try:
+                await asyncio.wait_for(process.wait(),
+                                       timeout=GRACEFUL_STOP_SECONDS)
+                return          # it stopped itself, and closed its own browser
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Job pid %s did not stop %ss after an interrupt - killing "
+                    "the process tree. Check for a stray browser window.",
+                    pid, GRACEFUL_STOP_SECONDS)
+
+        # It would not stop, or could not be signalled. Kill the TREE, and do it
+        # while the parent is still alive: the tree is walked by parent pid, so
+        # killing the parent first is what orphans Chrome beyond reach.
+        JobManager._kill_tree(pid)
         with contextlib.suppress(ProcessLookupError, OSError):
             process.terminate()
         try:
@@ -1063,6 +1112,40 @@ class JobManager:
                 process.kill()
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(process.wait(), timeout=5)
+
+    @staticmethod
+    def _interrupt(pid: int) -> bool:
+        """Deliver a Ctrl-C-equivalent to the child's process group.
+
+        True when the signal went out. Windows has no SIGINT to send across
+        processes, so CTRL_BREAK_EVENT is the only interrupt that reaches
+        another process - and it reaches a GROUP, which is why the child is
+        spawned as a group leader. Python turns it into KeyboardInterrupt in the
+        child, which is exactly what probe.py is waiting for.
+        """
+        try:
+            if sys.platform == "win32":
+                os.kill(pid, signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(os.getpgid(pid), signal.SIGINT)
+            return True
+        except (ProcessLookupError, PermissionError, OSError) as exc:
+            log.warning("Could not interrupt job pid %s (%s) - killing it "
+                        "instead.", pid, exc)
+            return False
+
+    @staticmethod
+    def _kill_tree(pid: int) -> None:
+        """Kill the child AND its descendants, so no browser is left behind."""
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True, timeout=20, check=False)
+            else:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except Exception as exc:                            # noqa: BLE001
+            log.warning("Could not kill the process tree for pid %s: %s",
+                        pid, exc)
 
     async def cancel(self, job_id: str, *, reason: str = "Cancelled via API.") -> bool:
         """Stop a running job. Returns False if it was not running.

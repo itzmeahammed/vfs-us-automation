@@ -262,7 +262,10 @@ def list_clients(
     summaries: List[ClientSummary] = []
     # Read the whole history ONCE and bucket it, rather than asking each client
     # for its own and re-reading the journal N times for the same answer.
-    history = journal.summarise_by_client() if "journal" in wanted else {}
+    # Read for "status" too: `runnable` needs each client's holding, and asking
+    # the journal per client would re-read the whole file N times.
+    history = (journal.summarise_by_client()
+               if wanted & {"journal", "status"} else {})
 
     for rid in store.list_ids(route=route):
         try:
@@ -289,8 +292,13 @@ def list_clients(
 
             problems = validate.precheck_client(rid, data)
             # A warning does not stop a run, so it must not make a client
-            # read as not-runnable in the listing either.
-            row.runnable = not _blocking(problems)
+            # read as not-runnable in the listing either. A registration does:
+            # a client holding an entry on this route is dropped from every
+            # plan before login, so they would not register right now however
+            # sound their config is. Not a `problem` - a finished job is not a
+            # fault - so only `runnable` moves.
+            row.runnable = (not _blocking(problems)
+                            and not journal.summary_holds_entry(history.get(rid)))
             row.problem_count = len(_blocking(problems))
             if runnable is not None and row.runnable != runnable:
                 continue
@@ -314,7 +322,7 @@ def get_client(client_id: str) -> ClientDetailResponse:
     Also re-runs the pre-flight, so the web app can show whether this client
     would actually register right now.
     """
-    from src.waitlist import store, validate
+    from src.waitlist import journal, store, validate
 
     try:
         data = store.get_raw(client_id)
@@ -323,10 +331,15 @@ def get_client(client_id: str) -> ClientDetailResponse:
                             detail=str(exc)) from exc
 
     problems = validate.precheck_client(client_id, data)
+    # A client already holding an entry on this route will not register again —
+    # every plan drops them before login. See the note in service.list_clients;
+    # the detail and the listing must not disagree about the same client.
+    held = journal.blocking_entry_for_route(
+        str(data.get("route") or ""), client_id)
     return ClientDetailResponse(
         client_id=client_id,
         client=_public_view(client_id, data),
-        runnable=not _blocking(problems),
+        runnable=not _blocking(problems) and held is None,
         problems=_problems_to_models(problems),
     )
 

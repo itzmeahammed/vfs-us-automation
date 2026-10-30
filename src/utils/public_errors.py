@@ -77,6 +77,23 @@ _RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     (("login form never appeared", "loginformnotready", "login failed",
       "loginbounced", "dashboardnotreached"),
      "VFS's login page did not load."),
+    # *** 3-D SECURE IS NOT AN OTP FAILURE, AND IT IS NOT A FAILURE AT ALL. ***
+    #
+    # The bank's check says "an OTP to type, or an approval in your banking
+    # app", and the OTP rules below match "otp" as a bare substring. On
+    # 2026-10-29 (run 2efca90bd38f9f18) that turned the 3-D Secure WAIT into
+    # "VFS's one-time password (OTP) step could not be completed" in the web
+    # app - on a booking that then completed, was paid, and is confirmed as
+    # 18 Nov 09:15. The operator was told a step had failed while the card was
+    # being charged.
+    #
+    # First in the table because money rules go first and because the OTP rules
+    # below would otherwise swallow it.
+    (("3-d secure", "3d secure", "finish the bank's check",
+      "banking app", "payment_challenge"),
+     "The bank is asking to approve this payment. Finish the check in the "
+     "open browser window - the card may already be charged, so this is never "
+     "retried automatically."),
     # The MID-BOOKING OTP (src/booking/otp_step.py), which is a different
     # failure from the sign-in one below and has a different fix. Listed first
     # because the table is first-hit-wins and "otp" below would swallow it.
@@ -221,6 +238,29 @@ def public_reason(reason: object, status: object) -> str:
 
 _LOG_LINE = re.compile(r"^(\d{2}:\d{2}:\d{2}) \| (?:[0-9a-f]{6,} \| )?"
                        r"(INFO|WARNING|ERROR|CRITICAL|DEBUG) +\| ?(.*)$")
+
+#: *** THE SAME LOG, WRITTEN THE OTHER WAY. ***
+#:
+#: The booking lane writes "12:07:54 | INFO | ..."; the WAITLIST lane writes
+#: "[2026-10-29 16:27:50,445] INFO [runner.py:393] ...". Only the first was
+#: parsed, so every waitlist job served `lines: []` with `log_available: true` -
+#: a web app asking for live logs got an empty panel and no reason for it, for
+#: every registration ever run (AE-CHE 138200ffc7d31a2b and the AE-GRC run that
+#: succeeded, 2026-10-29). Both are accepted here rather than restyling one
+#: lane's logging: that would fix new runs and leave every log already on disk
+#: unreadable, and the formats are what they are for other reasons.
+#:
+#: The source location ("[runner.py:393]") is dropped - it is internal detail,
+#: and the pipe format carries nothing like it.
+_LOG_LINE_BRACKETED = re.compile(
+    r"^\[\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})(?:[,.]\d+)?\] +"
+    r"(INFO|WARNING|ERROR|CRITICAL|DEBUG) +(?:\[[^\]]+\] +)?(.*)$")
+
+
+def _parsed(line: str):
+    """(time, level, text) for either lane's format, or None."""
+    text = str(line).rstrip()
+    return (_LOG_LINE.match(text) or _LOG_LINE_BRACKETED.match(text))
 #: INFO lines that are really internals (Playwright call logs, selector
 #: timeouts) — not shown.
 _INTERNAL = ("locator.", "call log", "traceback", "timeout ", "ms exceeded",
@@ -239,7 +279,7 @@ def public_log_lines(lines: Iterable[str]) -> list:
     """
     out = []
     for line in lines or []:
-        m = _LOG_LINE.match(str(line).rstrip())
+        m = _parsed(line)
         if not m:
             continue
         stamp, level, text = m.groups()

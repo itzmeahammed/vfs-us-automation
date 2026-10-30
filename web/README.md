@@ -119,7 +119,18 @@ reintroduce and invisible until someone opens the table.
 `payload.sample.json` is real output, useful as a fixture and for Storybook:
 
 ```bash
-python -c "import sqlite3, json; from src.slots import wall; \
-c = sqlite3.connect('state/slots.db'); c.row_factory = sqlite3.Row; \
-json.dump(wall.build_payload(c, days=7), open('web/payload.sample.json','w'), indent=2)"
+python web/make_sample.py          # or: python web/make_sample.py 14
 ```
+
+It reads `state/slots.db` and builds the board through `wall.build_payload`, so
+every centre, visa type, date and outcome is what VFS actually returned. The one
+adjustment is the clock: timestamps are shifted so the newest reading lands a few
+minutes ago.
+
+That shift is what makes it a usable fixture rather than a trick. A card shows an
+appointment date only while its reading is under `query.BOOKABLE_WITHIN_HOURS`
+old, and the checker runs 09:00-24:00 - so a snapshot taken outside that window
+has no bookable card at all, while `verify/render.jsx` asserts there is at least
+one, because the headline and the empty state are mutually exclusive branches and
+the fixture has to exercise both. The hand-rolled one-liner this replaces
+silently produced an all-empty board whenever it was run at the wrong hour.

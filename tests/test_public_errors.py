@@ -219,3 +219,120 @@ def test_a_real_proxy_failure_still_says_proxy():
     """The wording is right where it is true — only the catch-all was wrong."""
     assert "Proxy" in pe.public_message(
         "net::ERR_TUNNEL_CONNECTION_FAILED at https://visa.vfsglobal.com")
+
+
+def test_3d_secure_is_not_reported_as_an_otp_failure():
+    """2026-10-29, run 2efca90bd38f9f18: the bank's check says "an OTP to type",
+    the OTP rules match "otp" as a bare substring, and the web app was told
+    "VFS's one-time password (OTP) step could not be completed" while the card
+    was being charged on a booking that then completed and was confirmed."""
+    said = pe.public_reason(
+        "3-D SECURE: FINISH THE BANK'S CHECK IN THE OPEN BROWSER. "
+        "(an OTP to type, or an approval in your banking app)",
+        "attempt_failed")
+
+    assert "one-time password" not in said.lower()
+    assert "bank" in said.lower()
+    assert "charged" in said.lower(), "the operator must be told money may have moved"
+
+
+def test_a_payment_challenge_says_a_human_is_needed():
+    said = pe.public_reason("payment_challenge", "attempt_failed")
+
+    assert "browser" in said.lower()
+    assert "retried" in said.lower(), "a challenged payment is never auto-retried"
+
+
+def test_the_otp_rules_still_work_under_the_new_one():
+    """Putting money first must not shadow the OTP messages themselves."""
+    booking = pe.public_reason(
+        "VFS is asking for an email OTP but no MAILBOX password is configured",
+        "attempt_failed")
+    signin = pe.public_reason(
+        "Could not get past VFS's OTP page after 2 attempt(s)", "attempt_failed")
+
+    assert "nothing was charged" in booking.lower()
+    assert "one-time password" in signin.lower()
+
+
+# ===== both lanes write a log, both have to be readable ====================
+#
+# The booking lane writes "12:07:54 | INFO | ...". The waitlist lane writes
+# "[2026-10-29 16:27:50,445] INFO [runner.py:393] ...". Only the first was
+# parsed, so GET /v1/jobs/{id}/logs answered `log_available: true` with
+# `lines: []` for every registration ever run - the web app showed an empty
+# live-log panel and no reason for it. Seen 2026-10-29 on AE-CHE
+# (138200ffc7d31a2b, 72 lines on disk, 0 served) and on the AE-GRC run that
+# actually succeeded.
+
+BOOKING_LINE = "12:07:54 | INFO     | run_id=924e9604 Reached dashboard."
+WAITLIST_LINE = ("[2026-10-29 16:27:50,464] INFO [runner.py:393] "
+                 "=== Waitlist run: AE-CHE ===")
+
+
+def test_the_waitlist_lanes_format_is_read():
+    """*** THE ONE THAT SERVED AN EMPTY PANEL. ***"""
+    out = pe.public_log_lines([WAITLIST_LINE])
+
+    assert out == ["16:27:50 | INFO | === Waitlist run: AE-CHE ==="]
+
+
+def test_the_booking_lanes_format_still_is():
+    out = pe.public_log_lines([BOOKING_LINE])
+
+    assert len(out) == 1
+    assert out[0].startswith("12:07:54 | INFO | ")
+
+
+def test_one_log_may_hold_both():
+    """Nothing forbids it, and a parser that handles each alone but not the mix
+    is a parser nobody can reason about."""
+    out = pe.public_log_lines([BOOKING_LINE, WAITLIST_LINE])
+
+    assert len(out) == 2
+
+
+def test_the_source_location_is_not_shown():
+    """'[runner.py:393]' is internal detail, and the other format carries no
+    equivalent - showing it for one lane only would be a tell."""
+    out = pe.public_log_lines([WAITLIST_LINE])
+
+    assert "runner.py" not in out[0]
+    assert "[" not in out[0].split("| INFO |")[1] or "===" in out[0]
+
+
+def test_a_bracketed_debug_line_is_still_dropped():
+    out = pe.public_log_lines(
+        ["[2026-10-29 16:27:50,464] DEBUG [runner.py:1] chatty internals"])
+
+    assert out == []
+
+
+def test_a_bracketed_error_still_becomes_one_public_sentence():
+    """The level branch must apply to both formats, or the waitlist lane would
+    leak a Playwright call log straight to the web app."""
+    out = pe.public_log_lines([
+        "[2026-10-29 16:30:14,038] ERROR [runner.py:9] "
+        "Could not fill field first_name (text): Locator.wait_for: Timeout "
+        "15000ms exceeded."])
+
+    assert len(out) == 1
+    assert "Locator" not in out[0]
+    assert "Timeout" not in out[0]
+
+
+def test_a_bracketed_line_with_no_source_location_is_read():
+    """Not every logger prints one."""
+    out = pe.public_log_lines(
+        ["[2026-10-29 16:27:50,464] INFO Plain line, no module."])
+
+    assert out == ["16:27:50 | INFO | Plain line, no module."]
+
+
+def test_a_playwright_call_log_is_still_not_a_line():
+    """It has no timestamp in either format, so it never reaches the web app."""
+    out = pe.public_log_lines([
+        "  - waiting for locator(\"app-dynamic-control\")",
+        "*** LIVE MODE - this WILL submit a real waitlist registration. ***"])
+
+    assert out == []

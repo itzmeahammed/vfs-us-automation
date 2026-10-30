@@ -181,6 +181,20 @@ def blocking_entry_for_route(route: str, registrant_id: str) -> Optional[dict]:
     return None
 
 
+def summary_holds_entry(summary: Optional[dict]) -> bool:
+    """Does a per-client summary show an entry that ends this client's runs?
+
+    The same question as `blocking_entry_for_route`, asked of a row that
+    `summarise_by_client` has already produced. A listing reads that summary
+    once for every client; calling the other one per client would re-read the
+    whole journal N times for an answer it is already holding.
+
+    One definition, two call sites: `holding_status` is itself set from
+    Status.COMMITTED_STATES, so these cannot drift apart.
+    """
+    return bool(summary) and summary.get("holding_status") in Status.COMMITTED_STATES
+
+
 def dangling() -> List[dict]:
     """Rows needing a human: 'pending' or 'unknown' (see Status.NEEDS_ATTENTION).
 

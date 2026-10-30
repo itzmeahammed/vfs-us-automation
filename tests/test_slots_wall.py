@@ -483,3 +483,201 @@ def test_a_country_off_the_board_still_appears_in_the_table(store, monkeypatch):
     missing = ({c["country"] for c in tourist["table"]}
                - {c["country"] for c in tourist["cards"]})
     assert missing, "a country was dropped from the board and from the table"
+
+
+# ===== every centre, not just the one that won =============================
+#
+# `query.rank` collapses a country to its best centre on purpose, and the card's
+# `centre` names that winner. Before `centres`, every other centre was gone from
+# the payload: a city appeared in exactly two fields on the whole board, so a
+# renderer could not have drawn Dubai even if it wanted to. Abu Dhabi won
+# `centre` almost every cycle, which read as "Dubai is not checked" while Dubai
+# was being checked all day and routinely differed.
+
+SWE_AUH = {"centre": "Abu Dhabi", "category": "Short Stay",
+           "sub_category": "Tourist"}
+SWE_DXB = {"centre": "Dubai", "category": "Short Stay",
+           "sub_category": "Tourist"}
+
+
+@pytest.fixture
+def pair(tmp_path):
+    """One country, two centres - the shape the whole feature exists for."""
+    routes = tmp_path / "routes"
+    routes.mkdir()
+    (routes / "AE-SWE.json").write_text(
+        json.dumps({"slot_check": {"combinations": [SWE_AUH, SWE_DXB]}}),
+        encoding="utf-8")
+    s = SlotStore.open(str(tmp_path / "slots.db"))
+    s.sync_combos(str(routes))
+    yield s
+    s.close()
+
+
+def _sweden(store, view_name="Tourist"):
+    cards = view(wall.build_payload(store.conn, days=30), view_name)["cards"]
+    return next(c for c in cards if c["country"] == "Sweden")
+
+
+def _row(card, city):
+    return next(r for r in card["centres"] if r["city"] == city)
+
+
+def test_both_centres_are_sent_when_only_one_has_a_slot(pair):
+    """*** THE WHOLE POINT. ***
+
+    Abu Dhabi wins the card's single `centre`; Dubai still has to arrive, with
+    its own state, or the board has said Sweden has one centre.
+    """
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_AUH, ts=now)
+    pair.record_check("AE-SWE", "No slot message shown (no availability?).",
+                      combo=SWE_DXB, ts=now)
+
+    card = _sweden(pair)
+
+    assert [r["city"] for r in card["centres"]] == ["Abu Dhabi", "Dubai"]
+    assert _row(card, "Abu Dhabi")["status"] == "Open now"
+    assert _row(card, "Dubai")["status"] == "No slots now"
+
+
+def test_a_centre_with_nothing_to_report_still_gets_a_row(pair):
+    """A missing row reads as "not checked" - the same lie in a new place."""
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_AUH, ts=now)
+
+    card = _sweden(pair)
+
+    assert len(card["centres"]) == 2
+    assert _row(card, "Dubai")["status"] == "Not checked"
+    assert _row(card, "Dubai")["note"]
+
+
+def test_each_centre_carries_its_own_date(pair):
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_AUH, ts=now)
+    pair.record_check("AE-SWE", slot_msg(40, now), combo=SWE_DXB, ts=now)
+
+    card = _sweden(pair)
+
+    assert _row(card, "Abu Dhabi")["date_iso"] != _row(card, "Dubai")["date_iso"]
+    assert MON_DAY.match(_row(card, "Dubai")["headline"])
+    assert all(r["has_date"] for r in card["centres"])
+
+
+def test_the_card_headline_is_the_soonest_of_its_centres(pair):
+    """The rows must not disagree with the number in 88px type above them."""
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", slot_msg(40, now), combo=SWE_AUH, ts=now)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_DXB, ts=now)
+
+    card = _sweden(pair)
+    dated = [r["date_iso"] for r in card["centres"] if r["date_iso"]]
+
+    assert card["headline"] == wall._fmt_date(min(dated))
+    assert "Dubai" in card["centre"], "the winning centre is Dubai here"
+
+
+def test_a_centre_wins_the_card_even_when_it_is_not_abu_dhabi(pair):
+    """Abu Dhabi won `centre` almost every cycle because it usually held the
+    earlier date, not because anything preferred it. Nothing may."""
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", "No slot message shown (no availability?).",
+                      combo=SWE_AUH, ts=now)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_DXB, ts=now)
+
+    card = _sweden(pair)
+
+    assert card["centre"].startswith("Dubai")
+    assert _row(card, "Dubai")["has_date"]
+    assert not _row(card, "Abu Dhabi")["has_date"]
+
+
+def test_the_bookable_centre_is_listed_first(pair):
+    """Availability leads a row list for the same reason it leads the board."""
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", "No slot message shown (no availability?).",
+                      combo=SWE_AUH, ts=now)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_DXB, ts=now)
+
+    assert [r["city"] for r in _sweden(pair)["centres"]] == ["Dubai", "Abu Dhabi"]
+
+
+def test_two_centres_with_nothing_to_separate_them_keep_one_order(pair):
+    """A row that moves on a screen nobody touches looks like news."""
+    now = datetime.now(GST)
+    for hours in range(1, 12):
+        past = now - timedelta(hours=hours)
+        pair.record_check("AE-SWE", slot_msg(10, past), combo=SWE_AUH, ts=past)
+        pair.record_check("AE-SWE", slot_msg(10, past), combo=SWE_DXB, ts=past)
+
+    seen = {tuple(r["city"] for r in _sweden(pair)["centres"]) for _ in range(3)}
+
+    assert seen == {("Abu Dhabi", "Dubai")}
+
+
+def test_a_stale_centre_reading_is_no_more_bookable_than_a_stale_card(pair):
+    """The row applies the card's own test, not a looser one."""
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", slot_msg(10, now - timedelta(hours=6)),
+                      combo=SWE_AUH, ts=now - timedelta(hours=6))
+
+    row = _row(_sweden(pair), "Abu Dhabi")
+
+    assert not row["has_date"]
+    assert row["status"].startswith("Was open")
+    assert "Last slot" in row["note"]
+
+
+def test_a_centre_row_carries_the_cards_four_numbers(pair):
+    """It renders beside the card, so a missing figure is a blank column."""
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_AUH, ts=now)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_DXB, ts=now)
+
+    for row in _sweden(pair)["centres"]:
+        assert [s["label"] for s in row["stats_left"]] == ["Wait", "Soonest"]
+        assert [s["label"] for s in row["stats_right"]] == ["Seen", "Drift"]
+        assert all(s["value"] for s in row["stats_left"] + row["stats_right"])
+        assert row["kind"] and row["status"]
+
+
+def test_the_business_view_gets_centres_too(pair, tmp_path):
+    """Asked for on both: an agent sells business appointments off this screen
+    as often as tourist ones."""
+    biz_auh = {"centre": "Abu Dhabi", "category": "Short Stay - Business",
+               "sub_category": ""}
+    biz_dxb = {"centre": "Dubai", "category": "Short Stay - Business",
+               "sub_category": ""}
+    routes = tmp_path / "biz"
+    routes.mkdir()
+    (routes / "AE-SWE.json").write_text(
+        json.dumps({"slot_check": {"combinations": [biz_auh, biz_dxb]}}),
+        encoding="utf-8")
+    pair.sync_combos(str(routes))
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=biz_dxb, ts=now)
+
+    card = _sweden(pair, "Business")
+
+    assert {r["city"] for r in card["centres"]} == {"Abu Dhabi", "Dubai"}
+    assert _row(card, "Dubai")["has_date"]
+
+
+def test_every_table_row_carries_its_centres_as_well(pair):
+    """The table renders from the same card, so it must not be the one place a
+    centre is missing."""
+    now = datetime.now(GST)
+    pair.record_check("AE-SWE", slot_msg(10, now), combo=SWE_AUH, ts=now)
+
+    for view_ in wall.build_payload(pair.conn, days=30)["views"]:
+        for row in view_["table"]:
+            assert isinstance(row.get("centres"), list)
+
+
+def test_the_waitlist_view_is_left_alone(store):
+    """It has no appointment date to break down by centre, and nothing was asked
+    of it. Its cards come from a different query."""
+    _fill(store)
+    for card in view(wall.build_payload(store.conn, days=7), "Waitlist")["cards"]:
+        assert "centres" not in card

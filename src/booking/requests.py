@@ -464,6 +464,11 @@ def precheck(request_id: str, data: Dict[str, Any],
             field = "date_to" if message.startswith(("date_to", "the whole")) else "date_from"
             problems.append(_problem(field, message))
 
+    # --- the contact number: subscriber digits only ------------------------ #
+    # The portal picks the dialling code in its own control, so a code carried
+    # inside the number is typed on top of it. See validate.check_phone.
+    problems.extend(validate.check_phone(data))
+
     # --- applicant fields the booking pages and the payment page need ------ #
     if route_ok and combo:
         probe_data = dict(data)

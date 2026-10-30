@@ -177,7 +177,21 @@ def list_clients(flow: Optional[str] = None, route: Optional[str] = None,
                 from src.waitlist import validate
                 errors = [p for p in validate.precheck_client(cid, data)
                           if getattr(p, "severity", "error") == "error"]
-                rows[-1].update(runnable=not errors, problem_count=len(errors))
+                # *** A REGISTERED CLIENT IS NOT RUNNABLE, HOWEVER VALID. ***
+                #
+                # `runnable` answers "would this client register right now?",
+                # and the pre-flight only checks whether the config is sound. A
+                # client already holding an entry on this route is dropped from
+                # every plan before login — manual run and auto-trigger alike —
+                # so the honest answer is no. On 2026-10-29
+                # ahmed-travnook-ae-grc-af754d held GRC129529986331 and still
+                # reported runnable, which is what a web app shows as "armed".
+                #
+                # It is not a `problem`: the registration is a finished job, not
+                # a fault. `status` ("registered") and `vfs_reference` say why.
+                held = journal.summary_holds_entry(history.get(cid))
+                rows[-1].update(runnable=not errors and not held,
+                                problem_count=len(errors))
 
     if flow in (None, LIVE):
         for req in req_store.list_all(route=route):

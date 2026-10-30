@@ -35,6 +35,49 @@ export interface ForecastLine {
   kind: ForecastKind;
 }
 
+/**
+ * One application centre within a country, e.g. Abu Dhabi or Dubai.
+ *
+ * A country card's `centre` names only the ONE centre holding the soonest
+ * bookable date, because `rank()` collapses a country to its best centre. These
+ * rows are every centre the route checks, whether or not it won, so both
+ * Abu Dhabi and Dubai can be drawn under one headline. A centre with nothing to
+ * report still arrives, with `status: "Not checked"` and a `note` - leaving it
+ * out would read exactly like not checking it.
+ *
+ * Same field names, wording and stat labels as `Card`, so a row can reuse the
+ * card's renderers. Rows arrive sorted (bookable first, then soonest, then city)
+ * and must not be re-sorted.
+ */
+export interface Centre {
+  /** "Abu Dhabi", "Dubai", "Damac Hills", ... */
+  city: string;
+  status: string;
+  kind: Kind;
+
+  /** True only when THIS centre has a bookable slot: fresh, date not passed. */
+  has_date: boolean;
+  headline_label?: string;
+  /** "Nov 02" - meaningful only when has_date. */
+  headline: string;
+  /** The same date as ISO, or null. Use this to compare, never `headline`. */
+  date_iso: string | null;
+  /** The visa type that holds that date, e.g. "Short Stay - Tourist". */
+  visa_type: string;
+
+  /** Why this row is blank, when has_date is false. Empty when it is not. */
+  note: string;
+  /** How many combinations at this centre fed the row. */
+  combos: number;
+
+  forecast: ForecastLine | null;
+  stats_left: Stat[];
+  stats_right: Stat[];
+
+  /** Internal sort key. */
+  order?: [number, string, string];
+}
+
 export interface Card {
   /** Position across the WHOLE board, 1-based. Stable between cards and table. */
   rank: number;
@@ -55,6 +98,13 @@ export interface Card {
   headline?: string;
   /** Where that appointment is, e.g. "Abu Dhabi, Short Stay - Tourist". */
   centre?: string;
+  /**
+   * EVERY centre, not just the one `centre` names. Added 2026-10-29 under
+   * schema 1 - it is additive, so a renderer that ignores it still works.
+   * Absent on a board built before that. Slot views only: the waitlist view has
+   * no appointment date to break down.
+   */
+  centres?: Centre[];
 
   /** Shown when has_date is false. An empty title means the sub carries alone. */
   empty_title: string;

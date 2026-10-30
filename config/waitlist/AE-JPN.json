@@ -1,8 +1,8 @@
 {
   "description": "UAE -> Japan waitlist registration. SCAFFOLD built from AE-NOR's waitlist shape; NOTHING here has been checked against this portal yet.",
   "extends": "_default",
-  "enabled": false,
-  "_comment_enabled": "OFF until `python -m src.waitlist doctor --route AE-JPN --walk` resolves every field and one dry run reaches review-pay.",
+  "enabled": true,
+  "_comment_enabled": "ON since 2026-10-30 by explicit request, BEFORE verification. The field list below is still an AE-NOR copy that no doctor walk has confirmed against the Japan portal, so the first live registration may stall on a missing selector or submit at review_pay with a field unfilled. Nothing fires until a client file in config/registrants/ names \"route\": \"AE-JPN\" — so the safe order is still: add one client, run `python -m src.waitlist doctor --route AE-JPN --walk --harvest`, fix whatever it reports, and only then let the auto-trigger reach it.",
   "steps": [
     {
       "name": "your_details",

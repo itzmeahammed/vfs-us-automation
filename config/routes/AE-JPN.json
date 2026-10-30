@@ -2,31 +2,40 @@
   "description": "UAE -> Japan. SLOT-CHECK ONLY: reach Step 1 (Appointment Details), then for each centre/category combination read the 'Earliest available slot' banner and report all results via Telegram. No booking is made.",
   "mode": "slot-check",
   "slot_check": {
+    "_comment_tv": "tv_title and tv_category are WORDING FOR THE TV ONLY (see [tv_announce] in config.ini). The portal sells these as 'E-Visa - *Tourist Single Entry' / 'Single Entry Tourism General', which reads as noise across a room and carries a literal asterisk, so the screen says 'Tourist' over 'Japan - <city> - E-Visa Tourist'. All four combos share one visa type, so tv_announce appends the city to each headline to stop the server's 5-minute same-title suppression dropping three of the four. Telegram, the dashboard and the slot history are untouched.",
     "_comment_labels": "Labels must be UNIQUE within a route — a waitlist client file names the combination it wants by label, and duplicates would silently resolve to whichever came first.",
     "combinations": [
       {
         "label": "Abu Dhabi - E-Visa Tourist Single Entry",
         "centre": "Japan Visa Application Centre, Abu Dhabi",
         "category": "E-Visa - *Tourist Single Entry",
-        "sub_category": "Single Entry Tourism General"
+        "sub_category": "Single Entry Tourism General",
+        "tv_title": "Tourist",
+        "tv_category": "E-Visa Tourist"
       },
       {
         "label": "Dubai - E-Visa Tourist Single Entry",
         "centre": "Japan Visa Application Centre, Dubai",
         "category": "E-Visa - *Tourist Single Entry",
-        "sub_category": "Single Entry Tourism General"
+        "sub_category": "Single Entry Tourism General",
+        "tv_title": "Tourist",
+        "tv_category": "E-Visa Tourist"
       },
       {
         "label": "Sharjah - E-Visa Tourist Single Entry",
         "centre": "Japan VAC - TEL - Sharjah",
         "category": "E-Visa - *Tourist Single Entry",
-        "sub_category": "Single Entry Tourism General"
+        "sub_category": "Single Entry Tourism General",
+        "tv_title": "Tourist",
+        "tv_category": "E-Visa Tourist"
       },
       {
-        "label": "Al Ain - E-Visa Tourist Single Entry",
+        "_comment_al_ain": "CORRECTED 2026-10-30 from a live run. Al Ain is a temporary enrolment location and does NOT offer the E-Visa category the three permanent centres do: with this centre selected, the category dropdown offered exactly one option, 'Temporary Enrolment Location - Al Ain' (logged verbatim at 12:32-12:33), so the old 'E-Visa - *Tourist Single Entry' matched 0 options and this combo errored on all 3 attempts instead of being read. Same shape as AE-FRA's Damac Hills row. sub_category is deliberately UNSET, not guessed: cascade_steps() skips a level with no value, so the banner is read straight after the category. If the next run logs 'no slot message shown' here, Japan does require a third dropdown for this location — read its options off the log and add them.",
+        "label": "Al Ain - Temporary Enrolment Location",
         "centre": "Temporary Enrolment Location - Al Ain",
-        "category": "E-Visa - *Tourist Single Entry",
-        "sub_category": "Single Entry Tourism General"
+        "category": "Temporary Enrolment Location - Al Ain",
+        "tv_title": "Tourist",
+        "tv_category": "Temporary Location - Al Ain"
       }
     ]
   }

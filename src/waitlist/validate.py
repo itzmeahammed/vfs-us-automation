@@ -437,8 +437,9 @@ def required_fields(route: str) -> List[Dict[str, Any]]:
     (`if_present`), so the web app can present it as optional rather than
     blocking signup on it.
 
-    Account credentials are NOT included: they are metadata about which VFS
-    login to use, not form data, and the caller supplies them separately.
+    The VFS account and its portal password are NOT included: they are metadata
+    about which login to use, not form data, and the caller supplies them
+    separately. The MAILBOX password is - see `mailbox_password_field`.
     """
     try:
         from src.waitlist import config as waitlist_config
@@ -448,7 +449,60 @@ def required_fields(route: str) -> List[Dict[str, Any]]:
         # A route with no usable config has no fields to describe. The caller
         # already reports WHY via route_readiness().problems.
         return []
-    return _fields_from_steps(cfg.get("steps"), set())
+    out = _fields_from_steps(cfg.get("steps"), set())
+    if not out:
+        # A route with no form has no account to read mail for either. An
+        # unknown route must report NOTHING, not a lone password box:
+        # readiness().problems is what explains why, and a form built from one
+        # field would look like a route that almost works.
+        return out
+    mailbox = mailbox_password_field(route)
+    if mailbox:
+        out.append(mailbox)
+    return out
+
+
+def mailbox_password_field(route: str) -> Optional[Dict[str, Any]]:
+    """The mailbox-password field for a waitlist form. Every route, always.
+
+    *** EVERY ROUTE, NOT JUST THE OTP ONES. ***
+
+    Registering is only half the job. VFS then drives the whole lifecycle by
+    email - the "Successfully Added to Waitlist" confirmation, and above all the
+    INVITATION that says a slot is bookable for the next 36-48 hours. The inbox
+    watcher reads that over IMAP from the account the client registered under,
+    and `invite_booking` turns it into a booking. A mailbox nobody can sign in
+    to means the invitation is never seen and the registration quietly leads
+    nowhere.
+
+    This field was originally scoped to routes with an `email_otp` step, i.e.
+    France, because that is where a MID-BOOKING code has to be read. That was
+    too narrow: the invitation arrives on every route. On 2026-10-29 an AE-NLD
+    client was registered under an account the watcher could not open, and no
+    form had ever asked for its password (see `route_needs_mailbox`, which is
+    still the right question for the OTP step itself and the wrong one here).
+
+    *** ASKED EVEN WHEN THE CREDENTIALS POOL ALREADY HOLDS ONE. ***
+
+    It briefly skipped the field for an address the pool knows, on the grounds
+    that making an agent retype a known value invites the wrong value. That
+    hides the one field the whole invitation chain hangs on, and it makes the
+    form depend on server-side credential state an agent cannot see: the same
+    route renders differently per account, for a reason the page cannot explain.
+    So the box is always offered and left OPTIONAL, and whether it HAD to be
+    filled is decided at submit by `check_mailbox_password`, which is where the
+    account is actually known.
+    """
+    return _field(
+        "account_email_password", "Mailbox password (Roundcube)", "password",
+        "account",
+        "The password for this account's MAILBOX, not the portal - NOT the "
+        "portal password. After registering, the bot signs in to this mailbox "
+        "to catch the VFS invitation email, which is what lets it book the "
+        "appointment. Without it the registration still lands, but the "
+        "invitation is never seen. Can be left blank only for a company "
+        "account the bot already holds a mailbox password for.",
+        required=False)
 
 
 #: Placeholders the bot fills from the route and the chosen combo
@@ -921,4 +975,161 @@ def precheck_client(registrant_id: str, data: Dict[str, Any]) -> List[Problem]:
     # fields checked at all — which is exactly the booking-only case.
     problems.extend(check_booking_templates(route, data))
 
+    problems.extend(check_mailbox_password(data))
+    problems.extend(check_phone(data))
+
     return problems
+
+
+#: The only dialling code served. Every route is AE-*, every centre is in the
+#: UAE, and every client reaches VFS on a UAE number - so a number that is not
+#: one is a typo, not a foreign client. Serving a second country means extending
+#: this rule deliberately rather than discovering it mid-run.
+UAE_DIALLING_CODE = "971"
+#: Digits in the NUMBER box, with +971 already chosen in the box beside it.
+#: 55 602 4553 -> "556024553".
+UAE_SUBSCRIBER_DIGITS = 9
+
+
+def check_phone(data: Dict[str, Any]) -> List[Problem]:
+    """Is this a UAE subscriber number, with no country code inside it?
+
+    *** THE PORTAL ASKS FOR THE CODE SEPARATELY. ***
+
+    Every route's form splits "Contact number" into two controls: the dialling
+    code, then the number. The bot fills them from `phone_country_code` and
+    `phone_number`, so a `+971` carried inside the number is typed in ON TOP of
+    the code already chosen - the portal receives 971 and then +9715445792.
+
+    Nothing checked this. On 2026-10-30 request osama-ahammed-ae-fra-b71d1c80
+    held `phone_country_code: "971"` with `phone_number: "+9715445792"`, and the
+    only reason it was not booked against an unreachable contact number is that
+    the run was cancelled for an unrelated reason. Strip the prefix and 7 digits
+    remain, so that number was wrong twice over and nothing said so.
+
+    ERRORS, not warnings. The cost of refusing is an agent retyping a field
+    while they are still looking at the form; the cost of allowing it is an
+    appointment booked - and paid for - against a number VFS cannot reach, which
+    no amount of later correction undoes.
+    """
+    number = str(data.get("phone_number") or "").strip()
+    code = str(data.get("phone_country_code") or "").strip().lstrip("+")
+
+    problems: List[Problem] = []
+    if code and code != UAE_DIALLING_CODE:
+        problems.append(Problem(
+            field="phone_country_code",
+            message=(f"\"{code}\" is not a UAE dialling code. Only "
+                     f"+{UAE_DIALLING_CODE} numbers can be used."),
+            hint="Every centre is in the UAE and VFS calls a UAE number."))
+
+    if not number:
+        # Whether the field is REQUIRED is asked by the form definition; this
+        # judges a value that is there. Otherwise every route with no phone
+        # field would report a phone problem.
+        return problems
+
+    compact = re.sub(r"[\s()\-.]", "", number)
+
+    if compact.startswith("+"):
+        problems.append(Problem(
+            field="phone_number",
+            message=(f"\"{number}\" starts with '+'. The number box takes the "
+                     "subscriber number only - the country code is chosen in "
+                     "the box beside it."),
+            hint=(f"Put the code in \"phone_country_code\" (currently "
+                  f"\"{code or 'empty'}\") and the 9 digits here: "
+                  f"+971 55 602 4553 is code 971, number 556024553.")))
+        return problems
+
+    if not compact.isdigit():
+        problems.append(Problem(
+            field="phone_number",
+            message=(f"\"{number}\" is not a plain number. Digits only - the "
+                     "bot types this straight into the portal."),
+            hint="Spaces, brackets, dashes and dots are fine; letters are not."))
+        return problems
+
+    if compact.startswith(UAE_DIALLING_CODE) and len(compact) > UAE_SUBSCRIBER_DIGITS:
+        # Only when it cannot be a real number on its own: a UAE mobile never
+        # starts 971, so this is unambiguous rather than a guess about intent.
+        problems.append(Problem(
+            field="phone_number",
+            message=(f"\"{number}\" repeats the country code "
+                     f"{UAE_DIALLING_CODE}, which is already selected in the "
+                     "box before it."),
+            hint=f"This field should be \"{compact[len(UAE_DIALLING_CODE):]}\"."))
+        compact = compact[len(UAE_DIALLING_CODE):]   # judge the length on what is left
+
+    if len(compact) != UAE_SUBSCRIBER_DIGITS:
+        problems.append(Problem(
+            field="phone_number",
+            message=(f"\"{compact}\" is {len(compact)} digit"
+                     f"{'' if len(compact) == 1 else 's'}; a UAE number is "
+                     f"{UAE_SUBSCRIBER_DIGITS}."),
+            hint="With +971 chosen beside it, 55 602 4553 is \"556024553\"."))
+
+    return problems
+
+
+def check_mailbox_password(data: Dict[str, Any]) -> List[Problem]:
+    """Can the bot open the mailbox this client will register under?
+
+    Registering is only half the job: VFS sends the INVITATION by email, the
+    inbox watcher reads it over IMAP, and `invite_booking` turns it into a
+    booking. An account nobody can sign in to means the invitation is never
+    seen and the registration leads nowhere - silently, weeks later, with the
+    client's window already closed.
+
+    Two sources satisfy it, in the order `inbox.watcher.mailbox_accounts` tries
+    them: the client's own `account_email_password`, else the credentials
+    pool's `email_password` for the same address. A company account needs
+    nothing typed; an agent using their own account has to supply it.
+
+    *** NEVER the VFS portal password. *** They were one value until
+    2026-10-16 and assuming they still match is a bug, not a shortcut.
+
+    Checked HERE rather than in the form list, because the form is rendered
+    before anyone has chosen an account - `mailbox_password_field` offers the
+    box, this decides whether it had to be filled.
+    """
+    account = str(data.get("account") or "").strip()
+    if not account:
+        # No pinned account: the shared pool supplies both the login and its
+        # mailbox password, so there is nothing for an agent to get wrong.
+        return []
+    if str(data.get("account_email_password") or "").strip():
+        return []
+
+    try:
+        from src.utils import credentials as cred_mod
+        if cred_mod.email_password_for(account, required=False):
+            return []
+    except Exception:                                       # noqa: BLE001
+        # Treat an unreadable pool as "no password there": demanding the field
+        # is recoverable, assuming one exists is not.
+        pass
+
+    # WARNING, not ERROR, and the distinction is the whole design.
+    #
+    # An error blocks the write, and a blocked write means the client is never
+    # registered at all. A waitlist PLACE is worth more than the automation on
+    # top of it: an agent who does not have the Roundcube password to hand must
+    # still be able to take the place now and have a human watch the mailbox.
+    # Registered-but-unwatched is a worse outcome than registered-and-watched
+    # and a better one than not registered, so this says so and does not refuse.
+    #
+    # It is surfaced three times over, because it is easy to ignore once: here
+    # in the client's `problems`, in the runner's log before a live submit, and
+    # in inbox.watcher.mailbox_accounts when the pass skips the mailbox.
+    return [Problem(
+        field="account_email_password",
+        severity=WARNING,
+        message=(f"{account} has no MAILBOX password, so the bot cannot read "
+                 "the VFS invitation email for this client - it will be "
+                 "registered, but the invitation has to be caught by hand."),
+        hint=("This is the Roundcube/IMAP password for the account's mailbox "
+              "- NOT the VFS portal password. VFS announces a bookable slot by "
+              "email and the bot reads that mailbox to catch it, so without "
+              "this the client is registered but the invitation is never "
+              "seen."))]

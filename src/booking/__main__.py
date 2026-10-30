@@ -664,6 +664,14 @@ def _probe_exit_code(result) -> int:
 
 
 def main(argv: List[str] = None) -> int:
+    # A cancel from the web app arrives as CTRL_BREAK_EVENT on Windows, which
+    # would otherwise kill this process outright - no handler, no `finally`, and
+    # Chrome left running. This makes it raise KeyboardInterrupt instead, so the
+    # interrupt handling below does the teardown for a remote cancel exactly as
+    # it already does for a terminal Ctrl-C.
+    from src.utils.interrupts import install_graceful_stop
+    install_graceful_stop()
+
     parser = argparse.ArgumentParser(
         prog="python -m src.booking",
         description="Booking: config checks and a READ-ONLY dashboard probe. "

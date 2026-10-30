@@ -221,7 +221,7 @@ def test_a_switched_off_flow_is_ready_with_a_warning(api, monkeypatch):
     flow = api.get(f"/v1/routes/{READY_ROUTE}/readiness",
                    headers=HEADERS).json()["flows"]["waitlist"]
     assert flow["ready"] is True
-    assert [p["severity"] for p in flow["problems"]] == ["warning"]
+    assert {p["severity"] for p in flow["problems"]} == {"warning"}
 
 
 def test_route_listing_reports_the_flow_per_country(api):
@@ -441,7 +441,7 @@ def test_get_reports_runnable(api):
     api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
     body = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
     assert body["runnable"] is True
-    assert [p["severity"] for p in body["problems"]] == ["warning"]
+    assert {p["severity"] for p in body["problems"]} == {"warning"}
 
 
 def test_a_warning_does_not_block_a_write(api):
@@ -454,7 +454,7 @@ def test_a_warning_does_not_block_a_write(api):
     """
     r = api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
     assert r.status_code == 201, r.text
-    assert [w["severity"] for w in r.json()["warnings"]] == ["warning"]
+    assert {w["severity"] for w in r.json()["warnings"]} == {"warning"}
     assert "differs from the VFS account" in r.json()["warnings"][0]["message"]
 
 
@@ -767,3 +767,147 @@ def test_a_form_built_from_the_live_fields_is_accepted(api):
     problems = booking_requests.precheck(
         "contract-test", booking_requests.normalise(payload))
     assert [p.message for p in problems] == []
+
+
+# ===== a registered client is not runnable =================================
+#
+# `runnable` answers "would this client register right now?" and was computed
+# from the pre-flight alone, which only asks whether the CONFIG is sound. It
+# never consulted the journal, so a client already holding a VFS entry reported
+# runnable for good - and a web app renders that as "armed", i.e. as a client
+# still queued to register. On 2026-10-29 ahmed-travnook-ae-grc-af754d held
+# GRC129529986331 and read as armed in the console.
+#
+# The runner has always been right: `blocking_entry_for_route` drops a holding
+# client from every plan before login, manual run and auto-trigger alike. Only
+# the reporting lied.
+
+
+@pytest.fixture
+def quiet_journal(tmp_path, monkeypatch):
+    """Keeps these tests out of the REAL state/waitlist_journal.jsonl.
+
+    It holds live registrations with real VFS references; a test row in it would
+    block a real client from ever registering again.
+    """
+    from src.waitlist import journal
+
+    monkeypatch.setattr(journal, "JOURNAL_DIR", str(tmp_path))
+    monkeypatch.setattr(journal, "JOURNAL_FILE",
+                        str(tmp_path / "waitlist_journal.jsonl"))
+    return journal
+
+
+def _register(journal, client_id, status="success",
+              reference="CHE999000111222", combo=READY_COMBO):
+    from src.waitlist.result import WaitlistResult
+
+    journal.append(WaitlistResult(
+        route=READY_ROUTE, combo=combo, registrant_id=client_id,
+        status=status, vfs_reference=reference,
+        reason=f"registered (ref {reference})" if reference else ""))
+
+
+def test_a_registered_client_is_not_runnable(api, quiet_journal):
+    """*** THE ONE THE WEB APP SHOWS AS ARMED. ***"""
+    api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
+    _register(quiet_journal, "test-client-che")
+
+    body = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
+
+    assert body["runnable"] is False
+    assert body["status"] == "registered"
+    assert body["vfs_reference"] == "CHE999000111222"
+
+
+def test_the_listing_says_the_same_as_the_detail(api, quiet_journal):
+    """They used to disagree about the same client, which is worse than either
+    being wrong on its own."""
+    api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
+    _register(quiet_journal, "test-client-che")
+
+    rows = api.get("/v1/clients?include=problems", headers=HEADERS).json()["items"]
+    row = next(r for r in rows if r["client_id"] == "test-client-che")
+    detail = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
+
+    assert row["runnable"] == detail["runnable"] is False
+
+
+def test_a_client_who_has_not_registered_is_still_runnable(api, quiet_journal):
+    """The control. An empty journal must not make everyone un-runnable."""
+    api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
+
+    body = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
+
+    assert body["runnable"] is True
+    assert body["status"] == "waiting"
+
+
+def test_a_registration_is_not_reported_as_a_problem(api, quiet_journal):
+    """A finished job is not a fault.
+
+    Putting it in `problems` would make a successful registration render beside
+    a missing passport number, and inflate problem_count on every client who
+    ever succeeded. `status` and `vfs_reference` carry the reason instead.
+    """
+    api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
+    _register(quiet_journal, "test-client-che")
+
+    detail = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
+    rows = api.get("/v1/clients?include=problems", headers=HEADERS).json()["items"]
+    row = next(r for r in rows if r["client_id"] == "test-client-che")
+
+    assert {p["severity"] for p in detail["problems"]} == {"warning"}
+    assert row["problem_count"] == 0
+
+
+def test_a_failed_attempt_does_not_make_a_client_un_runnable(api, quiet_journal):
+    """Only COMMITTED states block. Nothing was submitted on a failure, so the
+    client still has to be able to try again - blocking here would strand every
+    client who ever hit a VFS error."""
+    api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
+    _register(quiet_journal, "test-client-che", status="failed", reference=None)
+
+    body = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
+
+    assert body["runnable"] is True
+
+
+def test_a_submit_awaiting_a_human_also_blocks(api, quiet_journal):
+    """'pending' means a submit that may have landed. Running again could take a
+    second VFS place for one need, which is the thing the runner's route-level
+    guard exists to prevent."""
+    api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
+    _register(quiet_journal, "test-client-che", status="pending", reference=None)
+
+    body = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
+
+    assert body["runnable"] is False
+
+
+def test_an_entry_on_another_combo_of_the_same_route_still_blocks(api,
+                                                                 quiet_journal):
+    """A client's `combos` is a preference order, not a shopping list: one
+    client wants ONE appointment. The API has to agree with the runner, which
+    keys this on the ROUTE, not the combo."""
+    payload = _client_payload(combos=[READY_COMBO, "Abu Dhabi - SCHENGEN"])
+    api.post("/v1/clients", json=payload, headers=HEADERS)
+    _register(quiet_journal, "test-client-che", combo="Abu Dhabi - SCHENGEN")
+
+    body = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
+
+    assert body["runnable"] is False
+
+
+def test_the_runner_and_the_api_agree(api, quiet_journal):
+    """The API's answer must be the runner's answer, not a second opinion."""
+    from src.waitlist import journal as j
+
+    api.post("/v1/clients", json=_client_payload(), headers=HEADERS)
+    _register(quiet_journal, "test-client-che")
+
+    held = j.blocking_entry_for_route(READY_ROUTE, "test-client-che")
+    body = api.get("/v1/clients/test-client-che", headers=HEADERS).json()
+
+    assert held is not None
+    assert body["runnable"] is (held is None)

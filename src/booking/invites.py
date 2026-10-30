@@ -160,6 +160,22 @@ def record(observations: List[Any]) -> List[str]:
                 continue
             email = obs.email
             account = str(obs.account or email.mailbox or "").strip().lower()
+            # *** A MASKED ADDRESS IS NOT AN ADDRESS. ***
+            #
+            # `candidates()` resolves WHO an invitation is for by comparing this
+            # to each client's real email. A masked one can never equal it, so
+            # every invitation was filed "manual" for want of a client that was
+            # there all along (AE-GRC, 2026-10-29). The watcher was handing over
+            # its log label; it now hands over the address. This refuses the
+            # label if anything starts doing that again, rather than writing a
+            # record that silently cannot be matched for the rest of its life.
+            if "*" in account:
+                account = str(email.mailbox or "").strip().lower()
+                log.error(
+                    "An invitation arrived with a MASKED account (%s). Using "
+                    "the mailbox it was read from instead. Whatever produced "
+                    "it is passing a display label where an address belongs.",
+                    _mask(obs.account))
             key = _key(account, match.route, str(email.uid), email.mailbox)
             if os.path.exists(path_for(key)):
                 continue
