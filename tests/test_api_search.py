@@ -320,17 +320,19 @@ def test_a_job_payload_never_overwrites_the_jobs_own_field():
     assert hay._haystack(row)["status"] == "failed"
 
 
-# ── Invitations: the masked mailbox stays out ──────────────────────────────
+# ── Invitations: the mailbox is shown, never searched ──────────────────────
 
 
-def test_invitation_search_excludes_the_masked_mailbox():
+def test_invitation_search_excludes_the_mailbox():
+    """`_invite_view` serves `account` in full so an operator can see which
+    mailbox to sign in to. That is NOT a reason to make it searchable: showing
+    an address on a row someone is already reading is not the same as letting
+    a guessed address be confirmed by a hit."""
     from src.api.modules.booking.router import _INVITE_SEARCHABLE
 
-    assert "account" not in _INVITE_SEARCHABLE, (
-        "_invite_view masks `account`; searching it would confirm a guessed "
-        "mailbox address"
-    )
+    assert "account" not in _INVITE_SEARCHABLE
     assert "history" not in _INVITE_SEARCHABLE
+    assert "progress" not in _INVITE_SEARCHABLE
 
 
 def test_invitation_search_finds_a_matched_client_id():

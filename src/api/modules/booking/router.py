@@ -115,21 +115,156 @@ router.get("/payments/unanswered", summary="Payments with no recorded outcome")(
 # --------------------------------------------------------------------------- #
 
 
+#: History events that mean "the bot had a go at booking this one".
+#: `triggered` is the run being spawned, `attempt_started` one client's booking
+#: beginning inside it.
+_ATTEMPT_EVENTS = ("triggered", "attempt_started")
+
+#: Which history events produce which status, so "when did it reach the state
+#: it is in now?" is answered from the event that actually put it there rather
+#: than from whichever terminal-looking event happened last.
+#:
+#: `resolved_not_booked` is deliberately filed under both `pending` and
+#: `expired`: a human saying "nothing was booked" sends a still-valid
+#: invitation BACK to pending for the automation to retry, and only an expired
+#: one stays settled. See invites.resolve.
+_STATUS_EVENTS = {
+    "booked": ("booked", "resolved_booked"),
+    "expired": ("expired", "resolved_not_booked"),
+    "dismissed": ("dismissed", "resolved_dismissed"),
+    "needs_attention": ("needs_attention",),
+    "manual": ("manual", "test_passed", "test_failed"),
+    "pending": ("received", "attempt_failed", "resolved_not_booked"),
+    "booking": ("attempt_started", "triggered"),
+}
+
+#: Statuses that are the end of the line. Anything else is still in play and
+#: the bot may still act on it.
+_FINAL_STATUSES = ("booked", "expired", "dismissed")
+
+
+def _epoch_of(entry: Optional[Dict[str, Any]]) -> Optional[float]:
+    """A history entry's timestamp as epoch seconds, or None.
+
+    Entries are stamped by `invites._now()`, which is UTC with a trailing Z,
+    so they are read as UTC. A stamp that cannot be read is None and never
+    "now": an invented time on a booking timeline is worse than a gap in one.
+    """
+    if not entry:
+        return None
+    stamp = str(entry.get("at") or "").strip()
+    if not stamp:
+        return None
+    from datetime import datetime, timezone
+    try:
+        naive = datetime.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        try:
+            naive = datetime.strptime(stamp[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    return naive.replace(tzinfo=timezone.utc).timestamp()
+
+
+def _int(value: Any) -> int:
+    """A count from a stored field, or 0. Never raises.
+
+    `attempts` is written by the booker and read here on a LIST endpoint: one
+    record with a non-numeric value in it must not take down the whole page
+    with a 500. A bad count reads as 0, which is visibly wrong on the row
+    rather than invisibly fatal for every other row beside it.
+    """
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _progress(item: Dict[str, Any]) -> Dict[str, Any]:
+    """What has happened to this invitation, as times rather than prose.
+
+    Derived HERE rather than in a console, because what each history event
+    means is this module's business. A reader that has to know which event
+    names count as an attempt is a second copy of these rules, and the subtle
+    ones drift silently.
+
+    Every timestamp is epoch seconds or None. None means "it has not happened"
+    or "it was not recorded"; the two are deliberately not distinguished,
+    because neither is a time and neither may be rendered as one.
+    """
+    history = [h for h in (item.get("history") or []) if isinstance(h, dict)]
+    status = item.get("status") or ""
+
+    def pick(names, newest=True):
+        source = reversed(history) if newest else history
+        for entry in source:
+            if entry.get("event") in names:
+                return entry
+        return None
+
+    settled = pick(_STATUS_EVENTS.get(status, ()))
+    manual = pick(("manual",))
+    newest = history[-1] if history else None
+
+    return {
+        "attempts": _int(item.get("attempts")),
+        # When the bot first tried, and when it last tried.
+        "first_attempt_epoch": _epoch_of(pick(_ATTEMPT_EVENTS, newest=False)),
+        "last_attempt_epoch": _epoch_of(pick(_ATTEMPT_EVENTS)),
+        # When it reached the state it is in NOW — not merely the last
+        # terminal-looking event, which for a retried invitation is in its past.
+        "status_since_epoch": _epoch_of(settled),
+        "final": status in _FINAL_STATUSES,
+        # WHY the bot will not book this one itself. The single most asked
+        # question about a "Book by hand" row, and it is already written down.
+        "blocked_reason": (manual.get("detail") or "") if manual else "",
+        "last_event": ({"event": newest.get("event"),
+                        "detail": newest.get("detail") or "",
+                        "at": newest.get("at"),
+                        "epoch": _epoch_of(newest)} if newest else None),
+        "events": len(history),
+    }
+
+
 def _invite_view(item: Dict[str, Any]) -> Dict[str, Any]:
     from src.booking import invites
 
     out = dict(item)
-    out["account"] = invites._mask(item.get("account", ""))
+    # The FULL mailbox address, not a mask.
+    #
+    # These are our own booking mailboxes, not applicant contact addresses,
+    # and an operator deciding which account to go and read an email in cannot
+    # act on `a****t@travnook.com` — there are several and the mask collapses
+    # them into one another. The record already holds the real address, and
+    # refuses a masked one on the way in (see invites.record); this stops
+    # throwing it away on the way out.
+    out["account"] = item.get("account", "")
     out["deadline"] = invites._deadline(item)
+    # Derived from stored history, so it is the part of this view most able to
+    # meet something unexpected. It must never cost the caller the rest of the
+    # page: a record whose progress cannot be worked out still lists, with an
+    # empty progress block, and the row renders without its timeline.
+    try:
+        out["progress"] = _progress(item)
+    except Exception:                                        # noqa: BLE001
+        out["progress"] = {"attempts": 0, "first_attempt_epoch": None,
+                           "last_attempt_epoch": None, "status_since_epoch": None,
+                           "final": False, "blocked_reason": "",
+                           "last_event": None, "events": 0, "unreadable": True}
     return out
 
 
-#: What `q` may look at on an invitation. All of these are already columns in
-#: the console's table. `clients` is a dict, and `search.matches` reads a
-#: dict's KEYS — here that is exactly right, because the keys are the client
-#: ids shown in the "Matched to" column. DELIBERATELY ABSENT: `account`, which
-#: `_invite_view` masks, and `history`, whose entries are not cleared for
-#: search. See src/api/core/search.py.
+#: What `q` may look at on an invitation. All of these are columns in the
+#: console's table. `clients` is a dict, and `search.matches` reads a dict's
+#: KEYS — here that is exactly right, because the keys are the client ids.
+#:
+#: DELIBERATELY ABSENT and staying absent:
+#:   `account`   is now SERVED in full (see _invite_view) but is still not
+#:               SEARCHABLE. Displaying an address to someone already looking
+#:               at the row is not the same as letting a guess be confirmed by
+#:               a hit, and only the first was asked for.
+#:   `history`, `progress`   their entries are not cleared for search.
+#: See src/api/core/search.py and tests/test_api_search.py.
 _INVITE_SEARCHABLE = ("key", "applicant_name", "category", "route",
                       "status", "clients")
 

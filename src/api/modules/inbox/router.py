@@ -55,8 +55,10 @@ def status_view() -> Dict[str, Any]:
 
     try:
         from src.inbox import watcher
-        from src.waitlist.accounts import mask
-        watched = [mask(email) for email, _ in watcher.mailbox_accounts()]
+        # Full addresses, not masks. These are our own booking mailboxes, and
+        # an operator told "the invitation is in a****t@travnook.com" cannot
+        # act on it — there are several accounts and a mask collapses them.
+        watched = [email for email, _ in watcher.mailbox_accounts()]
     except Exception as exc:                                # noqa: BLE001
         watched = []
         mailbox_error = str(exc)
